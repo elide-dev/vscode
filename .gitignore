@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.vsix
+.dev/
+workspace.json
+.DS_Store
+dist-test/

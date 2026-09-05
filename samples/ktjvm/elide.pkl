@@ -1,0 +1,17 @@
+amends "elide:project.pkl"
+import "elide:Sources.pkl" as Sources
+
+name = "ktjvm-sample"
+
+jvm {
+    main = "sample.MainKt"
+}
+
+sources {
+    ["main"] = new Sources.SourceSetSpec {
+        paths {
+            "src/main/**/*.kt"
+        }
+    }
+    ["test"] = "src/test/**/*.kt"
+}

@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish Extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # `tools/deploy.sh` takes the version from package.json; a tag that disagrees would publish a surprise version.
+      - name: Verify tag matches the manifest version
+        run: |
+          manifest="$(jq -r '.version' packages/vscode/package.json)"
+          tag="${GITHUB_REF_NAME#v}"
+          if [[ "$manifest" != "$tag" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match packages/vscode/package.json version $manifest"
+            exit 1
+          fi
+
+      - name: Run unit tests
+        run: bun run test
+
+      - name: Publish extension to Elide repository
+        run: tools/deploy.sh
+        env:
+          ELIDE_PLUGINS_KEY: ${{ secrets.ELIDE_PLUGINS_KEY }}
+          ELIDE_PLUGINS_URL: ${{ vars.ELIDE_PLUGINS_URL }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packages/vscode/*.vsix
+          generate_release_notes: true

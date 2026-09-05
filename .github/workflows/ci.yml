@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '**'
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun run build
+
+      - name: Typecheck extension
+        run: bun run --filter elide typecheck
+
+      - name: Run unit tests
+        run: bun run test
+
+      # The integration suite drives a real VS Code with the 1.2 GB JetBrains.kotlin-server extension and a local
+      # Elide install; it is run locally (`packages/vscode: bun run test:integration`), not on CI runners.
+      - name: Package extension
+        run: bun run --filter elide package
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-vsix
+          path: packages/vscode/*.vsix
+          retention-days: 7

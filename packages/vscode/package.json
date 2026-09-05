@@ -1,0 +1,204 @@
+{
+  "name": "elide",
+  "displayName": "Elide",
+  "description": "Elide build tool integration: Kotlin/Java classpath for the Kotlin LSP, build/run/test tasks, and JDWP debugging.",
+  "version": "0.1.0",
+  "publisher": "elide",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Other"
+  ],
+  "keywords": [
+    "elide",
+    "kotlin",
+    "java",
+    "jvm",
+    "build"
+  ],
+  "main": "./dist/extension.js",
+  "extensionDependencies": [
+    "JetBrains.kotlin-server"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/elide.pkl",
+    "onDebugResolve:elide",
+    "onTaskType:elide"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "Elide",
+      "properties": {
+        "elide.home": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Elide distribution root (the directory containing `bin/elide`). Empty: use `$ELIDE_HOME`, the platform install locations, then `elide` on `PATH`."
+        },
+        "elide.jdk.home": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "JDK home used for symbol resolution in the Kotlin LSP. Empty: `jvm.javaHome` from the manifest, then `$JAVA_HOME`, then installed JDKs (SDKMAN, /Library/Java/JavaVirtualMachines, /usr/lib/jvm, Program Files) matching `jvm.target`."
+        },
+        "elide.sync.onStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Sync Elide projects when the workspace opens."
+        },
+        "elide.sync.onManifestChange": {
+          "type": "string",
+          "enum": ["always", "prompt", "never"],
+          "default": "prompt",
+          "description": "What to do when elide.pkl or the lockfile changes."
+        },
+        "elide.kotlinLsp.writeWorkspaceJson": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Write `workspace.json` at the workspace folder root so the Kotlin LSP imports the Elide project model."
+        },
+        "elide.debug.adapter": {
+          "type": "string",
+          "enum": ["intellij", "java"],
+          "enumDescriptions": [
+            "Attach with the Kotlin LSP's JVM debugger (JetBrains.kotlin-server).",
+            "Attach with Debugger for Java (vscjava.vscode-java-debug)."
+          ],
+          "default": "intellij",
+          "description": "Debug adapter used to attach to the JVM started by `elide run --debugger`."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "elide.sync",
+        "category": "Elide",
+        "title": "Sync Project(s)",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "elide.showOutput",
+        "category": "Elide",
+        "title": "Show Output"
+      },
+      {
+        "command": "elide.openWorkspaceJson",
+        "category": "Elide",
+        "title": "Open generated Kotlin LSP workspace"
+      },
+      {
+        "command": "elide.runTask",
+        "category": "Elide",
+        "title": "Run Elide Command…"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "elide",
+        "required": ["command"],
+        "properties": {
+          "command": {
+            "type": "string",
+            "enum": ["build", "run", "test", "install"],
+            "description": "Elide CLI command to run."
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional arguments passed after the command."
+          },
+          "project": {
+            "type": "string",
+            "description": "Project root relative to the workspace folder (multi-project workspaces)."
+          }
+        }
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "kotlin"
+      },
+      {
+        "language": "java"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "elide",
+        "label": "Elide",
+        "languages": ["kotlin", "java"],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "entrypoint": {
+                "type": "string",
+                "description": "Entrypoint file, manifest script name, or empty to let Elide resolve `entrypoint`/`jvm.main`."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Arguments passed to the program after `--`."
+              },
+              "project": {
+                "type": "string",
+                "description": "Project root relative to the workspace folder (multi-project workspaces)."
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Extra environment variables for the Elide process."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "elide",
+            "request": "launch",
+            "name": "Elide: Run (debug)"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Elide: Run (debug)",
+            "description": "Run the project's entrypoint with `elide run --debugger` and attach.",
+            "body": {
+              "type": "elide",
+              "request": "launch",
+              "name": "Elide: Run (debug)"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build:test": "esbuild test/integration/index.ts --bundle --platform=node --target=node22 --format=cjs --external:vscode --outfile=dist-test/index.js",
+    "test:integration": "bun run build && bun run build:test && bun test/integration/runner.ts",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@elide/ide-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/vscode": "^1.105.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
+  }
+}

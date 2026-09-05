@@ -1,0 +1,12 @@
+{
+  "name": "elide-vscode-workspace",
+  "private": true,
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "bun run --filter '*' build",
+    "test": "bun run --filter '@elide/ide-core' test"
+  }
+}

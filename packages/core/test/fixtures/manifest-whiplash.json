@@ -1,0 +1,36 @@
+{
+  "name": "elide",
+  "version": "1.5.1",
+  "kotlin": {
+    "compilerOptions": {
+      "freeCompilerArgs": ["-Xcontext-parameters"],
+      "apiVersion": { "@type": "elide.kotlin.KotlinLanguageTargets.V2_4" },
+      "languageVersion": { "@type": "elide.kotlin.KotlinLanguageTargets.V2_4" }
+    },
+    "features": { "serialization": true, "coroutines": true }
+  },
+  "sources": {
+    "main": {
+      "@type": "elide.sources.SourceSetSpec",
+      "type": null,
+      "paths": ["packages/base/main/**/*.kt", "packages/generated/main/**/*.java", ".dev/codegen/jvm/sources/**/*.java"],
+      "dependsOn": null,
+      "resources": null
+    },
+    "test": { "@type": "elide.sources.SourceSet.OfString", "value": "packages/base/test/**/*.kt" },
+    "examples": { "@type": "elide.jvm.JvmSourceSetSpec", "type": "example", "paths": ["examples/**/*.kt"], "resources": { "examples/**/*.kt": "examples/res" } },
+    "docs": { "@type": "elide.sources.SourceSetSpec", "type": "other", "paths": ["docs/**/*.md"] }
+  },
+  "toolchain": {
+    "engines": {
+      "bun": { "@type": "elide.toolchain.EngineSpec.OfString", "value": "1.4.0" },
+      "java": { "@type": "elide.toolchain.EngineSpec.OfString", "value": "25.0.3" }
+    }
+  },
+  "dependencies": {
+    "maven": {
+      "enableDefaultRepositories": false,
+      "packages": [{ "@type": "elide.jvm.MavenPackageDependency.OfString", "value": "com.github.ben-manes.caffeine:caffeine:3.2.4" }]
+    }
+  }
+}
