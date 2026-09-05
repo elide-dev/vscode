@@ -35,17 +35,6 @@ Running `tools/deploy.sh` by hand works too with those two set in the environmen
 
 ## How it works
 
-```mermaid
-flowchart LR
-  M[elide.pkl] -->|elide manifest| C[@elide/ide-core]
-  C -->|elide classpath set:compile| C
-  C --> W[workspace.json]
-  W -->|JSON import| K[Kotlin LSP]
-  X[VS Code extension] --> C
-  X -->|reload| K
-  X -->|elide run --debugger → JDWP| D[JVM debugger attach]
-```
-
 Opening a folder that contains `elide.pkl` runs a **sync**:
 
 1. `elide manifest` — the resolved project manifest as JSON (source sets, Kotlin compiler options, entrypoints).
