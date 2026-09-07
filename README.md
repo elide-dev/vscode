@@ -1,5 +1,8 @@
 # Elide for Visual Studio Code
 
+[![CI](https://github.com/elide-dev/vscode/actions/workflows/ci.yml/badge.svg)](https://github.com/elide-dev/vscode/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
 VS Code integration for the [Elide](https://elide.dev) build tool. The extension turns an `elide.pkl` project into a
 model the [Kotlin LSP by JetBrains](https://marketplace.visualstudio.com/items?itemName=JetBrains.kotlin-server) can
 import — resolved Maven dependencies, source roots, JDK — and adds Elide build/run/test tasks and JDWP debugging.
@@ -16,13 +19,6 @@ code --install-extension elide-*.vsix
 
 Or in VS Code: **Extensions ▸ … ▸ Install from VSIX…**. `https://plugins.elide.dev/vscode` lists the published version
 and a pinned (`&version=`) link.
-
-## Releasing
-
-Push a `vX.Y.Z` tag matching `packages/vscode/package.json`'s `version`. The `Release` workflow runs `tools/deploy.sh`
-— package, presigned R2 upload, metadata upsert against `plugins.elide.dev` — and attaches the `.vsix` to a GitHub
-release. It needs the `ELIDE_PLUGINS_KEY` secret and the `ELIDE_PLUGINS_URL` variable, exactly like `elide-intellij`.
-Running `tools/deploy.sh` by hand works too with those two set in the environment.
 
 ## Requirements
 
@@ -114,8 +110,9 @@ session terminates the Elide process. `elide test` does not accept `--debugger`,
 
 - `packages/core` — `@elide/ide-core`: editor-agnostic library (Elide discovery, CLI runner, manifest decoding, project
   model, `workspace.json` emitter). No VS Code dependency; reusable by other TypeScript-based editor integrations.
-- `packages/vscode` — the extension.
+- `packages/vscode` — the extension; its `CHANGELOG.md` is the release history shown on the Marketplace.
 - `samples/ktjvm` — Kotlin/JVM sample used by the integration test.
+- `tools/deploy.sh` — packaging and publication to `plugins.elide.dev`.
 
 ## Development
 
@@ -129,3 +126,14 @@ cd packages/vscode && bun run test:integration   # drives real VS Code + Kotlin 
 The integration test requires VS Code at `/Applications/Visual Studio Code.app`, `JetBrains.kotlin-server` installed
 in `~/.vscode/extensions`, `elide` installed, and network access (it adds Guava to the sample). Press F5 in this repo to
 run the extension against `samples/ktjvm`.
+
+## Contributing
+
+Issues and pull requests are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the dev loop, the commit convention
+(Conventional Commits, enforced on pull requests), and the release process; participation is governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately as described in
+[`SECURITY.md`](SECURITY.md) — not in a public issue.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

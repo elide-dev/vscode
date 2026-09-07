@@ -41,6 +41,20 @@ jobs:
           ELIDE_PLUGINS_KEY: ${{ secrets.ELIDE_PLUGINS_KEY }}
           ELIDE_PLUGINS_URL: ${{ vars.ELIDE_PLUGINS_URL }}
 
+      # Marketplace publication is opt-in: the step is skipped until `VSCE_PAT` (an Azure DevOps personal access token
+      # for the `elide` publisher) exists, so releases keep working before the publisher is provisioned.
+      # `tools/deploy.sh` already produced the .vsix; publishing that exact file avoids a second, differing package.
+      - name: Publish extension to Visual Studio Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [[ -z "${VSCE_PAT}" ]]; then
+            echo "::notice::VSCE_PAT is not set; skipping Marketplace publication"
+            exit 0
+          fi
+          version="$(jq -r '.version' packages/vscode/package.json)"
+          bunx @vscode/vsce publish --no-dependencies --packagePath "packages/vscode/elide-${version}.vsix"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

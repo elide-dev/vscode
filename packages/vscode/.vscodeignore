@@ -2,4 +2,6 @@
 !dist/extension.js
 !package.json
 !README.md
-!LICENSE*
+!CHANGELOG.md
+!LICENSE
+!icon.png

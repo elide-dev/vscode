@@ -34,10 +34,9 @@ echo "Version=$VERSION"
 echo "Engine=${ENGINE:-n/a}"
 echo "Repository=${REPOSITORY:-n/a}"
 
-# Build from the workspace root: packages/vscode bundles `@elide/ide-core`, whose `dist/` is only produced by the
-# core package's own build, so a package-local build would leave the import unresolvable.
+# `bun run package` runs the extension's `vscode:prepublish`, which builds `@elide/ide-core` and the bundle from the
+# workspace root — packaging alone is enough, even from a clean checkout.
 echo "Packaging..."
-(cd "$ROOT" && bun run build)
 (cd "$PACKAGE_DIR" && bun run package)
 
 if [[ ! -f "$VSIX_FILE" ]]; then

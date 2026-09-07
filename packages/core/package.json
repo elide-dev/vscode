@@ -3,6 +3,23 @@
   "version": "0.1.0",
   "description": "Editor-agnostic Elide project model: distribution discovery, CLI invocation, manifest decoding, and Kotlin LSP workspace.json emission.",
   "license": "MIT",
+  "author": "Elide Technologies, Inc.",
+  "homepage": "https://github.com/elide-dev/vscode/tree/main/packages/core#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elide-dev/vscode.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/elide-dev/vscode/issues"
+  },
+  "keywords": [
+    "elide",
+    "kotlin",
+    "jvm",
+    "kotlin-lsp",
+    "build"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,7 +30,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

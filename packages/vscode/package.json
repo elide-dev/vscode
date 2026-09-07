@@ -3,9 +3,24 @@
   "displayName": "Elide",
   "description": "Elide build tool integration: Kotlin/Java classpath for the Kotlin LSP, build/run/test tasks, and JDWP debugging.",
   "version": "0.1.0",
+  "preview": true,
   "publisher": "elide",
+  "author": "Elide Technologies, Inc.",
   "license": "MIT",
   "private": true,
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#0F0F0F",
+    "theme": "dark"
+  },
+  "homepage": "https://github.com/elide-dev/vscode#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elide-dev/vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/elide-dev/vscode/issues"
+  },
   "engines": {
     "vscode": "^1.105.0"
   },
@@ -19,7 +34,23 @@
     "kotlin",
     "java",
     "jvm",
-    "build"
+    "build",
+    "build tool",
+    "kotlin lsp",
+    "pkl"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Syncing a project runs the workspace's Elide CLI (`elide manifest`, `elide install`, `elide classpath`), so an untrusted workspace could execute arbitrary code."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "The Elide CLI, the JDK, and the generated `workspace.json` all need a real filesystem."
+    }
+  },
+  "extensionKind": [
+    "workspace"
   ],
   "main": "./dist/extension.js",
   "extensionDependencies": [
@@ -184,6 +215,7 @@
     ]
   },
   "scripts": {
+    "vscode:prepublish": "cd ../.. && bun run build",
     "build": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build:test": "esbuild test/integration/index.ts --bundle --platform=node --target=node22 --format=cjs --external:vscode --outfile=dist-test/index.js",

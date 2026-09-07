@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Elide documentation
+    url: https://docs.elide.dev
+    about: Read the Elide docs for setup, usage, and troubleshooting guidance.
+  - name: Elide CLI issue tracker
+    url: https://github.com/elide-dev/elide/issues
+    about: Report bugs or request features for the Elide CLI itself (not this extension).
+  - name: Kotlin LSP issue tracker
+    url: https://github.com/Kotlin/kotlin-lsp/issues
+    about: Report bugs in the JetBrains.kotlin-server language server extension.
