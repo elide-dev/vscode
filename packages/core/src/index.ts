@@ -11,6 +11,8 @@ export {
   isLockfileName,
   isNestedUnder,
   killProcessTree,
+  lockfileDigest,
+  lockfilesIn,
   outermostManifests,
   parseClasspath,
   resolveElideDistribution,

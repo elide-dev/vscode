@@ -71,42 +71,49 @@ export function deactivate(): void {}
 
 function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWorkspace, ui: ElideUi): void {
   const timers = new Map<string, NodeJS.Timeout>();
-  const schedule = (folder: vscode.WorkspaceFolder, reason: "manifest-change" | "project-added") => {
-    const key = folder.uri.toString();
+  const debounce = (key: string, run: () => unknown) => {
     clearTimeout(timers.get(key));
     timers.set(
       key,
       setTimeout(() => {
         timers.delete(key);
-        void workspace.syncFolder(folder, reason);
+        void run();
       }, DEBOUNCE_MS),
     );
   };
 
-  /**
-   * React to a change under a project root. `rootOf` maps the changed file to the directory whose manifest owns it;
-   * a path that is not a tracked project root belongs to a nested (ignored) manifest and is not a reason to resync.
-   */
-  const onStale = (uri: vscode.Uri, what: string, rootOf: (fsPath: string) => string) => {
-    const located = workspace.locate(uri);
-    if (!located) return;
-    const folder = located.folder;
-    if (!workspace.projectAt(rootOf(located.fsPath)) || workspace.isSelfInflicted(folder)) return;
+  /** Mark `folder` as needing a re-import of its projects and apply the configured policy. */
+  const onStale = (folder: vscode.WorkspaceFolder, what: string, fsPath: string) => {
     workspace.markStale(folder);
-    ui.log(`${what} changed: ${uri.fsPath}`);
+    ui.log(`${what} changed: ${fsPath}`);
     const policy = readConfig(folder).onManifestChange;
-    if (policy === "always") schedule(folder, "manifest-change");
-    else if (policy === "prompt") void promptReload(folder, workspace);
+    if (policy === "always") debounce(folder.uri.toString(), () => void workspace.syncFolder(folder, "manifest-change"));
+    else if (policy === "prompt") void promptReload(folder, workspace, what);
+  };
+
+  /**
+   * The tracked project a changed file belongs to. `rootOf` maps the file to the directory whose manifest owns it;
+   * a path that is not a tracked project root belongs to a nested (ignored) manifest and is not a reason to resync,
+   * and neither is a change a sync of that folder is making itself.
+   */
+  const ownerOf = (uri: vscode.Uri, rootOf: (fsPath: string) => string): ElideProject | undefined => {
+    const located = workspace.locate(uri);
+    if (!located) return undefined;
+    const project = workspace.projectAt(rootOf(located.fsPath));
+    return project && !workspace.isSelfInflicted(project.folder) ? project : undefined;
   };
 
   const manifests = vscode.workspace.createFileSystemWatcher(`**/${MANIFEST_NAME}`);
-  manifests.onDidChange((uri) => onStale(uri, MANIFEST_NAME, path.dirname));
+  manifests.onDidChange((uri) => {
+    const project = ownerOf(uri, path.dirname);
+    if (project) onStale(project.folder, MANIFEST_NAME, uri.fsPath);
+  });
   manifests.onDidCreate((uri) => {
     const project = workspace.addProject(uri);
     if (!project) return;
     ui.log(`project added: ${project.root}`);
     ui.setStatus("stale");
-    schedule(project.folder, "project-added");
+    debounce(project.folder.uri.toString(), () => void workspace.syncFolder(project.folder, "project-added"));
   });
   manifests.onDidDelete(async (uri) => {
     const project = workspace.removeProject(uri);
@@ -120,8 +127,16 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
 
   const lockfiles = vscode.workspace.createFileSystemWatcher("**/.dev/elide.lock*");
   const onLock = (uri: vscode.Uri) => {
+    if (!isLockfileName(path.basename(uri.fsPath))) return;
     // `<project root>/.dev/elide.lock*.bin`: two levels up from the lockfile.
-    if (isLockfileName(path.basename(uri.fsPath))) onStale(uri, "lockfile", (p) => path.dirname(path.dirname(p)));
+    const project = ownerOf(uri, (p) => path.dirname(path.dirname(p)));
+    if (!project) return;
+    // Running an entrypoint or the tests rewrites the lockfile with the same content, which is no reason to
+    // re-import: let the writes settle, then compare content and keep quiet unless the dependencies moved.
+    debounce(`lockfile:${project.root}`, async () => {
+      if (workspace.isSelfInflicted(project.folder)) return;
+      if (await workspace.lockfileChanged(project)) onStale(project.folder, "lockfile", uri.fsPath);
+    });
   };
   lockfiles.onDidChange(onLock);
   lockfiles.onDidCreate(onLock);
@@ -148,12 +163,12 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
 
 const prompting = new Set<string>();
 
-async function promptReload(folder: vscode.WorkspaceFolder, workspace: ElideWorkspace): Promise<void> {
+async function promptReload(folder: vscode.WorkspaceFolder, workspace: ElideWorkspace, what: string): Promise<void> {
   const key = folder.uri.toString();
   if (prompting.has(key)) return;
   prompting.add(key);
   try {
-    const pick = await vscode.window.showInformationMessage(`elide.pkl changed in ${folder.name}. Reload Elide project?`, "Reload", "Ignore");
+    const pick = await vscode.window.showInformationMessage(`${what} changed in ${folder.name}. Reload Elide project?`, "Reload", "Ignore");
     if (pick === "Reload") await workspace.syncFolder(folder, "manifest-change");
   } finally {
     prompting.delete(key);

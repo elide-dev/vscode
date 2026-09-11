@@ -88,7 +88,7 @@
           "type": "string",
           "enum": ["always", "prompt", "never"],
           "default": "prompt",
-          "description": "What to do when elide.pkl or the lockfile changes."
+          "description": "What to do when elide.pkl changes, or when the lockfile's resolved dependencies do. Rewrites of .dev/elide.lock*.bin that leave the dependencies unchanged (every elide run/test/build does one) are ignored."
         },
         "elide.kotlinLsp.writeWorkspaceJson": {
           "type": "boolean",

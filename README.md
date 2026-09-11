@@ -213,7 +213,7 @@ offers a Debug action on every target that declares `--debugger`.
 | `elide.home` | `""` | Distribution root containing `bin/elide`. |
 | `elide.jdk.home` | `""` | JDK for symbol resolution; else `jvm.javaHome`, `$JAVA_HOME`, installed JDKs matching `jvm.target`. |
 | `elide.sync.onStartup` | `true` | Sync when the workspace opens. |
-| `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` or the lockfile changes. |
+| `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` changes, or when the lockfile's resolved dependencies do. Every `elide` invocation rewrites `.dev/elide.lock*.bin`, so rewrites with unchanged content are ignored. |
 | `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json`. |
 | `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
 | `elide.flags` | `[]` | `-f NAME[=VALUE]` build flags for every invocation, sync included; changing them marks the model stale. |

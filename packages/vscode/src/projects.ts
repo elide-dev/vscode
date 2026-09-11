@@ -12,6 +12,7 @@ import {
   buildProjectModel,
   isNestedUnder,
   isSupportedElideVersion,
+  lockfileDigest,
   outermostManifests,
   resolveElideDistribution,
   writeKotlinLspWorkspace,
@@ -30,6 +31,11 @@ export interface ElideProject {
   manifestPath: string;
   folder: vscode.WorkspaceFolder;
   model?: ProjectModel;
+  /**
+   * Digest of the `.dev/elide.lock*.bin` content this extension has already accounted for; `undefined` until the
+   * project's lockfiles have been read once. See {@link ElideWorkspace.lockfileChanged}.
+   */
+  lockDigest?: string;
 }
 
 interface FolderState {
@@ -112,7 +118,10 @@ export class ElideWorkspace implements vscode.Disposable {
     for (const manifestPath of manifests) {
       const root = path.dirname(manifestPath);
       seen.add(root);
-      if (!state.projects.has(root)) state.projects.set(root, { root, manifestPath, folder });
+      if (state.projects.has(root)) continue;
+      // Seed the lockfile digest right away: the first `elide` invocation after discovery rewrites the lockfile,
+      // and without a baseline that rewrite is indistinguishable from a dependency change.
+      state.projects.set(root, { root, manifestPath, folder, lockDigest: await lockfileDigest(root) });
     }
     if (manifests.length < found.length) {
       const kept = new Set(manifests);
@@ -224,6 +233,23 @@ export class ElideWorkspace implements vscode.Disposable {
     return state !== undefined && (state.syncing !== undefined || Date.now() < state.quietUntil);
   }
 
+  /**
+   * Whether a `.dev/elide.lock*.bin` event means `project` resolves to different dependencies than the ones its
+   * model was built from, recording the observed content either way.
+   *
+   * Every `elide` invocation rewrites the lockfile: `elide run`, `elide test` and `elide build` all bump its mtime
+   * while writing the same bytes back, which the file watcher reports as a change. Comparing content keeps those
+   * rewrites — including ones started outside this extension, e.g. from a terminal — from asking for a re-import.
+   * A project whose lockfiles have never been read has no baseline to compare against, so the first event only
+   * records one.
+   */
+  async lockfileChanged(project: ElideProject): Promise<boolean> {
+    const digest = await lockfileDigest(project.root);
+    const previous = project.lockDigest;
+    project.lockDigest = digest;
+    return previous !== undefined && previous !== digest;
+  }
+
   /** Sync every folder that has at least one project. */
   async syncAll(reason: SyncReason): Promise<void> {
     const targets = [...this.folders.values()].filter((f) => f.projects.size > 0).map((f) => f.folder);
@@ -320,6 +346,8 @@ export class ElideWorkspace implements vscode.Disposable {
       await this.state.update(key, requested);
       for (const w of model.warnings) this.ui.log(`  [${rel}] warning: ${w}`);
       project.model = model;
+      // The model was resolved from whatever `elide install` left behind: that content is now the baseline.
+      project.lockDigest = await lockfileDigest(project.root);
       models.push(model);
     }
     if (signal.aborted) throw signal.reason;

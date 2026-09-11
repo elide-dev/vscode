@@ -58,6 +58,13 @@ All notable changes to the Elide extension are documented here. The format follo
   projects: only the outermost `elide.pkl` of each directory tree is synced, and edits to nested manifests no longer
   mark the folder out of date. Deleting an enclosing manifest promotes the manifests it was shadowing.
 
+### Fixed
+
+- Running an entrypoint, a build or the tests no longer asks to reload the project. Every `elide` invocation
+  rewrites `.dev/elide.lock*.bin`, so the lockfile watcher saw a change after each run; the content is now compared
+  against the one the project model was resolved from, and only a different dependency set marks the folder out of
+  date. Rewrites made outside the extension (a terminal, another editor) are covered too.
+
 ## [0.1.0] - 2026-09-06
 
 First release.

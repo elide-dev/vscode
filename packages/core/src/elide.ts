@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { parseBuildInspect, type BuildTaskInfo } from "./buildTasks.js";
@@ -370,24 +371,51 @@ export function outermostManifests(manifestPaths: Iterable<string>): string[] {
   return all.map((e) => e.manifest).filter((m) => kept.has(m));
 }
 
+/** Absolute paths of the `.dev/elide.lock*.bin` files of `projectRoot`, sorted by file name. */
+export async function lockfilesIn(projectRoot: string): Promise<string[]> {
+  const outputDir = path.join(projectRoot, OUTPUT_DIR);
+  let entries: string[];
+  try {
+    entries = await readdir(outputDir);
+  } catch {
+    return [];
+  }
+  return entries
+    .filter(isLockfileName)
+    .sort()
+    .map((name) => path.join(outputDir, name));
+}
+
+/**
+ * Digest of the dependency set `projectRoot` currently resolves to: the content of every `.dev/elide.lock*.bin`.
+ *
+ * Every `elide` invocation rewrites its lockfile, so `run`, `test` and `build` bump the file's mtime without
+ * changing a byte. Only a different digest means a project model resolved earlier describes other dependencies.
+ * A project with no lockfile hashes to the digest of an empty input.
+ */
+export async function lockfileDigest(projectRoot: string): Promise<string> {
+  const hash = createHash("sha256");
+  for (const file of await lockfilesIn(projectRoot)) {
+    hash.update(path.basename(file));
+    try {
+      hash.update(await readFile(file));
+    } catch {
+      hash.update("\u0000unreadable");
+    }
+  }
+  return hash.digest("hex");
+}
+
 /**
  * Whether installed dependencies can be trusted without `elide install`: `.dev/dependencies` exists and the
  * newest `.dev/elide.lock*.bin` is at least as recent as the manifest.
  */
 export async function isLockfileCurrent(projectRoot: string, manifestPath: string = path.join(projectRoot, MANIFEST_NAME)): Promise<boolean> {
-  const outputDir = path.join(projectRoot, OUTPUT_DIR);
-  if (!existsSync(path.join(outputDir, DEPENDENCIES_DIR))) return false;
-  let entries: string[];
-  try {
-    entries = await readdir(outputDir);
-  } catch {
-    return false;
-  }
+  if (!existsSync(path.join(projectRoot, OUTPUT_DIR, DEPENDENCIES_DIR))) return false;
   let newest = -Infinity;
-  for (const name of entries) {
-    if (!isLockfileName(name)) continue;
+  for (const file of await lockfilesIn(projectRoot)) {
     try {
-      const s = await stat(path.join(outputDir, name));
+      const s = await stat(file);
       if (s.isFile()) newest = Math.max(newest, s.mtimeMs);
     } catch {
       // ignore
