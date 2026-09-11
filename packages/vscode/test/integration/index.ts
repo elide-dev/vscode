@@ -4,7 +4,8 @@
  */
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import * as vscode from "vscode";
 
@@ -54,6 +55,8 @@ export async function run(): Promise<void> {
   assert.deepEqual(ws.modules.map((m: { name: string }) => m.name), ["ktjvm-sample.main", "ktjvm-sample.test"]);
   assert.ok(ws.libraries.some((l: { name: string }) => l.name.includes("kotlin-stdlib:")), "stdlib library present");
   assert.ok(ws.libraries.some((l: { name: string }) => l.name.includes("kotlin-test:")), "kotlin-test library present");
+  // Elide's own toolchain jars (kotlin-stdlib, kotlin-test, junit) ship without classifiers; `--with sources`
+  // covers the manifest's declared Maven packages, checked on guava below.
   assert.equal(ws.sdks.length, 1);
   assert.equal(ws.sdks[0].type, "JavaSDK");
   assert.equal(ws.modules[0].contentRoots[0].sourceRoots[0].path, "<WORKSPACE>/src/main");
@@ -103,10 +106,19 @@ export async function run(): Promise<void> {
   const manifest = path.join(sample, "elide.pkl");
   appendFileSync(manifest, `\ndependencies {\n    maven {\n        packages {\n            "com.google.guava:guava:33.4.0-jre"\n        }\n    }\n}\n`);
   log("edited elide.pkl; waiting for resync with guava");
-  await waitFor("guava in workspace.json", () => {
+  const withGuava = await waitFor("guava in workspace.json", () => {
     const w = JSON.parse(readFileSync(workspaceJson, "utf8"));
-    return w.libraries.some((l: { name: string }) => l.name.includes("com.google.guava:guava")) ? true : undefined;
+    return w.libraries.some((l: { name: string }) => l.name.includes("com.google.guava:guava")) ? w : undefined;
   }, 300_000, 2_000);
+  // `elide.install.classifiers` defaults to ["sources"], installed as `--slim --with sources`: the sources jar is
+  // attached for Go to Definition and the javadoc jar the CLI would fetch by default is not downloaded.
+  const guavaLib = withGuava.libraries.find((l: { name: string }) => l.name.includes("com.google.guava:guava"));
+  const guavaSources: string | undefined = guavaLib.roots.find((r: { type: string }) => r.type === "SOURCES")?.path;
+  assert.ok(guavaSources, "guava library has a SOURCES root");
+  const guavaSourcesJar = guavaSources.replace("<WORKSPACE>", sample);
+  assert.match(guavaSourcesJar, /guava-[^/]*-sources\.jar$/, "SOURCES root is the guava sources jar");
+  assert.ok(existsSync(guavaSourcesJar), `${guavaSourcesJar} fetched by elide install --with sources`);
+  assert.ok(!existsSync(guavaSourcesJar.replace("-sources.jar", "-javadoc.jar")), "javadoc jar not downloaded for the default classifier set");
   const guavaKt = path.join(sample, "src", "main", "sample", "Guava.kt");
   writeFileSync(guavaKt, `package sample\n\nimport com.google.common.collect.ImmutableList\n\nfun immutable(): ImmutableList<String> = ImmutableList.of("a")\n`);
   const guavaUri = vscode.Uri.file(guavaKt);
@@ -139,7 +151,7 @@ export async function run(): Promise<void> {
   // 4b. Target commands: the ids code lenses and menus invoke exist, run a task for a project root, and the
   //     manifest opener resolves the single project without an argument.
   const commands = await vscode.commands.getCommands(true);
-  for (const id of ["elide.run", "elide.debug", "elide.build", "elide.executeTask", "elide.openManifest"]) {
+  for (const id of ["elide.run", "elide.debug", "elide.build", "elide.executeTask", "elide.openManifest", "elide.showMenu"]) {
     assert.ok(commands.includes(id), `command ${id} registered`);
   }
   const runExit = await new Promise<number | undefined>((resolve) => {
@@ -155,6 +167,16 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand("elide.openManifest");
   assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, path.join(sample, "elide.pkl"), "elide.openManifest opened the manifest");
   log("target commands ok");
+
+  // 4c. The status-bar menu: opening it and accepting the first entry runs a sync, which rewrites workspace.json.
+  const beforeMenuSync = statSync(workspaceJson).mtimeMs;
+  void vscode.commands.executeCommand("elide.showMenu");
+  const quickPickShown = Promise.withResolvers<void>();
+  setTimeout(quickPickShown.resolve, 1_000);
+  await quickPickShown.promise;
+  await vscode.commands.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
+  await waitFor("menu sync rewrote workspace.json", () => (statSync(workspaceJson).mtimeMs > beforeMenuSync ? true : undefined), 180_000, 1_000);
+  log("status menu ok");
 
   // 5. Debug: launch `elide run --debugger`, attach, hit a breakpoint, stop.
   const mainDoc = await vscode.workspace.openTextDocument(mainKt);
@@ -213,6 +235,38 @@ export async function run(): Promise<void> {
   assert.equal(readFileSync(workspaceJson, "utf8"), before, "workspace.json untouched after failed sync");
   await vscode.workspace.getConfiguration("elide").update("home", undefined, vscode.ConfigurationTarget.Global);
   log("failed sync left workspace.json intact");
+
+  // 7. An Elide older than the extension's minimum warns the user, and the sync still completes against it.
+  const stubHome = path.join(tmpdir(), `elide-old-${process.pid}`);
+  mkdirSync(path.join(stubHome, "bin"), { recursive: true });
+  const realElide = execSync("command -v elide", { shell: "/bin/sh", encoding: "utf8" }).trim();
+  writeFileSync(
+    path.join(stubHome, "bin", "elide"),
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "1.4.0+stub"; exit 0; fi\nexec ${realElide} "$@"\n`,
+    { mode: 0o755 },
+  );
+  // The extension host shares this `vscode` module object with the extension, so the notification is only
+  // observable by standing in for the API while the sync runs.
+  const windowApi: { showWarningMessage: unknown } = vscode.window;
+  const warnings: string[] = [];
+  const realWarn = windowApi.showWarningMessage;
+  windowApi.showWarningMessage = (message: string) => {
+    warnings.push(message);
+    return Promise.resolve(undefined);
+  };
+  try {
+    await vscode.workspace.getConfiguration("elide").update("home", stubHome, vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand("elide.sync");
+    assert.ok(
+      warnings.some((w) => w.includes("1.4.0+stub") && w.includes("1.5.0")),
+      `outdated Elide warning shown, got ${JSON.stringify(warnings)}`,
+    );
+  } finally {
+    windowApi.showWarningMessage = realWarn;
+    await vscode.workspace.getConfiguration("elide").update("home", undefined, vscode.ConfigurationTarget.Global);
+    rmSync(stubHome, { recursive: true, force: true });
+  }
+  log("outdated Elide warning ok");
 
   log("ALL CHECKS PASSED");
 }
