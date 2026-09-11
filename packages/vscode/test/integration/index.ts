@@ -203,6 +203,38 @@ export async function run(): Promise<void> {
   await waitFor("elide diagnostics cleared", () => vscode.languages.getDiagnostics(brokenUri).every((d) => d.source !== "elide") || undefined, 60_000);
   log("problem matcher ok");
 
+  // 4e. Code lenses: Run/Debug above `fun main()` (the sample's `jvm.main` is this file's facade class, so the
+  //     entrypoint needs no argument) and on the manifest's `main = "sample.MainKt"` line.
+  const mainLenses = await waitFor(
+    "code lenses on Main.kt",
+    async () => {
+      const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>("vscode.executeCodeLensProvider", mainKt);
+      const elide = (lenses ?? []).filter((l) => l.command?.command.startsWith("elide."));
+      return elide.length > 0 ? elide : undefined;
+    },
+    60_000,
+    1_000,
+  );
+  const mainLine = (await vscode.workspace.openTextDocument(mainKt)).getText().split("\n").findIndex((l) => l.startsWith("fun main("));
+  for (const command of ["elide.run", "elide.debug"]) {
+    const lens = mainLenses.find((l) => l.command?.command === command);
+    assert.ok(lens, `${command} lens on Main.kt, got ${JSON.stringify(mainLenses.map((l) => l.command?.command))}`);
+    assert.equal(lens.range.start.line, mainLine, `${command} lens on the fun main() line`);
+    assert.deepEqual(lens.command?.arguments, [{ root: sample, args: [] }], `${command} lens targets the declared jvm.main`);
+  }
+  const manifestUri = vscode.Uri.file(manifest);
+  const manifestDoc = await vscode.workspace.openTextDocument(manifestUri);
+  const manifestLenses = (await vscode.commands.executeCommand<vscode.CodeLens[]>("vscode.executeCodeLensProvider", manifestUri)) ?? [];
+  const jvmMainLine = manifestDoc.getText().split("\n").findIndex((l) => l.includes('main = "sample.MainKt"'));
+  const manifestRun = manifestLenses.find((l) => l.command?.command === "elide.run" && l.range.start.line === jvmMainLine);
+  assert.ok(manifestRun, `elide.run lens on the jvm.main line, got ${JSON.stringify(manifestLenses.map((l) => [l.command?.command, l.range.start.line]))}`);
+  assert.deepEqual(manifestRun.command?.arguments, [{ root: sample, args: [] }]);
+  assert.ok(
+    manifestLenses.some((l) => l.command?.command === "elide.debug" && l.range.start.line === jvmMainLine),
+    "elide.debug lens on the jvm.main line",
+  );
+  log("code lenses ok");
+
   // 5. Debug: launch `elide run --debugger`, attach, hit a breakpoint, stop.
   const mainDoc = await vscode.workspace.openTextDocument(mainKt);
   const bpLine = mainDoc.getText().split("\n").findIndex((l) => l.includes("println(greeting"));
