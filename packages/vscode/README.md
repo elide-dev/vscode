@@ -74,7 +74,7 @@ relative to the workspace folder). Launch configurations use type `elide`:
 ```
 
 The extension runs `elide run --debugger`, waits for the JDWP listener, and attaches the configured debug adapter;
-ending the session stops the Elide process. `elide test` does not accept `--debugger`, so tests are run, not debugged.
+ending the session stops the Elide process. The JDWP agent always binds port 5005, so one debug session at a time.
 
 ## Links
 

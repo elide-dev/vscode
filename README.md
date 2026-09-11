@@ -96,7 +96,7 @@ Launch configuration type `elide`:
 The extension runs `elide run --debugger [entrypoint] [-- args]` in a terminal, waits for the JDWP agent's
 `Listening for transport dt_socket at address: <port>` line, then attaches the JetBrains JVM debugger
 (`elide.debug.adapter`: `intellij`) or Debugger for Java (`java`, requires `vscjava.vscode-java-debug`). Stopping the
-session terminates the Elide process. `elide test` does not accept `--debugger`, so tests are run, not debugged.
+session terminates the Elide process. The JDWP agent always binds port 5005, so one debug session at a time.
 
 ## Settings
 
