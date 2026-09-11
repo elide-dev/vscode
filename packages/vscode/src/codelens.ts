@@ -61,11 +61,15 @@ export class ElideCodeLensProvider implements vscode.CodeLensProvider, vscode.Di
   }
 }
 
-function runLenses(line: number, length: number, root: string, args: string[]): vscode.CodeLens[] {
+/**
+ * `qualifier` distinguishes the source-file pair from the Kotlin LSP's own Run/Debug lenses, which the JetBrains
+ * server contributes unconditionally on every JVM `main` (`LSJvmRunMainCodeLensProvider`) and no setting disables.
+ */
+function runLenses(line: number, length: number, root: string, args: string[], qualifier = ""): vscode.CodeLens[] {
   const range = new vscode.Range(line, 0, line, length);
   return [
-    new vscode.CodeLens(range, { title: "$(play) Run", command: "elide.run", arguments: [{ root, args }] }),
-    new vscode.CodeLens(range, { title: "$(debug-alt) Debug", command: "elide.debug", arguments: [{ root, args }] }),
+    new vscode.CodeLens(range, { title: `$(play) Run${qualifier}`, command: "elide.run", arguments: [{ root, args }] }),
+    new vscode.CodeLens(range, { title: `$(debug-alt) Debug${qualifier}`, command: "elide.debug", arguments: [{ root, args }] }),
   ];
 }
 
@@ -87,7 +91,7 @@ function sourceLenses(document: vscode.TextDocument, project: ElideProject): vsc
   const lenses: vscode.CodeLens[] = [];
   for (let i = 0; i < document.lineCount; i++) {
     const text = document.lineAt(i).text;
-    if (pattern.test(text)) lenses.push(...runLenses(i, text.length, project.root, args));
+    if (pattern.test(text)) lenses.push(...runLenses(i, text.length, project.root, args, " with Elide"));
   }
   return lenses;
 }

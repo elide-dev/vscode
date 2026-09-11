@@ -15,6 +15,10 @@ All notable changes to the Elide extension are documented here. The format follo
   Maven packages, so Go to Definition opens library sources. Changing the setting forces a re-install.
 - A warning when the resolved Elide CLI is older than 1.5.0, shown once per distribution; the release is logged to
   the output channel on every sync.
+- **Run/Debug code lenses**: `Run with Elide`/`Debug with Elide` above JVM `main` functions in a project's production
+  sources — the suffix keeps them apart from the Kotlin LSP's own, unsuppressible `Run`/`Debug` pair, which launches
+  through the IntelliJ debug adapter instead of `elide run` — and `Run`/`Debug` on `jvm.main`, `entrypoint` elements,
+  `scripts` entries (Run) and `artifacts` entries (Build) in `elide.pkl`. Toggle with `elide.codeLens.enabled`.
 - The `$elide` problem matcher on every `elide` task: kotlinc errors and warnings become diagnostics on the reported
   file and line, resolved by searching the workspace folder.
 - Commands `Elide: Run Entrypoint`, `Elide: Debug Entrypoint`, `Elide: Build Artifact`, `Elide: Run Task` and

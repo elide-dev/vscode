@@ -92,6 +92,22 @@ by `In file: <path>[:<line>[:<col>]]` — and resolves the path by searching the
 `.git` and `node_modules`), so relative paths reported from a project root in a subdirectory still resolve. `javac`
 diagnostics interleave `symbol:`/`location:` lines between the two and are shown in the terminal only.
 
+## Run and debug code lenses
+
+**Run with Elide** / **Debug with Elide** appear above every `fun main(` (Kotlin, including `@JvmStatic fun main` in
+an `object`) and `public static void main` in a production source root of a synced project, and **Run** / **Debug**
+in `elide.pkl` on `jvm.main`, on each `entrypoint` element, on each `scripts` entry (**Run script** — a script is a
+shell command line, so there is nothing to attach a debugger to) and on each `artifacts` entry (**Build**). A file
+whose main class is the manifest's `jvm.main` runs as `elide run`; any other file is passed to Elide as the
+entrypoint. Detection is regex-based — no Kotlin or Java parser is involved — so exotic declarations are missed; set
+`elide.codeLens.enabled` to `false` to turn the lenses off.
+
+The JetBrains Kotlin LSP contributes a second, unqualified **Run** / **Debug** pair on the same line from its own
+`LSJvmRunMainCodeLensProvider`. It is a server-side feature with no setting, no registry flag and no exported client
+API, so this extension cannot suppress it — hence the `with Elide` suffix. That pair launches the class through the
+IntelliJ debug adapter rather than `elide run`, so it does not build first and does not see the project's compiled
+output, which `workspace.json` does not carry.
+
 ## Debugging
 
 Launch configuration type `elide`:
@@ -115,6 +131,7 @@ session terminates the Elide process. The JDWP agent always binds port 5005, so 
 | `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` or the lockfile changes. |
 | `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json`. |
 | `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
+| `elide.codeLens.enabled` | `true` | Show the Run/Debug code lenses described above. |
 | `elide.debug.adapter` | `"intellij"` | `intellij` or `java`. |
 
 ## Repository layout

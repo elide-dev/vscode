@@ -216,9 +216,13 @@ export async function run(): Promise<void> {
     1_000,
   );
   const mainLine = (await vscode.workspace.openTextDocument(mainKt)).getText().split("\n").findIndex((l) => l.startsWith("fun main("));
-  for (const command of ["elide.run", "elide.debug"]) {
-    const lens = mainLenses.find((l) => l.command?.command === command);
-    assert.ok(lens, `${command} lens on Main.kt, got ${JSON.stringify(mainLenses.map((l) => l.command?.command))}`);
+  // Exactly one pair: the Kotlin LSP adds its own Run/Debug lenses on the same line, so ours carry the `with Elide`
+  // suffix and must not be emitted twice themselves.
+  for (const [command, title] of [["elide.run", "$(play) Run with Elide"], ["elide.debug", "$(debug-alt) Debug with Elide"]] as const) {
+    const matching = mainLenses.filter((l) => l.command?.command === command);
+    assert.equal(matching.length, 1, `one ${command} lens on Main.kt, got ${JSON.stringify(mainLenses.map((l) => [l.command?.command, l.command?.title]))}`);
+    const lens = matching[0]!;
+    assert.equal(lens.command?.title, title);
     assert.equal(lens.range.start.line, mainLine, `${command} lens on the fun main() line`);
     assert.deepEqual(lens.command?.arguments, [{ root: sample, args: [] }], `${command} lens targets the declared jvm.main`);
   }
