@@ -275,9 +275,15 @@ export class ElideCli {
     return parseClasspath(text, this.projectRoot);
   }
 
-  /** `elide install`, optionally fetching classifier jars (`--with sources`, `--with docs`) next to each jar. */
+  /**
+   * `elide install`. Omitting `with` keeps the CLI default, which downloads sources *and* javadoc for every declared
+   * Maven package. A `with` array pins the set exactly — `--slim` turns the default classifiers off and each entry is
+   * requested back with `--with` — so `[]` installs classes only and `["sources"]` skips the javadoc download.
+   * Elide's own toolchain jars (kotlin-stdlib, kotlin-test, JUnit) are published without classifiers either way.
+   */
   async install(opts: RunOptions & { with?: readonly string[] } = {}): Promise<void> {
-    await this.run(["install", ...(opts.with ?? []).flatMap((classifier) => ["--with", classifier])], opts);
+    const flags = opts.with ? ["--slim", ...opts.with.flatMap((classifier) => ["--with", classifier])] : [];
+    await this.run(["install", ...flags], opts);
   }
 
   /** `elide build --inspect` → the build targets of the project and the options they accept. */

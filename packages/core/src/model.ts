@@ -51,7 +51,10 @@ export interface BuildModelOptions {
   signal?: AbortSignal;
   /** Skip `elide install` even when the lockfile is stale. */
   skipInstall?: boolean;
-  /** Classifier jars to fetch alongside the dependencies (`sources`, `docs`). */
+  /**
+   * Exact classifier set for `elide install` (`sources`, `docs`). Omitted: the CLI default (sources and javadoc);
+   * `[]`: classes only.
+   */
   installWith?: readonly string[];
   /** Run `elide install` even when the lockfile is current, e.g. after the requested classifiers changed. */
   forceInstall?: boolean;
