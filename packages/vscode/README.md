@@ -11,7 +11,8 @@ Elide's build, run, test, and debug commands are available from the editor.
 ## Features
 
 - **Project sync.** Opening a folder with `elide.pkl` resolves the manifest, installs dependencies when the lockfile is
-  stale, and reads the compile classpath of every source set.
+  stale, and reads the compile classpath of every source set. Manifests nested inside another project (vendored
+  checkouts, samples) are separate builds and are not imported.
 - **Kotlin/Java code intelligence.** The project model is written as a `workspace.json` the Kotlin LSP imports —
   modules per source set, libraries with attached sources and javadoc, the selected JDK, and the manifest's Kotlin
   compiler options.

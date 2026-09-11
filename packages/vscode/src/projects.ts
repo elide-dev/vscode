@@ -9,6 +9,8 @@ import {
   ManifestParseError,
   WORKSPACE_JSON,
   buildProjectModel,
+  isNestedUnder,
+  outermostManifests,
   resolveElideDistribution,
   writeKotlinLspWorkspace,
   type ElideDistribution,
@@ -78,14 +80,33 @@ export class ElideWorkspace implements vscode.Disposable {
     return [...(this.folders.get(folder.uri.toString())?.projects.values() ?? [])];
   }
 
+  /** The tracked project rooted exactly at `root`; `undefined` for a directory whose manifest is nested and ignored. */
+  projectAt(root: string): ElideProject | undefined {
+    const abs = path.resolve(root);
+    for (const state of this.folders.values()) {
+      const project = state.projects.get(abs);
+      if (project) return project;
+    }
+    return undefined;
+  }
+
+  /**
+   * Find the projects of `folder`: every `elide.pkl` outside `.dev/` and `node_modules/`, minus the manifests nested
+   * inside another project's directory, which are separate builds this one does not include.
+   */
   async discover(folder: vscode.WorkspaceFolder): Promise<ElideProject[]> {
     const found = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, `**/${MANIFEST_NAME}`), DISCOVERY_EXCLUDE);
+    const manifests = outermostManifests(found.map((uri) => uri.fsPath));
     const state = this.folderState(folder);
     const seen = new Set<string>();
-    for (const uri of found) {
-      const root = path.dirname(uri.fsPath);
+    for (const manifestPath of manifests) {
+      const root = path.dirname(manifestPath);
       seen.add(root);
-      if (!state.projects.has(root)) state.projects.set(root, { root, manifestPath: uri.fsPath, folder });
+      if (!state.projects.has(root)) state.projects.set(root, { root, manifestPath, folder });
+    }
+    if (manifests.length < found.length) {
+      const kept = new Set(manifests);
+      for (const uri of found) if (!kept.has(uri.fsPath)) this.ui.log(`ignoring nested manifest: ${uri.fsPath}`);
     }
     for (const root of [...state.projects.keys()]) if (!seen.has(root)) state.projects.delete(root);
     this.changed.fire();
@@ -111,17 +132,30 @@ export class ElideWorkspace implements vscode.Disposable {
     return undefined;
   }
 
+  /**
+   * Track a manifest a watcher just reported. Returns `undefined` when the manifest sits inside an existing project
+   * and is therefore not imported; a manifest that encloses tracked projects takes their trees over.
+   */
   addProject(manifestUri: vscode.Uri): ElideProject | undefined {
     const located = this.locate(manifestUri);
     if (!located) return undefined;
     const state = this.folderState(located.folder);
     const root = path.dirname(located.fsPath);
-    let project = state.projects.get(root);
-    if (!project) {
-      project = { root, manifestPath: located.fsPath, folder: located.folder };
-      state.projects.set(root, project);
-      this.changed.fire();
+    const existing = state.projects.get(root);
+    if (existing) return existing;
+    const outer = [...state.projects.keys()].find((other) => isNestedUnder(root, other));
+    if (outer) {
+      this.ui.log(`ignoring nested manifest: ${located.fsPath} (inside ${outer})`);
+      return undefined;
     }
+    for (const inner of [...state.projects.keys()]) {
+      if (!isNestedUnder(inner, root)) continue;
+      state.projects.delete(inner);
+      this.ui.log(`project dropped: ${inner} is now nested inside ${root}`);
+    }
+    const project: ElideProject = { root, manifestPath: located.fsPath, folder: located.folder };
+    state.projects.set(root, project);
+    this.changed.fire();
     return project;
   }
 

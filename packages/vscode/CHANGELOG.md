@@ -6,6 +6,12 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ## [Unreleased]
 
+### Changed
+
+- Manifests nested inside another Elide project (vendored checkouts, samples, fixtures) are no longer imported as
+  projects: only the outermost `elide.pkl` of each directory tree is synced, and edits to nested manifests no longer
+  mark the folder out of date. Deleting an enclosing manifest promotes the manifests it was shadowing.
+
 ## [0.1.0] - 2026-09-06
 
 First release.
