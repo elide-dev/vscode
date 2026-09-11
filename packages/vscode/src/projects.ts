@@ -6,13 +6,16 @@ import {
   ElideNotFoundError,
   InvalidElideHomeError,
   MANIFEST_NAME,
+  MIN_ELIDE_VERSION,
   ManifestParseError,
   WORKSPACE_JSON,
   buildProjectModel,
   isNestedUnder,
+  isSupportedElideVersion,
   outermostManifests,
   resolveElideDistribution,
   writeKotlinLspWorkspace,
+  type BuildModelOptions,
   type ElideDistribution,
   type ProjectModel,
 } from "@elide/ide-core";
@@ -38,6 +41,8 @@ interface FolderState {
   rerun: boolean;
   /** Timestamp until which file-change events are attributed to the sync itself. */
   quietUntil: number;
+  /** Message of the last failed sync; cleared by the next successful one. */
+  lastError?: string;
 }
 
 export type SyncReason = "startup" | "manual" | "manifest-change" | "project-added" | "project-removed";
@@ -47,6 +52,11 @@ const CHANGE_GRACE_MS = 3_000;
 const JDK_SETTING = "jdkForSymbolResolution";
 /** Remembers the JDK path this extension wrote to user settings, so a value the user chose is never clobbered. */
 const JDK_STATE_KEY = "elide.intellij.jdkForSymbolResolution";
+const INSTALL_CLASSIFIERS_KEY = "elide.install.classifiers";
+const MIN_VERSION_DISPLAY = `${MIN_ELIDE_VERSION.major}.${MIN_ELIDE_VERSION.minor}.${MIN_ELIDE_VERSION.patch}`;
+const INSTALL_DOCS = "https://docs.elide.dev/installation";
+/** Distribution homes already reported as too old, so the warning is shown once per window. */
+const warnedVersions = new Set<string>();
 
 /** Tracks Elide projects per workspace folder and runs syncs against the CLI. */
 export class ElideWorkspace implements vscode.Disposable {
@@ -110,6 +120,7 @@ export class ElideWorkspace implements vscode.Disposable {
     }
     for (const root of [...state.projects.keys()]) if (!seen.has(root)) state.projects.delete(root);
     this.changed.fire();
+    this.updateProjectLabel();
     return [...state.projects.values()];
   }
 
@@ -192,6 +203,18 @@ export class ElideWorkspace implements vscode.Disposable {
     return this.folders.get(folder.uri.toString())?.stale ?? false;
   }
 
+  /** Message of the last failed sync of `folder`, if the latest one failed. */
+  lastError(folder: vscode.WorkspaceFolder): string | undefined {
+    return this.folders.get(folder.uri.toString())?.lastError;
+  }
+
+  /** Name the status bar shows beside "Elide": only meaningful when the window holds exactly one project. */
+  private updateProjectLabel(): void {
+    const projects = this.projects;
+    const only = projects.length === 1 ? projects[0] : undefined;
+    this.ui.setProjectLabel(only ? (only.model?.name ?? path.basename(only.root)) : undefined);
+  }
+
   /**
    * Whether file changes under `folder` are the sync's own doing: the CLI rewrites `.dev/elide.lock*.bin` while
    * resolving, so events during a sync and for a short grace period afterwards must not mark the folder stale.
@@ -233,18 +256,21 @@ export class ElideWorkspace implements vscode.Disposable {
         },
       );
       state.stale = false;
+      state.lastError = undefined;
       this.ui.setStatus("idle");
     } catch (e) {
       if (controller.signal.aborted && !state.rerun) {
         this.ui.log("sync cancelled");
         this.ui.setStatus(state.stale ? "stale" : "idle");
       } else if (!controller.signal.aborted) {
-        this.ui.setStatus("error", e instanceof Error ? e.message : String(e));
+        state.lastError = e instanceof Error ? e.message : String(e);
+        this.ui.setStatus("error", state.lastError);
         this.reportError(e);
       }
     } finally {
       state.syncing = undefined;
       state.quietUntil = Date.now() + CHANGE_GRACE_MS;
+      this.updateProjectLabel();
       this.changed.fire();
     }
     if (state.rerun) await this.syncFolder(folder, reason);
@@ -258,12 +284,13 @@ export class ElideWorkspace implements vscode.Disposable {
 
     const models: ProjectModel[] = [];
     const onLine = (line: string) => this.ui.log(`  ${line}`);
+    const classifiers = [...config.installClassifiers].sort();
     for (const project of state.projects.values()) {
       const rel = path.relative(folderPath, project.root) || ".";
       progress.report({ message: rel });
       const cli = new ElideCli(dist, project.root);
       const manifest = await cli.manifest({ onLine, signal });
-      const model = await buildProjectModel(cli, manifest, {
+      const options: BuildModelOptions = {
         onLine,
         signal,
         onProgress: (step) => {
@@ -271,12 +298,32 @@ export class ElideWorkspace implements vscode.Disposable {
           this.ui.log(`  [${rel}] ${step}`);
         },
         jdk: { override: config.jdkHome },
-      });
+      };
+      // The classifier set is applied by `elide install --slim --with …`, which the lockfile check cannot see:
+      // force an install whenever it differs from the set this project was last resolved with.
+      const key = `${INSTALL_CLASSIFIERS_KEY}:${project.root}`;
+      const requested = JSON.stringify(classifiers);
+      let model: ProjectModel;
+      try {
+        model = await buildProjectModel(cli, manifest, {
+          ...options,
+          installWith: classifiers,
+          forceInstall: this.state.get<string>(key) !== requested,
+        });
+      } catch (e) {
+        const rejectedClassifiers =
+          e instanceof ElideCommandFailedError && e.args[0] === "install" && e.args.some((a) => a === "--with" || a === "--slim");
+        if (!rejectedClassifiers) throw e;
+        this.ui.log(`  [${rel}] elide install rejected the classifier flags; retrying with the CLI defaults`);
+        model = await buildProjectModel(cli, manifest, { ...options, forceInstall: false });
+      }
+      await this.state.update(key, requested);
       for (const w of model.warnings) this.ui.log(`  [${rel}] warning: ${w}`);
       project.model = model;
       models.push(model);
     }
     if (signal.aborted) throw signal.reason;
+    this.warnOnOldElide(dist, models[0]?.elideVersion);
 
     if (config.writeWorkspaceJson && models.length > 0) {
       progress.report({ message: `writing ${WORKSPACE_JSON}` });
@@ -293,6 +340,25 @@ export class ElideWorkspace implements vscode.Disposable {
         },
       );
     }
+  }
+
+  /**
+   * Log the Elide release every sync and warn once per distribution when it predates {@link MIN_ELIDE_VERSION}:
+   * an older CLI lacks flags this extension relies on (`install --with`, `test --reporter=tap`, `build --inspect`).
+   */
+  private warnOnOldElide(dist: ElideDistribution, version: string | undefined): void {
+    if (!version) return;
+    this.ui.log(`elide ${version}`);
+    if (isSupportedElideVersion(version) || warnedVersions.has(dist.home)) return;
+    warnedVersions.add(dist.home);
+    void vscode.window
+      .showWarningMessage(
+        `Elide ${version} at ${dist.home} is older than ${MIN_VERSION_DISPLAY} required by this extension; some features may not work.`,
+        "Installation docs",
+      )
+      .then((pick) => {
+        if (pick) void vscode.env.openExternal(vscode.Uri.parse(INSTALL_DOCS));
+      });
   }
 
   /**
