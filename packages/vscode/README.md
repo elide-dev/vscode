@@ -19,6 +19,8 @@ Elide's build, run, test, and debug commands are available from the editor.
 - **Mixed-editor checkouts.** A repository can carry both an IntelliJ `.idea` directory and the generated
   `workspace.json`; each editor uses its own.
 - **Tasks.** `elide build`, `elide test`, `elide install`, and one run task per manifest entrypoint.
+- **Test Explorer.** JUnit tests of the project's test source roots in the **Testing** view, run and debugged through
+  `elide test --reporter=tap` with live results, failure messages and stack-trace locations.
 - **Debugging.** Launch `elide run --debugger` and attach with breakpoints in Kotlin and Java.
 
 ## Requirements

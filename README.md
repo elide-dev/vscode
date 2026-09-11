@@ -108,6 +108,25 @@ API, so this extension cannot suppress it — hence the `with Elide` suffix. Tha
 IntelliJ debug adapter rather than `elide run`, so it does not build first and does not see the project's compiled
 output, which `workspace.json` does not carry.
 
+## Test Explorer
+
+JUnit tests in the **test** source roots of a synced project appear in the **Testing** view, grouped project → class
+→ method, with nested classes nested. Discovery is static: the test sources of the project model are scanned for
+`@Test` (and `@ParameterizedTest`, `@RepeatedTest`, `@TestFactory`, `@TestTemplate`) declarations, so the tree is
+populated without compiling or running anything, and it follows edits — saved or not — through a file watcher and the
+open editor's buffer. Like the code lenses, the scan is regex-based, so exotic declarations are missed.
+
+A run executes `elide test --reporter=tap` in the project root, adding `-t <pattern>` whenever the selection is
+narrower than the whole project (the JVM engine full-matches that pattern against `pkg.Class#method`, with `$`
+separating nested classes). Results are reported as the TAP stream settles: a failure's `message` and `detail` block
+become the test's message, and the first stack frame naming the test's own file positions it in the editor. A label
+that matches no discovered item is added under the project item, so a result is never dropped; a run that reports no
+result at all (a pattern matching nothing, a compile error) marks the selected tests errored with the CLI's stderr.
+
+The **Debug** profile runs the same command with a bare `--debugger` and attaches `elide.debug.adapter` once the JDWP
+agent announces itself. That flag takes no address on `elide test`: the agent always binds 5005, so one debug run at
+a time.
+
 ## Debugging
 
 Launch configuration type `elide`:

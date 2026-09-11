@@ -19,6 +19,11 @@ All notable changes to the Elide extension are documented here. The format follo
   sources — the suffix keeps them apart from the Kotlin LSP's own, unsuppressible `Run`/`Debug` pair, which launches
   through the IntelliJ debug adapter instead of `elide run` — and `Run`/`Debug` on `jvm.main`, `entrypoint` elements,
   `scripts` entries (Run) and `artifacts` entries (Build) in `elide.pkl`. Toggle with `elide.codeLens.enabled`.
+- **Test Explorer** for JUnit tests in the project's test source roots: the tree is discovered by scanning the test
+  sources (no compilation), follows unsaved edits, and runs `elide test --reporter=tap` — the whole project, or
+  `-t <pattern>` for a narrower selection. Failures carry the assertion message, the stack trace, and a location
+  taken from the first frame in the test's own file. The Debug profile runs the same command under a JDWP agent and
+  attaches `elide.debug.adapter`.
 - The `$elide` problem matcher on every `elide` task: kotlinc errors and warnings become diagnostics on the reported
   file and line, resolved by searching the workspace folder.
 - Commands `Elide: Run Entrypoint`, `Elide: Debug Entrypoint`, `Elide: Build Artifact`, `Elide: Run Task` and
