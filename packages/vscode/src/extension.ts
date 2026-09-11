@@ -7,14 +7,22 @@ import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
 import { ElideUi } from "./output.js";
 import { ElideWorkspace, type ElideProject } from "./projects.js";
 import { ELIDE_TASK_TYPE, ElideTaskProvider, entrypointArgs, entrypointLabel, executeElideTask, type ElideTaskCommand } from "./tasks.js";
+import { ElideTestController, type ElideTestApi } from "./testing.js";
+
+/** What `activate` resolves to; consumed only by the extension-host integration test. */
+export interface ElideExtensionApi {
+  tests: ElideTestApi;
+}
 
 const DEBOUNCE_MS = 1_000;
 
-export async function activate(context: vscode.ExtensionContext): Promise<void> {
+export async function activate(context: vscode.ExtensionContext): Promise<ElideExtensionApi> {
   const ui = new ElideUi();
   const workspace = new ElideWorkspace(ui, context.globalState);
   context.subscriptions.push(ui, workspace);
 
+  const debugConfigurations = new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions);
+  const tests = new ElideTestController(workspace, ui, debugConfigurations.sessions);
   const codeLenses = new ElideCodeLensProvider(workspace);
   context.subscriptions.push(
     codeLenses,
@@ -30,7 +38,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, target)),
     vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
     vscode.tasks.registerTaskProvider(ELIDE_TASK_TYPE, new ElideTaskProvider(workspace)),
-    vscode.debug.registerDebugConfigurationProvider(ELIDE_DEBUG_TYPE, new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions)),
+    vscode.debug.registerDebugConfigurationProvider(ELIDE_DEBUG_TYPE, debugConfigurations),
+    tests,
   );
 
   registerWatchers(context, workspace, ui);
@@ -47,6 +56,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (readConfig().syncOnStartup) void workspace.syncAll("startup");
     else workspace.markStaleAll();
   }
+  return { tests };
 }
 
 export function deactivate(): void {}
