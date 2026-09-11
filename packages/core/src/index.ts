@@ -19,6 +19,11 @@ export {
   type RunOptions,
   type RunResult,
 } from "./elide.js";
+export * from "./buildTasks.js";
+export * from "./init.js";
+export * from "./jvmTests.js";
+export * from "./tap.js";
+export * from "./version.js";
 export * from "./manifest.js";
 export * from "./sourceRoots.js";
 export * from "./libraries.js";
