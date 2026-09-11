@@ -288,7 +288,7 @@ export class ElideWorkspace implements vscode.Disposable {
     for (const project of state.projects.values()) {
       const rel = path.relative(folderPath, project.root) || ".";
       progress.report({ message: rel });
-      const cli = new ElideCli(dist, project.root);
+      const cli = new ElideCli(dist, project.root, config.flags);
       const manifest = await cli.manifest({ onLine, signal });
       const options: BuildModelOptions = {
         onLine,

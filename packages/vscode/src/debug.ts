@@ -1,8 +1,19 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
-import { LineSplitter, killProcessTree, resolveElideDistribution } from "@elide/ide-core";
+import {
+  LineSplitter,
+  elideInvocationArgs,
+  elideInvocationOptionsFrom,
+  elideStringArrayFrom,
+  killProcessTree,
+  mergeElideInvocationOptions,
+  resolveElideDistribution,
+  type ElideCommand,
+  type ElideInvocationOptions,
+  type ElideOptionValue,
+} from "@elide/ide-core";
 import * as vscode from "vscode";
-import { readConfig, type ElideConfig } from "./config.js";
+import { configuredInvocation, readConfig, type ElideConfig } from "./config.js";
 import { jetBrainsDebuggerType } from "./jetbrains.js";
 import type { ElideUi } from "./output.js";
 import type { ElideWorkspace } from "./projects.js";
@@ -11,10 +22,36 @@ export const ELIDE_DEBUG_TYPE = "elide";
 const JAVA_DEBUG_EXTENSION = "vscjava.vscode-java-debug";
 /** Banner printed by the JDWP agent (`server=y`) once it is ready for a client. */
 const JDWP_BANNER = /Listening for transport dt_socket at address:\s*(\d+)/;
+/**
+ * Subcommands with a JVM to attach to, and the session name each gets when the configuration leaves `name` empty.
+ * `install` downloads dependencies: there is nothing to debug.
+ */
+const DEBUG_COMMANDS = {
+  run: "Elide: Run (debug)",
+  test: "Elide: Test (debug)",
+  build: "Elide: Build (debug)",
+} as const satisfies Partial<Record<ElideCommand, string>>;
+
+type DebugCommand = keyof typeof DEBUG_COMMANDS;
 
 interface ElideLaunchConfig extends vscode.DebugConfiguration {
+  /** Subcommand to debug: `run` (the default), `test` or `build`. */
+  command?: ElideCommand;
+  /**
+   * File, manifest script or entrypoint name `elide run` runs, as its first positional argument; empty lets Elide
+   * resolve `entrypoint`/`jvm.main`. Only `run` and `test` take it — `build` takes `targets`.
+   */
   entrypoint?: string;
+  /** Build targets to debug (`run`, `jvm-test`, … — see `elide build --inspect`); `build` only. */
+  targets?: string[];
+  /** Arguments passed to the debugged program, after `--`. */
   args?: string[];
+  /** Further positional arguments of the Elide command itself: test paths, for instance. */
+  elideArgs?: string[];
+  /** `-f NAME[=VALUE]` build flags. */
+  flags?: string[];
+  /** CLI options for the subcommand, e.g. `{ "no-cache": true, "test-name-pattern": "MyTest" }`. */
+  options?: Record<string, ElideOptionValue>;
   project?: string;
   env?: Record<string, string>;
 }
@@ -23,9 +60,9 @@ interface ElideLaunchConfig extends vscode.DebugConfiguration {
 export interface JdwpLaunch {
   /** Path to the Elide binary. */
   dist: string;
-  argv: string[];
+  argv: readonly string[];
   cwd: string;
-  env?: Record<string, string>;
+  env?: Readonly<Record<string, string>>;
   /** Terminal and attach-session name. */
   name: string;
   folder: vscode.WorkspaceFolder;
@@ -173,8 +210,11 @@ async function attach(port: number, launch: JdwpLaunch, child: ChildProcess, ui:
 }
 
 /**
- * `elide` launch configurations run `elide run --debugger=… ` in a terminal, wait for the JDWP banner, and start an
- * attach session with the configured JVM debugger. The provider never lets a session of type `elide` start itself.
+ * `elide` launch configurations run `elide <run|test|build> --debugger …` in a terminal, wait for the JDWP banner,
+ * and start an attach session with the configured JVM debugger. Build flags, CLI options and the program's own
+ * arguments come from the configuration, layered over `elide.flags` and `elide.<command>.options`. On `build` the
+ * debugger flag is an option of the target task, so such a configuration names a target (`run`, `jvm-test`, …).
+ * The provider never lets a session of type `elide` start itself.
  */
 export class ElideDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
   /** Attach sessions and the Elide process each of them owns; shared with every `launchWithJdwp` caller. */
@@ -225,11 +265,66 @@ export class ElideDebugConfigurationProvider implements vscode.DebugConfiguratio
       return undefined;
     }
 
-    const argv = ["run", "--debugger", ...(launch.entrypoint ? [launch.entrypoint] : []), ...(launch.args?.length ? ["--", ...launch.args] : [])];
-    const name = typeof launch.name === "string" && launch.name ? launch.name : "Elide: Run (debug)";
+    const requested = launch.command ?? "run";
+    if (!(requested in DEBUG_COMMANDS)) {
+      void vscode.window.showErrorMessage(`Elide: \`${requested}\` has no JVM to attach to; debug \`run\`, \`test\` or \`build\`.`);
+      return undefined;
+    }
+    const command = requested as DebugCommand;
+    const misplaced =
+      command === "build"
+        ? launch.entrypoint && "`entrypoint` is not a build argument; list the build targets in `targets`."
+        : launch.targets?.length && "`targets` is a `build` field; name what `run` executes in `entrypoint`.";
+    if (misplaced) {
+      void vscode.window.showErrorMessage(`Elide: ${misplaced}`);
+      return undefined;
+    }
+    const invocation = debugInvocation(settings, command, launch);
+    // `--debugger` on `build` belongs to a target task (`run`, `jvm-test`, …), not to the build: with no target the
+    // build assembles nothing, no agent starts, and the session would wait for a banner that never comes.
+    if (command === "build" && !invocation.args?.length) {
+      void vscode.window.showErrorMessage(
+        "Elide: a `build` launch configuration needs at least one target in `targets` — `elide build --inspect` lists them (for instance `run` or `jvm-test`).",
+      );
+      return undefined;
+    }
+    const argv = elideInvocationArgs(command, invocation);
+    const name = typeof launch.name === "string" && launch.name ? launch.name : DEBUG_COMMANDS[command];
     this.ui.log(`debug: ${dist.bin} ${argv.join(" ")} (cwd ${projectRoot})`);
-    launchWithJdwp({ dist: dist.bin, argv, cwd: projectRoot, env: launch.env, name, folder: targetFolder, attachType }, this.ui, this.sessions);
+    launchWithJdwp(
+      { dist: dist.bin, argv, cwd: projectRoot, env: invocation.env, name, folder: targetFolder, attachType },
+      this.ui,
+      this.sessions,
+    );
     // The real session is the attach started once the JVM is listening; never start a session of type `elide`.
     return undefined;
   }
+}
+
+/**
+ * The invocation a launch configuration describes: the configured defaults for its subcommand, then what the
+ * subcommand acts on (the `run` entrypoint, or the `build` targets), then the configuration's own fields, each key
+ * overriding the layer below it.
+ *
+ * `--debugger` is what makes the run debuggable, so it is always present: a configured value (`dap`, `cdp`, an
+ * address) is kept, and anything else falls back to the bare flag the JDWP agent needs.
+ */
+function debugInvocation(settings: ElideConfig, command: ElideCommand, launch: ElideLaunchConfig): ElideInvocationOptions {
+  const subject = command === "build" ? elideStringArrayFrom(launch.targets) : launch.entrypoint ? [launch.entrypoint] : [];
+  const requested = mergeElideInvocationOptions(
+    configuredInvocation(settings, command),
+    { args: subject },
+    elideInvocationOptionsFrom({
+      args: launch.elideArgs,
+      flags: launch.flags,
+      options: launch.options,
+      programArgs: launch.args,
+      env: launch.env,
+    }),
+  );
+  const configured = requested.options?.debugger;
+  return {
+    ...requested,
+    options: { ...requested.options, debugger: configured === undefined || configured === false ? true : configured },
+  };
 }

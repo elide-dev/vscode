@@ -115,6 +115,58 @@
           "uniqueItems": true,
           "markdownDescription": "Classifier jars installed for the manifest's declared Maven packages. `sources` lets Go to Definition open library code in the Kotlin LSP; `docs` adds javadoc jars; an empty list installs classes only. Elide's own Kotlin and JUnit jars are published without classifiers."
         },
+        "elide.flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "`-f NAME[=VALUE]` build flags passed to every Elide invocation, project sync included; the manifest reads them as `build.flags`. Changing them marks the resolved project model stale."
+        },
+        "elide.build.options": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": ["string", "number", "boolean", "array"],
+            "items": {
+              "type": ["string", "number"]
+            }
+          },
+          "markdownDescription": "Default options for `elide build`, keyed by option name: `{ \"no-cache\": true, \"offline\": true }` runs `elide build --no-cache --offline`. `true` emits the bare flag, `false` omits it, an array repeats the option, anything else becomes `--name=value`. Tasks and launch configurations override individual keys."
+        },
+        "elide.run.options": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": ["string", "number", "boolean", "array"],
+            "items": {
+              "type": ["string", "number"]
+            }
+          },
+          "markdownDescription": "Default options for `elide run`, keyed by option name: `{ \"coverage\": true, \"timeout\": \"30s\" }` runs `elide run --coverage --timeout=30s`."
+        },
+        "elide.test.options": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": ["string", "number", "boolean", "array"],
+            "items": {
+              "type": ["string", "number"]
+            }
+          },
+          "markdownDescription": "Default options for `elide test`, keyed by option name: `{ \"bail\": 3, \"concurrency\": 4 }` runs `elide test --bail=3 --concurrency=4`. Test Explorer runs use them too, except for `reporter`, which stays `tap` because the extension parses that stream."
+        },
+        "elide.install.options": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": ["string", "number", "boolean", "array"],
+            "items": {
+              "type": ["string", "number"]
+            }
+          },
+          "markdownDescription": "Default options for the `elide install` task, keyed by option name. Project sync installs dependencies itself, driven by `elide.install.classifiers`."
+        },
         "elide.codeLens.enabled": {
           "type": "boolean",
           "default": true,
@@ -260,6 +312,16 @@
           "group": "inline@1"
         },
         {
+          "command": "elide.executeTask",
+          "when": "view == elide.projects && viewItem == buildTargetDebuggable",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.debug",
+          "when": "view == elide.projects && viewItem == buildTargetDebuggable",
+          "group": "inline@2"
+        },
+        {
           "command": "elide.sync",
           "when": "view == elide.projects && viewItem == project",
           "group": "inline@1"
@@ -344,7 +406,38 @@
             "items": {
               "type": "string"
             },
-            "description": "Additional arguments passed after the command."
+            "description": "Positional arguments after the command: build targets, test paths, or the entrypoint `elide run` runs."
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "markdownDescription": "`-f NAME[=VALUE]` build flags, added to those in `elide.flags`."
+          },
+          "options": {
+            "type": "object",
+            "additionalProperties": {
+              "type": ["string", "number", "boolean", "array"],
+              "items": {
+                "type": ["string", "number"]
+              }
+            },
+            "markdownDescription": "CLI options for the command: `{ \"no-cache\": true, \"bail\": 3 }` becomes `--no-cache --bail=3`. `true` emits the bare flag, `false` omits it (cancelling a default from `elide.<command>.options`), an array repeats the option."
+          },
+          "programArgs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "markdownDescription": "Arguments passed after `--`: the application's own arguments for `run`, subprocess passthrough for `build` and `test`."
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Extra environment variables for the Elide process."
           },
           "project": {
             "type": "string",
@@ -369,16 +462,53 @@
         "configurationAttributes": {
           "launch": {
             "properties": {
+              "command": {
+                "type": "string",
+                "enum": ["run", "test", "build"],
+                "default": "run",
+                "markdownDescription": "Elide command to debug: `run` (the default), `test`, or `build` for one or more build targets."
+              },
               "entrypoint": {
                 "type": "string",
-                "description": "Entrypoint file, manifest script name, or empty to let Elide resolve `entrypoint`/`jvm.main`."
+                "markdownDescription": "File, manifest script or entrypoint name `elide run` runs; empty lets Elide resolve `entrypoint`/`jvm.main`. Not used by `build`, which takes `targets`."
+              },
+              "targets": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "markdownDescription": "Build targets to debug, for `command: \"build\"`: `run`, `jvm-test`, … — `elide build --inspect` lists them."
               },
               "args": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Arguments passed to the program after `--`."
+                "description": "Arguments passed to the debugged program after `--`."
+              },
+              "elideArgs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Further positional arguments of the Elide command itself: test paths, for instance."
+              },
+              "flags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "markdownDescription": "`-f NAME[=VALUE]` build flags, added to those in `elide.flags`."
+              },
+              "options": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": ["string", "number", "boolean", "array"],
+                  "items": {
+                    "type": ["string", "number"]
+                  }
+                },
+                "markdownDescription": "CLI options for the command: `{ \"test-name-pattern\": \"MyTest\", \"no-cache\": true }` becomes `--test-name-pattern=MyTest --no-cache`. `--debugger` is always added; set `debugger` here to choose its value."
               },
               "project": {
                 "type": "string",
@@ -408,7 +538,33 @@
             "body": {
               "type": "elide",
               "request": "launch",
-              "name": "Elide: Run (debug)"
+              "name": "Elide: Run (debug)",
+              "args": []
+            }
+          },
+          {
+            "label": "Elide: Test (debug)",
+            "description": "Run `elide test --debugger` and attach.",
+            "body": {
+              "type": "elide",
+              "request": "launch",
+              "name": "Elide: Test (debug)",
+              "command": "test",
+              "options": {
+                "test-name-pattern": "${1:pattern}"
+              }
+            }
+          },
+          {
+            "label": "Elide: Build target (debug)",
+            "description": "Run build targets with `elide build <targets> --debugger` and attach.",
+            "body": {
+              "type": "elide",
+              "request": "launch",
+              "name": "Elide: Build (debug)",
+              "command": "build",
+              "targets": ["${1|run,jvm-test|}"],
+              "options": {}
             }
           }
         ]

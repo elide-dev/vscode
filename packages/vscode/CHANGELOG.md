@@ -21,9 +21,9 @@ All notable changes to the Elide extension are documented here. The format follo
   `scripts` entries (Run) and `artifacts` entries (Build) in `elide.pkl`. Toggle with `elide.codeLens.enabled`.
 - **Test Explorer** for JUnit tests in the project's test source roots: the tree is discovered by scanning the test
   sources (no compilation), follows unsaved edits, and runs `elide test --reporter=tap` — the whole project, or
-  `-t <pattern>` for a narrower selection. Failures carry the assertion message, the stack trace, and a location
-  taken from the first frame in the test's own file. The Debug profile runs the same command under a JDWP agent and
-  attaches `elide.debug.adapter`.
+  `--test-name-pattern=<pattern>` for a narrower selection. Failures carry the assertion message, the stack trace,
+  and a location taken from the first frame in the test's own file. The Debug profile runs the same command under a
+  JDWP agent and attaches `elide.debug.adapter`.
 - **Elide sidebar**: an activity-bar view listing every project with its entrypoints, tasks, build targets
   (`elide build --inspect`, loaded on first expansion), source sets and dependencies. Rows carry inline Run, Debug,
   Build, Sync and Open-manifest actions; a dependency can be revealed in the OS file manager. With no project in the
@@ -38,6 +38,19 @@ All notable changes to the Elide extension are documented here. The format follo
   palette, the Elide view's title bar, the empty-workspace welcome view and the Elide menu.
 - A **Get started with Elide** walkthrough: install the CLI, open or create a project, sync with the Kotlin LSP,
   run and debug, run tests.
+- **Full invocation control** for tasks and launch configurations: `flags` (`-f NAME[=VALUE]` build flags),
+  `options` (any CLI option of the subcommand, as a name/value object), `programArgs` (arguments after `--`, for the
+  application `elide run` starts) and `env`, with `args` as the subcommand's positional arguments. Launch
+  configurations additionally take `command` (`run`, `test` or `build`) and `elideArgs` for positional arguments.
+- **Debugging build targets**: a launch configuration with `command: "build"` runs `elide build <targets> --debugger`
+  and attaches, with the targets listed in `targets` and their task options in `options`. The sidebar's **Build
+  targets** rows gained a Debug action for every target that declares `--debugger`, and a build configuration with
+  no target is rejected with a message instead of waiting for an agent that never starts.
+- Workspace defaults for those invocations: `elide.flags` (applied to every invocation, project sync included, so
+  the resolved model matches the flags the build sees) and `elide.build.options`, `elide.run.options`,
+  `elide.test.options`, `elide.install.options`. A task or launch configuration overrides them per key, and a `false`
+  value cancels an inherited option. Test Explorer runs honour `elide.test.options` except for `reporter`, which
+  stays `tap`.
 
 ### Changed
 

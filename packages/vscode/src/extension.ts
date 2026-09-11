@@ -1,5 +1,5 @@
 import path from "node:path";
-import { MANIFEST_NAME, WORKSPACE_JSON, isLockfileName } from "@elide/ide-core";
+import { MANIFEST_NAME, WORKSPACE_JSON, isLockfileName, type ElideCommand } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { ElideCodeLensProvider } from "./codelens.js";
 import { readConfig } from "./config.js";
@@ -8,7 +8,7 @@ import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./ex
 import { newProject } from "./newProject.js";
 import { ElideUi } from "./output.js";
 import { ElideWorkspace, type ElideProject } from "./projects.js";
-import { ELIDE_TASK_TYPE, ElideTaskProvider, entrypointArgs, entrypointLabel, executeElideTask, type ElideTaskCommand } from "./tasks.js";
+import { ELIDE_TASK_TYPE, ElideTaskProvider, entrypointArgs, entrypointLabel, executeElideTask } from "./tasks.js";
 import { ElideTestController, type ElideTestApi } from "./testing.js";
 
 /** What `activate` resolves to; consumed only by the extension-host integration test. */
@@ -129,6 +129,12 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
   context.subscriptions.push(
     manifests,
     lockfiles,
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      // Build flags reach the manifest as `build.flags`, so a model resolved without them describes another build.
+      if (!e.affectsConfiguration("elide.flags")) return;
+      ui.log("elide.flags changed: sync to re-resolve the project model");
+      workspace.markStaleAll();
+    }),
     vscode.workspace.onDidChangeWorkspaceFolders(async (e) => {
       for (const removed of e.removed) workspace.removeFolder(removed);
       for (const added of e.added) {
@@ -223,11 +229,11 @@ async function showMenu(workspace: ElideWorkspace): Promise<void> {
 }
 
 async function runTaskCommand(workspace: ElideWorkspace): Promise<void> {
-  const items: (vscode.QuickPickItem & { command: ElideTaskCommand; args: string[]; project: ElideProject })[] = [];
+  const items: (vscode.QuickPickItem & { command: ElideCommand; args: string[]; project: ElideProject })[] = [];
   for (const project of workspace.projects) {
     const rel = path.relative(project.folder.uri.fsPath, project.root);
     const desc = rel ? rel : project.folder.name;
-    const add = (command: ElideTaskCommand, args: string[] = [], label = [command, ...args].join(" ")) =>
+    const add = (command: ElideCommand, args: string[] = [], label = [command, ...args].join(" ")) =>
       items.push({ label: `elide ${label}`, description: desc, command, args, project });
     add("build");
     add("test");
@@ -240,17 +246,17 @@ async function runTaskCommand(workspace: ElideWorkspace): Promise<void> {
   }
   const pick = await vscode.window.showQuickPick(items, { placeHolder: "Elide command to run" });
   if (!pick) return;
-  await executeElideTask(workspace, pick.project, pick.command, pick.args);
+  await executeElideTask(workspace, pick.project, pick.command, { args: pick.args });
 }
 
 /** What a `elide.run`/`elide.debug`/`elide.build`/`elide.executeTask` invocation points at. */
 interface CommandTarget {
   root: string;
   args: string[];
-  command?: ElideTaskCommand;
+  command?: ElideCommand;
 }
 
-const TASK_COMMANDS: Record<string, ElideTaskCommand> = { build: "build", run: "run", test: "test", install: "install" };
+const TASK_COMMANDS: Record<string, ElideCommand> = { build: "build", run: "run", test: "test", install: "install" };
 
 /**
  * Normalize a command argument: code lenses and menu items pass their own objects, but all of them carry the
@@ -270,31 +276,39 @@ function projectForTarget(workspace: ElideWorkspace, target: CommandTarget): Eli
   return project;
 }
 
-async function runEntrypoint(workspace: ElideWorkspace, value: unknown, command: ElideTaskCommand): Promise<void> {
+async function runEntrypoint(workspace: ElideWorkspace, value: unknown, command: ElideCommand): Promise<void> {
   const target = toTarget(value);
   if (!target) return;
   const project = projectForTarget(workspace, target);
-  if (project) await executeElideTask(workspace, project, command, target.args);
+  if (project) await executeElideTask(workspace, project, command, { args: target.args });
 }
 
 async function runNamedTask(workspace: ElideWorkspace, value: unknown): Promise<void> {
   const target = toTarget(value);
   if (!target?.command) return;
   const project = projectForTarget(workspace, target);
-  if (project) await executeElideTask(workspace, project, target.command, target.args);
+  if (project) await executeElideTask(workspace, project, target.command, { args: target.args });
 }
 
+/**
+ * Start a debug session for a target. `run` (the default) debugs an entrypoint, `build` debugs the named build
+ * targets, `test` debugs the whole test run.
+ */
 async function debugEntrypoint(workspace: ElideWorkspace, value: unknown): Promise<void> {
   const target = toTarget(value);
   if (!target) return;
   const project = projectForTarget(workspace, target);
   if (!project) return;
   const rel = path.relative(project.folder.uri.fsPath, project.root);
+  const command = target.command === "build" || target.command === "test" ? target.command : "run";
+  // Build targets name themselves in the session, since a project has several; `run` and `test` have one each.
+  const label = { run: "Run", test: "Test", build: `Build ${target.args.join(" ")}`.trim() }[command];
   await vscode.debug.startDebugging(project.folder, {
     type: ELIDE_DEBUG_TYPE,
     request: "launch",
-    name: "Elide: Run (debug)",
-    ...(target.args[0] ? { entrypoint: target.args[0] } : {}),
+    name: `Elide: ${label} (debug)`,
+    ...(command === "run" ? {} : { command }),
+    ...(command === "build" ? { targets: target.args } : target.args[0] ? { entrypoint: target.args[0] } : {}),
     ...(rel ? { project: rel } : {}),
   });
 }

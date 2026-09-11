@@ -4,8 +4,10 @@ import {
   ElideCli,
   ElideCommandFailedError,
   TapParser,
+  elideInvocationArgs,
   isPathUnder,
   jvmTestNamePattern,
+  mergeElideInvocationOptions,
   normalizePath,
   parseTapLabel,
   resolveElideDistribution,
@@ -15,7 +17,7 @@ import {
   type TapEvent,
 } from "@elide/ide-core";
 import * as vscode from "vscode";
-import { readConfig } from "./config.js";
+import { configuredInvocation, readConfig } from "./config.js";
 import { launchWithJdwp, resolveAttachType } from "./debug.js";
 import type { ElideUi } from "./output.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
@@ -282,7 +284,11 @@ export class ElideTestController implements vscode.Disposable {
     }
 
     const pattern = group.wholeProject ? undefined : jvmTestNamePattern(group.targets);
-    const argv = ["test", "--reporter=tap", ...(pattern ? ["-t", pattern] : [])];
+    // `elide.flags` and `elide.test.options` apply here too, except for the reporter: this run parses TAP.
+    const invocation = mergeElideInvocationOptions(configuredInvocation(settings, "test"), {
+      options: { ...(pattern ? { "test-name-pattern": pattern } : {}), reporter: "tap" },
+    });
+    const argv = elideInvocationArgs("test", invocation);
     this.ui.log(`test: ${dist.bin} ${argv.join(" ")} (cwd ${project.root})`);
 
     const index = classIndex(projectItem);
@@ -362,8 +368,18 @@ export class ElideTestController implements vscode.Disposable {
         return;
       }
       // Bare `--debugger`: on `test` the flag takes no address and JDWP binds 5005, so one debug run at a time.
+      const debugArgv = elideInvocationArgs("test", mergeElideInvocationOptions(invocation, { options: { debugger: true } }));
       const session = launchWithJdwp(
-        { dist: dist.bin, argv: [...argv, "--debugger"], cwd: project.root, name: "Elide: Test (debug)", folder: project.folder, attachType, onLine },
+        {
+          dist: dist.bin,
+          argv: debugArgv,
+          cwd: project.root,
+          ...(invocation.env ? { env: invocation.env } : {}),
+          name: "Elide: Test (debug)",
+          folder: project.folder,
+          attachType,
+          onLine,
+        },
         this.ui,
         this.sessions,
       );
@@ -378,7 +394,7 @@ export class ElideTestController implements vscode.Disposable {
       const abort = new AbortController();
       const cancel = token.onCancellationRequested(() => abort.abort(new Error("test run cancelled")));
       try {
-        await new ElideCli(dist, project.root).run(argv, { onLine, signal: abort.signal });
+        await new ElideCli(dist, project.root).run(argv, { onLine, signal: abort.signal, ...(invocation.env ? { env: { ...invocation.env } } : {}) });
       } catch (e) {
         if (!abort.signal.aborted) {
           failure =

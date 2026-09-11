@@ -21,6 +21,7 @@ export {
   type RunResult,
 } from "./elide.js";
 export * from "./buildTasks.js";
+export * from "./invocation.js";
 export * from "./init.js";
 export * from "./jvmTests.js";
 export * from "./tap.js";

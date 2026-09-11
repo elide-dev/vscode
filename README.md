@@ -82,9 +82,34 @@ anything you set by hand stays.
 
 ## Tasks
 
-Task type `elide` with `command` (`build` \| `run` \| `test` \| `install`), optional `args`, and `project` (root relative
-to the workspace folder). Provided tasks: `elide: build`, `elide: test`, `elide: install`, and one `elide: run …` per
+Task type `elide` with `command` (`build` \| `run` \| `test` \| `install`) and `project` (root relative to the
+workspace folder). Provided tasks: `elide: build`, `elide: test`, `elide: install`, and one `elide: run …` per
 manifest entrypoint (`entrypoint`, `jvm.main`, `scripts`).
+
+The rest of the definition is the invocation:
+
+| Field | Becomes | Example |
+| --- | --- | --- |
+| `args` | positional arguments of the subcommand | `["compile"]` → `elide build compile` |
+| `flags` | `-f NAME[=VALUE]` build flags, read by the manifest as `build.flags` | `["release"]` → `-f release` |
+| `options` | CLI options, keyed by name | `{ "no-cache": true, bail: 3 }` → `--no-cache --bail=3` |
+| `programArgs` | arguments after `--` | `["--port", "8080"]` → `-- --port 8080` |
+| `env` | environment variables for the Elide process | `{ "CI": "true" }` |
+
+An option value of `true` emits the bare flag, `false` omits it, an array repeats the option (`{ limit: ["workers=4"] }`
+→ `--limit=workers=4`), and anything else becomes `--name=value`; a one-character name gets a single dash. Workspace
+settings supply the defaults (`elide.flags`, `elide.build.options`, `elide.run.options`, `elide.test.options`,
+`elide.install.options`) and each key of a task definition overrides them — `false` cancels an inherited option.
+
+```jsonc
+{
+  "type": "elide",
+  "command": "test",
+  "args": ["src/api"],
+  "options": { "bail": 3, "test-timeout": 5000 },
+  "programArgs": ["--filter", "slow"]
+}
+```
 
 Every task reports through the `$elide` problem matcher, so compiler errors and warnings land in **Problems** and on
 the offending line. It matches the two-line kotlinc shape Elide prints — `[212ms] error: kotlinc: <message>` followed
@@ -116,12 +141,14 @@ JUnit tests in the **test** source roots of a synced project appear in the **Tes
 populated without compiling or running anything, and it follows edits — saved or not — through a file watcher and the
 open editor's buffer. Like the code lenses, the scan is regex-based, so exotic declarations are missed.
 
-A run executes `elide test --reporter=tap` in the project root, adding `-t <pattern>` whenever the selection is
-narrower than the whole project (the JVM engine full-matches that pattern against `pkg.Class#method`, with `$`
-separating nested classes). Results are reported as the TAP stream settles: a failure's `message` and `detail` block
-become the test's message, and the first stack frame naming the test's own file positions it in the editor. A label
-that matches no discovered item is added under the project item, so a result is never dropped; a run that reports no
-result at all (a pattern matching nothing, a compile error) marks the selected tests errored with the CLI's stderr.
+A run executes `elide test --reporter=tap` in the project root, adding `--test-name-pattern=<pattern>` whenever the
+selection is narrower than the whole project (the JVM engine full-matches that pattern against `pkg.Class#method`,
+with `$` separating nested classes). `elide.flags` and `elide.test.options` apply here too, except for `reporter`,
+which stays `tap` because this run parses that stream. Results are reported as the TAP stream settles: a failure's
+`message` and `detail` block become the test's message, and the first stack frame naming the test's own file
+positions it in the editor. A label that matches no discovered item is added under the project item, so a result is
+never dropped; a run that reports no result at all (a pattern matching nothing, a compile error) marks the selected
+tests errored with the CLI's stderr.
 
 The **Debug** profile runs the same command with a bare `--debugger` and attaches `elide.debug.adapter` once the JDWP
 agent announces itself. That flag takes no address on `elide test`: the agent always binds 5005, so one debug run at
@@ -132,13 +159,52 @@ a time.
 Launch configuration type `elide`:
 
 ```jsonc
-{ "type": "elide", "request": "launch", "name": "Elide: Run (debug)", "entrypoint": "src/main.kt", "args": [] }
+{
+  "type": "elide",
+  "request": "launch",
+  "name": "Elide: Run (debug)",
+  "entrypoint": "src/main.kt",
+  "args": ["--port", "8080"],
+  "flags": ["release"],
+  "options": { "coverage": true }
+}
 ```
 
-The extension runs `elide run --debugger [entrypoint] [-- args]` in a terminal, waits for the JDWP agent's
-`Listening for transport dt_socket at address: <port>` line, then attaches the JetBrains JVM debugger
+The extension runs `elide run --debugger [flags] [options] [entrypoint] [-- args]` in a terminal, waits for the JDWP
+agent's `Listening for transport dt_socket at address: <port>` line, then attaches the JetBrains JVM debugger
 (`elide.debug.adapter`: `intellij`) or Debugger for Java (`java`, requires `vscjava.vscode-java-debug`). Stopping the
 session terminates the Elide process. The JDWP agent always binds port 5005, so one debug session at a time.
+
+`args` are the debugged application's own arguments; `elideArgs` adds further positional arguments to the Elide
+command itself. `flags`, `options` and `env` layer over `elide.flags` and `elide.<command>.options` exactly as in a
+task, and `--debugger` is always added — set `debugger` in `options` to choose its value (`dap`, `cdp`, a
+`host:port` address).
+
+`command` selects what is debugged:
+
+| `command` | Runs | What it acts on |
+| --- | --- | --- |
+| `run` (default) | `elide run --debugger` | `entrypoint`: file, manifest script, or empty for `entrypoint`/`jvm.main` |
+| `test` | `elide test --debugger` | the whole test run; narrow it with `"options": { "test-name-pattern": "MyTest" }` |
+| `build` | `elide build <targets> --debugger` | `targets`: build targets (`run`, `jvm-test`, … — `elide build --inspect` lists them) |
+
+On `build`, `--debugger` is an option of the target task rather than of the build itself, so the configuration must
+name at least one target; one with an empty `targets` assembles nothing and is rejected before any process starts,
+and `entrypoint` is refused there (it belongs to `run`). Target options go in `options` the same way. `targets` may
+list several targets, but only one of them can start a JVM: the bare `--debugger` binds 5005 for each, so two
+debuggable targets in one configuration collide on that port. The **Build targets** section of the Elide sidebar
+offers a Debug action on every target that declares `--debugger`.
+
+```jsonc
+{
+  "type": "elide",
+  "request": "launch",
+  "name": "Elide: Build (debug)",
+  "command": "build",
+  "targets": ["jvm-test"],
+  "options": { "select": "class:com.example.SomeTest" }
+}
+```
 
 ## Settings
 
@@ -150,6 +216,11 @@ session terminates the Elide process. The JDWP agent always binds port 5005, so 
 | `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` or the lockfile changes. |
 | `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json`. |
 | `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
+| `elide.flags` | `[]` | `-f NAME[=VALUE]` build flags for every invocation, sync included; changing them marks the model stale. |
+| `elide.build.options` | `{}` | Default options for `elide build`, e.g. `{ "no-cache": true }`. |
+| `elide.run.options` | `{}` | Default options for `elide run`. |
+| `elide.test.options` | `{}` | Default options for `elide test`; Test Explorer runs use them too, except `reporter`. |
+| `elide.install.options` | `{}` | Default options for the `elide install` task. |
 | `elide.codeLens.enabled` | `true` | Show the Run/Debug code lenses described above. |
 | `elide.debug.adapter` | `"intellij"` | `intellij` or `java`. |
 

@@ -4,6 +4,7 @@ import {
   LIBRARY_NAME_PREFIX,
   resolveElideDistribution,
   type BuildTaskInfo,
+  type ElideCommand,
   type Entrypoint,
   type ModuleModel,
   type SourceRootKind,
@@ -12,7 +13,7 @@ import * as vscode from "vscode";
 import { readConfig } from "./config.js";
 import type { ElideUi } from "./output.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
-import { entrypointArgs, type ElideTaskCommand } from "./tasks.js";
+import { entrypointArgs } from "./tasks.js";
 
 export const PROJECTS_VIEW_ID = "elide.projects";
 
@@ -36,7 +37,7 @@ const GROUP_ICONS: Record<GroupKind, string> = {
 };
 
 /** Tasks offered for every project, whether or not its model has been resolved yet. */
-const PROJECT_TASKS: ElideTaskCommand[] = ["build", "test", "install"];
+const PROJECT_TASKS: ElideCommand[] = ["build", "test", "install"];
 
 /**
  * A row of the Elide sidebar.
@@ -49,8 +50,8 @@ export type ElideNode =
   | { kind: "project"; label: string; root: string }
   | { kind: "group"; label: string; root: string; group: GroupKind }
   | { kind: "entrypoint"; label: string; root: string; args: string[]; script: boolean }
-  | { kind: "task"; label: string; root: string; command: ElideTaskCommand; args: string[] }
-  | { kind: "buildTarget"; label: string; root: string; command: ElideTaskCommand; args: string[]; description: string }
+  | { kind: "task"; label: string; root: string; command: ElideCommand; args: string[] }
+  | { kind: "buildTarget"; label: string; root: string; command: ElideCommand; args: string[]; description: string; debuggable: boolean }
   | { kind: "module"; label: string; root: string; module: ModuleModel }
   | { kind: "sourceRoot"; label: string; root: string; module: string; path: string; sourceKind: SourceRootKind }
   | { kind: "library"; label: string; root: string; classes: string; attached: string }
@@ -94,7 +95,7 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
 
   getTreeItem(node: ElideNode): vscode.TreeItem {
     const item = new vscode.TreeItem(node.label, collapsibleState(node));
-    item.contextValue = node.kind === "entrypoint" && node.script ? "script" : node.kind;
+    item.contextValue = contextValueOf(node);
     const id = nodeId(node);
     if (id) item.id = id;
     switch (node.kind) {
@@ -120,7 +121,7 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
       case "buildTarget":
         item.iconPath = new vscode.ThemeIcon("target");
         item.description = node.description;
-        item.tooltip = `elide build ${node.label}`;
+        item.tooltip = node.debuggable ? `elide build ${node.label} [--debugger]` : `elide build ${node.label}`;
         item.command = { command: "elide.executeTask", title: "Build", arguments: [node] };
         break;
       case "module":
@@ -211,8 +212,9 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
     let targets = this.buildTargets.get(project.root);
     if (!targets) {
       try {
-        const dist = resolveElideDistribution({ explicitHome: readConfig(project.folder).home });
-        targets = await new ElideCli(dist, project.root).buildInspect();
+        const settings = readConfig(project.folder);
+        const dist = resolveElideDistribution({ explicitHome: settings.home });
+        targets = await new ElideCli(dist, project.root, settings.flags).buildInspect();
         this.buildTargets.set(project.root, targets);
       } catch (e) {
         this.ui.log(`could not list build targets of ${project.root}: ${e instanceof Error ? e.message : String(e)}`);
@@ -226,12 +228,24 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
       command: "build",
       args: [target.name],
       description: target.description,
+      // Only a target that starts a JVM declares `--debugger`; compilation targets have nothing to attach to.
+      debuggable: target.options.some((option) => option.option === "--debugger"),
     }));
   }
 }
 
 function projectNode(project: ElideProject): ElideNode {
   return { kind: "project", label: project.model?.name ?? path.basename(project.root), root: project.root };
+}
+
+/**
+ * `view/item/context` key. A script entrypoint offers no Debug action (a script is a shell command line), and a
+ * build target only does when the target itself declares `--debugger`.
+ */
+function contextValueOf(node: ElideNode): string {
+  if (node.kind === "entrypoint") return node.script ? "script" : node.kind;
+  if (node.kind === "buildTarget" && node.debuggable) return "buildTargetDebuggable";
+  return node.kind;
 }
 
 function entrypointNode(root: string, entrypoint: Entrypoint): ElideNode {

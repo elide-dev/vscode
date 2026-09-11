@@ -6,6 +6,7 @@ import path from "node:path";
 import { parseBuildInspect, type BuildTaskInfo } from "./buildTasks.js";
 import { ElideCommandFailedError, ElideNotFoundError, InvalidElideHomeError, ManifestParseError } from "./errors.js";
 import { decodeInitTemplates, initArgs, type InitTemplate } from "./init.js";
+import { elideFlagArgs } from "./invocation.js";
 import { decodeManifest, type Manifest } from "./manifest.js";
 import { isPathUnder, normalizePath } from "./sourceRoots.js";
 
@@ -173,11 +174,17 @@ export function killProcessTree(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
-/** Invokes the Elide CLI of a distribution with a project root as working directory. */
+/**
+ * Invokes the Elide CLI of a distribution with a project root as working directory.
+ *
+ * `flags` are the `-f NAME[=VALUE]` build flags every subcommand this class drives is given: the manifest sees them
+ * as `build.flags`, so a project model resolved without the flags a build uses would describe a different build.
+ */
 export class ElideCli {
   constructor(
     readonly dist: ElideDistribution,
     readonly projectRoot: string,
+    readonly flags: readonly string[] = [],
   ) {}
 
   run(args: readonly string[], opts: RunOptions = {}): Promise<RunResult> {
@@ -250,7 +257,7 @@ export class ElideCli {
   /** `elide manifest` → decoded manifest JSON. */
   async manifest(opts: RunOptions = {}): Promise<Manifest> {
     let json = "";
-    await this.run(["manifest"], {
+    await this.run(["manifest", ...elideFlagArgs(this.flags)], {
       ...opts,
       onLine: (line, stderr) => {
         if (!stderr) json += `${line}\n`;
@@ -265,7 +272,7 @@ export class ElideCli {
   /** `elide classpath <sourceSet>:<usage>` → absolute jar/dir entries (stdout split on the platform path delimiter). */
   async classpath(sourceSet: string, usage: ClasspathUsage, opts: RunOptions = {}): Promise<string[]> {
     let text = "";
-    await this.run(["classpath", `${sourceSet}:${usage}`], {
+    await this.run(["classpath", `${sourceSet}:${usage}`, ...elideFlagArgs(this.flags)], {
       ...opts,
       onLine: (line, stderr) => {
         if (!stderr) text += line;
@@ -283,13 +290,13 @@ export class ElideCli {
    */
   async install(opts: RunOptions & { with?: readonly string[] } = {}): Promise<void> {
     const flags = opts.with ? ["--slim", ...opts.with.flatMap((classifier) => ["--with", classifier])] : [];
-    await this.run(["install", ...flags], opts);
+    await this.run(["install", ...elideFlagArgs(this.flags), ...flags], opts);
   }
 
   /** `elide build --inspect` → the build targets of the project and the options they accept. */
   async buildInspect(opts: RunOptions = {}): Promise<BuildTaskInfo[]> {
     let text = "";
-    await this.run(["build", "--inspect"], {
+    await this.run(["build", "--inspect", ...elideFlagArgs(this.flags)], {
       ...opts,
       onLine: (line, stderr) => {
         if (!stderr) text += `${line}\n`;

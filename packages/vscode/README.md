@@ -71,6 +71,8 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` or the lockfile changes. |
 | `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json`. |
 | `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
+| `elide.flags` | `[]` | `-f NAME[=VALUE]` build flags for every Elide invocation, project sync included. |
+| `elide.build.options`, `elide.run.options`, `elide.test.options`, `elide.install.options` | `{}` | Default CLI options per command. |
 | `elide.debug.adapter` | `"intellij"` | Attach with the JetBrains JVM debugger (`intellij`) or Debugger for Java (`java`). |
 
 The extension also maintains two Kotlin LSP settings: `intellij.buildTool` (pinned to `json` in workspace settings) and
@@ -79,15 +81,28 @@ are never overwritten.
 
 ## Tasks and debugging
 
-Task type `elide` takes `command` (`build` | `run` | `test` | `install`), optional `args`, and `project` (project root
-relative to the workspace folder). Launch configurations use type `elide`:
+Task type `elide` takes `command` (`build` | `run` | `test` | `install`), `project` (project root relative to the
+workspace folder) and the invocation itself: `args` (positional arguments), `flags` (`-f NAME[=VALUE]` build flags),
+`options` (CLI options as a name/value object), `programArgs` (arguments after `--`) and `env`. Workspace defaults
+come from `elide.flags` and `elide.build.options` / `elide.run.options` / `elide.test.options` /
+`elide.install.options`; a definition overrides them per key.
 
 ```jsonc
-{ "type": "elide", "request": "launch", "name": "Elide: Run (debug)", "entrypoint": "src/main.kt", "args": [] }
+{ "type": "elide", "command": "test", "args": ["src/api"], "options": { "bail": 3 } }
+```
+
+Launch configurations use type `elide` and take the same fields, with `args` reserved for the debugged
+application's own arguments and `elideArgs` for positional arguments of the Elide command:
+
+```jsonc
+{ "type": "elide", "request": "launch", "name": "Elide: Run (debug)", "entrypoint": "src/main.kt", "args": [], "options": { "coverage": true } }
 ```
 
 The extension runs `elide run --debugger`, waits for the JDWP listener, and attaches the configured debug adapter;
-ending the session stops the Elide process. The JDWP agent always binds port 5005, so one debug session at a time.
+ending the session stops the Elide process. The JDWP agent binds port 5005 by default, so one debug session at a
+time. `"command": "test"` debugs `elide test` instead, and `"command": "build"` debugs the build targets listed in
+`targets` (`run`, `jvm-test`, … — `elide build --inspect` lists them); the Elide sidebar offers a Debug action on
+every build target that supports it.
 
 ## Links
 

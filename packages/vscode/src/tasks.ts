@@ -1,17 +1,27 @@
 import path from "node:path";
-import { resolveElideDistribution, type Entrypoint } from "@elide/ide-core";
+import {
+  elideInvocationArgs,
+  elideInvocationOptionsFrom,
+  mergeElideInvocationOptions,
+  resolveElideDistribution,
+  type ElideCommand,
+  type ElideInvocationOptions,
+  type Entrypoint,
+} from "@elide/ide-core";
 import * as vscode from "vscode";
-import { readConfig } from "./config.js";
+import { configuredInvocation, readConfig } from "./config.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
 
 export const ELIDE_TASK_TYPE = "elide";
 
-export type ElideTaskCommand = "build" | "run" | "test" | "install";
-
-export interface ElideTaskDefinition extends vscode.TaskDefinition {
+/**
+ * One `elide` task. Beyond the subcommand it carries the whole invocation: positional `args` (build targets, test
+ * paths, the entrypoint `run` runs), `-f` build `flags`, CLI `options`, `programArgs` passed after `--`, and `env`.
+ * Workspace settings (`elide.flags`, `elide.<command>.options`) apply underneath and are overridden per key.
+ */
+export interface ElideTaskDefinition extends vscode.TaskDefinition, ElideInvocationOptions {
   type: typeof ELIDE_TASK_TYPE;
-  command: ElideTaskCommand;
-  args?: string[];
+  command: ElideCommand;
   /** Project root relative to the workspace folder. */
   project?: string;
 }
@@ -29,17 +39,17 @@ export function entrypointLabel(entrypoint: Entrypoint): string {
 export async function executeElideTask(
   workspace: ElideWorkspace,
   project: ElideProject,
-  command: ElideTaskCommand,
-  args: string[] = [],
+  command: ElideCommand,
+  invocation: ElideInvocationOptions = {},
 ): Promise<vscode.TaskExecution | undefined> {
   const rel = path.relative(project.folder.uri.fsPath, project.root);
   const definition: ElideTaskDefinition = {
     type: ELIDE_TASK_TYPE,
     command,
-    ...(args.length ? { args } : {}),
+    ...invocation,
     ...(rel ? { project: rel } : {}),
   };
-  const label = [command, ...args].join(" ");
+  const label = [command, ...(invocation.args ?? [])].join(" ");
   const task = new ElideTaskProvider(workspace).resolveTask(new vscode.Task(definition, project.folder, label, ELIDE_TASK_TYPE));
   if (!task) return undefined;
   return await vscode.tasks.executeTask(task);
@@ -52,7 +62,7 @@ export class ElideTaskProvider implements vscode.TaskProvider<vscode.Task> {
     const tasks: vscode.Task[] = [];
     for (const project of this.workspace.projects) {
       const rel = path.relative(project.folder.uri.fsPath, project.root) || undefined;
-      const base = (command: ElideTaskCommand, args: string[] = []): ElideTaskDefinition => ({ type: ELIDE_TASK_TYPE, command, ...(args.length ? { args } : {}), ...(rel ? { project: rel } : {}) });
+      const base = (command: ElideCommand, args: string[] = []): ElideTaskDefinition => ({ type: ELIDE_TASK_TYPE, command, ...(args.length ? { args } : {}), ...(rel ? { project: rel } : {}) });
       const build = this.createTask(project, base("build"));
       build.group = vscode.TaskGroup.Build;
       tasks.push(build);
@@ -90,8 +100,14 @@ export class ElideTaskProvider implements vscode.TaskProvider<vscode.Task> {
     const rel = path.relative(project.folder.uri.fsPath, project.root);
     const suffix = rel ? ` (${rel})` : "";
     const taskName = name ?? `${label ?? [def.command, ...(def.args ?? [])].join(" ")}${suffix}`;
-    const dist = resolveElideDistribution({ explicitHome: readConfig(project.folder).home });
-    const execution = new vscode.ProcessExecution(dist.bin, [def.command, ...(def.args ?? [])], { cwd: project.root });
+    const settings = readConfig(project.folder);
+    const dist = resolveElideDistribution({ explicitHome: settings.home });
+    // The definition comes from tasks.json: it is sanitized, and each of its keys overrides the configured default.
+    const invocation = mergeElideInvocationOptions(configuredInvocation(settings, def.command), elideInvocationOptionsFrom(def));
+    const execution = new vscode.ProcessExecution(dist.bin, elideInvocationArgs(def.command, invocation), {
+      cwd: project.root,
+      ...(invocation.env ? { env: { ...invocation.env } } : {}),
+    });
     const task = new vscode.Task(def, project.folder, taskName, ELIDE_TASK_TYPE, execution, ["$elide"]);
     task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, clear: true };
     return task;

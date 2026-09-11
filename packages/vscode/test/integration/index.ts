@@ -137,19 +137,47 @@ export async function run(): Promise<void> {
   log("tasks:", names);
   for (const expected of ["build", "test", "install", "run"]) assert.ok(names.includes(expected), `task ${expected}`);
   const build = tasks.find((t) => t.name === "build")!;
-  const runBuild = () => {
+  const runTask = (task: vscode.Task) => {
     const { promise, resolve } = Promise.withResolvers<number | undefined>();
     const d = vscode.tasks.onDidEndTaskProcess((e) => {
-      if (e.execution.task.name === "build") {
+      if (e.execution.task.name === task.name) {
         d.dispose();
         resolve(e.exitCode);
       }
     });
-    void vscode.tasks.executeTask(build);
+    void vscode.tasks.executeTask(task);
     return promise;
   };
+  const runBuild = () => runTask(build);
   assert.equal(await runBuild(), 0, "elide build task exit code");
   log("build task ok");
+
+  // Invocation options: `elide.flags` and `elide.<command>.options` reach the argv of the provided tasks, and the
+  // CLI accepts what is generated. An unknown option exits 2, which is what proves the options are not dropped.
+  const settings = vscode.workspace.getConfiguration("elide");
+  await settings.update("flags", ["ci"], vscode.ConfigurationTarget.Global);
+  await settings.update("test.options", { bail: 2, reporter: "console" }, vscode.ConfigurationTarget.Global);
+  const configuredTest = await waitFor(
+    "test task with the configured flags",
+    async () => {
+      const found = (await vscode.tasks.fetchTasks({ type: "elide" })).find((t) => t.name === "test");
+      const args = (found?.execution as vscode.ProcessExecution | undefined)?.args;
+      return args?.includes("-f") ? found : undefined;
+    },
+    30_000,
+  );
+  assert.deepEqual(
+    (configuredTest.execution as vscode.ProcessExecution).args,
+    ["test", "-f", "ci", "--bail=2", "--reporter=console"],
+    "settings reach the provided task's argv",
+  );
+  assert.equal(await runTask(configuredTest), 0, "the configured test task runs");
+  await settings.update("test.options", { "definitely-not-an-option": true }, vscode.ConfigurationTarget.Global);
+  const rejected = (await vscode.tasks.fetchTasks({ type: "elide" })).find((t) => t.name === "test")!;
+  assert.notEqual(await runTask(rejected), 0, "the CLI sees the configured options and rejects an unknown one");
+  await settings.update("flags", undefined, vscode.ConfigurationTarget.Global);
+  await settings.update("test.options", undefined, vscode.ConfigurationTarget.Global);
+  log("task invocation options ok");
 
   // 4b. Target commands: the ids code lenses and menus invoke exist, run a task for a project root, and the
   //     manifest opener resolves the single project without an argument.
@@ -251,6 +279,13 @@ export async function run(): Promise<void> {
   assert.ok(green.passed.includes(itemId("testGreeting")), `testGreeting reported as passed, got ${JSON.stringify(green)}`);
   assert.deepEqual(green.failed, [], "no failures in the untouched sample");
 
+  // `elide.test.options` applies to Test Explorer runs, but the reporter it needs is not negotiable: a configured
+  // `console` reporter would leave the run without a TAP stream to map onto the items.
+  await settings.update("test.options", { reporter: "console", concurrency: 2 }, vscode.ConfigurationTarget.Global);
+  const configuredRun = await api.runAll();
+  await settings.update("test.options", undefined, vscode.ConfigurationTarget.Global);
+  assert.ok(configuredRun.passed.includes(itemId("testGreeting")), `TAP still parsed with a configured reporter, got ${JSON.stringify(configuredRun)}`);
+
   const testSource = readFileSync(testKt.fsPath, "utf8");
   const closing = testSource.lastIndexOf("}");
   writeFileSync(testKt.fsPath, `${testSource.slice(0, closing)}\n    @Test\n    fun failing() = assertEquals(1, 2)\n${testSource.slice(closing)}`);
@@ -294,8 +329,14 @@ export async function run(): Promise<void> {
   assert.deepEqual(entrypoints.map((n) => [n.label, n.args]), [["sample.MainKt", []]], "the manifest's jvm.main entrypoint");
   const taskNodes = await childrenOf("Tasks");
   assert.deepEqual(taskNodes.map((n) => n.label), ["build", "test", "install", "Build targets"]);
-  const targets = (await explorer.getChildren(taskNodes[3])) as { kind: string; label: string }[];
+  const targets = (await explorer.getChildren(taskNodes[3])) as { kind: string; label: string; debuggable?: boolean }[];
   assert.ok(targets.length > 0 && targets.every((n) => n.kind === "buildTarget"), `elide build --inspect targets, got ${JSON.stringify(targets)}`);
+  // Only targets that start a JVM declare `--debugger`, and those are the ones the tree offers a Debug action on.
+  assert.deepEqual(
+    targets.filter((n) => n.debuggable).map((n) => n.label).sort(),
+    ["jvm-test", "run"],
+    `debuggable targets, got ${JSON.stringify(targets.map((n) => [n.label, n.debuggable]))}`,
+  );
   const sourceSets = await childrenOf("Source sets");
   assert.deepEqual(sourceSets.map((n) => n.label), ["main", "test"]);
   const mainRoots = (await explorer.getChildren(sourceSets[0])) as { kind: string; label: string }[];
@@ -373,7 +414,8 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand("workbench.action.openWalkthrough", `${extension.id}#elide.gettingStarted`);
   log("walkthrough ok:", gettingStarted.steps.map((s) => s.id).join(", "));
 
-  // 5. Debug: launch `elide run --debugger`, attach, hit a breakpoint, stop.
+  // 5. Debug: launch `elide run --debugger` — with a build flag, a CLI option and program arguments from the
+  //    configuration — attach, hit a breakpoint, stop.
   const mainDoc = await vscode.workspace.openTextDocument(mainKt);
   const bpLine = mainDoc.getText().split("\n").findIndex((l) => l.includes("println(greeting"));
   assert.ok(bpLine > 0);
@@ -386,7 +428,14 @@ export async function run(): Promise<void> {
       }
     });
   });
-  const started = await vscode.debug.startDebugging(folder, { type: "elide", request: "launch", name: "Elide: Run (debug)" });
+  const started = await vscode.debug.startDebugging(folder, {
+    type: "elide",
+    request: "launch",
+    name: "Elide: Run (debug)",
+    flags: ["ci"],
+    options: { verbose: true },
+    args: ["--greeting", "hi"],
+  });
   assert.equal(started, false, "the `elide` pseudo-session never starts itself");
   const session = await Promise.race([sessionStarted, new Promise<never>((_, rej) => setTimeout(() => rej(new Error("no attach session within 180s")), 180_000))]);
   log("attach session started:", session.type, session.name);
@@ -415,7 +464,7 @@ export async function run(): Promise<void> {
   vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
   await waitFor("elide debuggee exit", () => {
     try {
-      execSync("pgrep -f 'elide run --debugger|java.bin -agentlib:jdwp'", { stdio: "pipe" });
+      execSync("pgrep -f 'elide run .*--debugger|java.bin -agentlib:jdwp'", { stdio: "pipe" });
       return undefined; // still running
     } catch {
       return true; // pgrep exit 1: no matches
@@ -444,13 +493,71 @@ export async function run(): Promise<void> {
   await vscode.debug.stopDebugging(testSession);
   await waitFor("test debuggee exit", () => {
     try {
-      execSync("pgrep -f 'elide test --reporter=tap --debugger|java.bin -agentlib:jdwp'", { stdio: "pipe" });
+      execSync("pgrep -f 'elide test .*--debugger|java.bin -agentlib:jdwp'", { stdio: "pipe" });
       return undefined;
     } catch {
       return true;
     }
   }, 30_000, 500);
   log("debug test profile ok");
+
+  // 5c. A `build` launch configuration debugs the build targets it lists: `--debugger` there is an option of the
+  //     target task, so the configuration must name at least one. Configurations that put the target in the wrong
+  //     field, or name none at all, assemble nothing and are rejected up front instead of waiting for a banner.
+  const windowErrors: string[] = [];
+  const errorApi: { showErrorMessage: unknown } = vscode.window;
+  const realError = errorApi.showErrorMessage;
+  errorApi.showErrorMessage = (message: string) => {
+    windowErrors.push(message);
+    return Promise.resolve(undefined);
+  };
+  try {
+    const targetless = await vscode.debug.startDebugging(folder, { type: "elide", request: "launch", name: "Elide: Build (debug)", command: "build" });
+    assert.equal(targetless, false, "a build configuration without targets starts nothing");
+    const misplaced = await vscode.debug.startDebugging(folder, {
+      type: "elide",
+      request: "launch",
+      name: "Elide: Build (debug)",
+      command: "build",
+      entrypoint: "jvm-test",
+    });
+    assert.equal(misplaced, false, "a build configuration using `entrypoint` starts nothing");
+    assert.deepEqual(
+      windowErrors.map((m) => (m.includes("at least one target in `targets`") ? "empty" : m.includes("list the build targets in `targets`") ? "misplaced" : m)),
+      ["empty", "misplaced"],
+      `both malformed build configurations are reported, got ${JSON.stringify(windowErrors)}`,
+    );
+  } finally {
+    errorApi.showErrorMessage = realError;
+  }
+  const { promise: buildDebugSession, resolve: buildDebugStarted, reject: buildDebugFailed } = Promise.withResolvers<vscode.DebugSession>();
+  const buildDebugTimer = setTimeout(() => buildDebugFailed(new Error("no build attach session within 180s")), 180_000);
+  const buildDebugListener = vscode.debug.onDidStartDebugSession((s) => {
+    if (s.name === "Elide: Build compile-kotlin-test jvm-test (debug)") buildDebugStarted(s);
+  });
+  let buildSession: vscode.DebugSession;
+  try {
+    // The sidebar's Debug action on a debuggable build target passes the same node the tree renders; a compile
+    // target in front of it also covers the multi-target vector (`elide build compile-kotlin-test jvm-test
+    // --debugger`). Two *debuggable* targets in one session would collide on port 5005, which is the CLI's own
+    // constraint, not something the extension hides.
+    void vscode.commands.executeCommand("elide.debug", { root: sample, command: "build", args: ["compile-kotlin-test", "jvm-test"] });
+    buildSession = await buildDebugSession;
+  } finally {
+    clearTimeout(buildDebugTimer);
+    buildDebugListener.dispose();
+  }
+  log("build target debug session started:", buildSession.type, buildSession.name);
+  await vscode.debug.stopDebugging(buildSession);
+  await waitFor("build debuggee exit", () => {
+    try {
+      execSync("pgrep -f 'elide build .*--debugger|java.bin -agentlib:jdwp'", { stdio: "pipe" });
+      return undefined;
+    } catch {
+      return true;
+    }
+  }, 30_000, 500);
+  log("build target debug ok");
 
   // 6. A bogus Elide home fails the sync and leaves the previous workspace.json untouched.
   const before = readFileSync(workspaceJson, "utf8");
