@@ -15,6 +15,10 @@ All notable changes to the Elide extension are documented here. The format follo
   Maven packages, so Go to Definition opens library sources. Changing the setting forces a re-install.
 - A warning when the resolved Elide CLI is older than 1.5.0, shown once per distribution; the release is logged to
   the output channel on every sync.
+- The `$elide` problem matcher on every `elide` task: kotlinc errors and warnings become diagnostics on the reported
+  file and line, resolved by searching the workspace folder.
+- Commands `Elide: Run Entrypoint`, `Elide: Debug Entrypoint`, `Elide: Build Artifact`, `Elide: Run Task` and
+  `Elide: Open elide.pkl`, invoked with a project root and argument vector by the code lenses and menus.
 
 ### Changed
 

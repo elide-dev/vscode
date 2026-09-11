@@ -86,6 +86,12 @@ Task type `elide` with `command` (`build` \| `run` \| `test` \| `install`), opti
 to the workspace folder). Provided tasks: `elide: build`, `elide: test`, `elide: install`, and one `elide: run …` per
 manifest entrypoint (`entrypoint`, `jvm.main`, `scripts`).
 
+Every task reports through the `$elide` problem matcher, so compiler errors and warnings land in **Problems** and on
+the offending line. It matches the two-line kotlinc shape Elide prints — `[212ms] error: kotlinc: <message>` followed
+by `In file: <path>[:<line>[:<col>]]` — and resolves the path by searching the workspace folder (skipping `.dev`,
+`.git` and `node_modules`), so relative paths reported from a project root in a subdirectory still resolve. `javac`
+diagnostics interleave `symbol:`/`location:` lines between the two and are shown in the terminal only.
+
 ## Debugging
 
 Launch configuration type `elide`:

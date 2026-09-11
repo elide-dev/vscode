@@ -209,7 +209,7 @@
           "search",
           {
             "include": ["${workspaceFolder}"],
-            "exclude": ["${workspaceFolder}/.dev/**", "${workspaceFolder}/node_modules/**"]
+            "exclude": ["${workspaceFolder}/.dev", "${workspaceFolder}/.git", "${workspaceFolder}/node_modules"]
           }
         ],
         "pattern": [

@@ -136,7 +136,8 @@ export async function run(): Promise<void> {
   log("tasks:", names);
   for (const expected of ["build", "test", "install", "run"]) assert.ok(names.includes(expected), `task ${expected}`);
   const build = tasks.find((t) => t.name === "build")!;
-  const exit = await new Promise<number | undefined>((resolve) => {
+  const runBuild = () => {
+    const { promise, resolve } = Promise.withResolvers<number | undefined>();
     const d = vscode.tasks.onDidEndTaskProcess((e) => {
       if (e.execution.task.name === "build") {
         d.dispose();
@@ -144,8 +145,9 @@ export async function run(): Promise<void> {
       }
     });
     void vscode.tasks.executeTask(build);
-  });
-  assert.equal(exit, 0, "elide build task exit code");
+    return promise;
+  };
+  assert.equal(await runBuild(), 0, "elide build task exit code");
   log("build task ok");
 
   // 4b. Target commands: the ids code lenses and menus invoke exist, run a task for a project root, and the
@@ -177,6 +179,29 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
   await waitFor("menu sync rewrote workspace.json", () => (statSync(workspaceJson).mtimeMs > beforeMenuSync ? true : undefined), 180_000, 1_000);
   log("status menu ok");
+
+  // 4d. Problem matcher: a kotlinc error from the `build` task becomes a diagnostic on the offending file and is
+  //     cleared by the next clean build. The Kotlin LSP reports the same error itself, so only markers owned by the
+  //     task matcher (`source: "elide"`) count here.
+  const brokenKt = path.join(sample, "src", "main", "sample", "Broken.kt");
+  const brokenUri = vscode.Uri.file(brokenKt);
+  writeFileSync(brokenKt, "package sample\n\nfun broken() = undefinedSymbol\n");
+  assert.notEqual(await runBuild(), 0, "build fails while Broken.kt is present");
+  const brokenDiag = await waitFor(
+    "elide diagnostic on Broken.kt",
+    () =>
+      vscode.languages
+        .getDiagnostics(brokenUri)
+        .find((d) => d.source === "elide" && d.severity === vscode.DiagnosticSeverity.Error && d.message.includes("undefinedSymbol")),
+    120_000,
+  );
+  // `[208ms] error: kotlinc: Unresolved reference 'undefinedSymbol'.` / `In file: src/main/sample/Broken.kt:3:16`
+  assert.equal(brokenDiag.range.start.line, 2, "diagnostic on the `fun broken()` line");
+  log("problem matcher diagnostic:", JSON.stringify(brokenDiag.message), `${brokenDiag.range.start.line}:${brokenDiag.range.start.character}`);
+  rmSync(brokenKt);
+  assert.equal(await runBuild(), 0, "build passes once Broken.kt is gone");
+  await waitFor("elide diagnostics cleared", () => vscode.languages.getDiagnostics(brokenUri).every((d) => d.source !== "elide") || undefined, 60_000);
+  log("problem matcher ok");
 
   // 5. Debug: launch `elide run --debugger`, attach, hit a breakpoint, stop.
   const mainDoc = await vscode.workspace.openTextDocument(mainKt);
