@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, a
 import { tmpdir } from "node:os";
 import path from "node:path";
 import * as vscode from "vscode";
+import type { ElideExtensionApi as ElideApi } from "../../src/extension.js";
 
 const sample = process.env.ELIDE_TEST_SAMPLE!;
 const log = (...a: unknown[]) => console.log("[elide-test]", ...a);
@@ -239,6 +240,43 @@ export async function run(): Promise<void> {
   );
   log("code lenses ok");
 
+  // 4f. Test explorer: static discovery maps the sample's JUnit test to an item, `runAll` drives
+  //     `elide test --reporter=tap` and reports the TAP result on it, and a test added to the file is picked up.
+  const extension = vscode.extensions.all.find((e) => e.id.endsWith(".elide"));
+  assert.ok(extension, `elide extension found, got ${JSON.stringify(vscode.extensions.all.map((e) => e.id))}`);
+  const api = await waitFor("extension test api", () => (extension.exports as ElideApi | undefined)?.tests, 60_000, 500);
+  const itemId = (method: string) => `m:${sample}:sample.MainTest#${method}`;
+  const green = await api.runAll();
+  log("runAll:", JSON.stringify(green));
+  assert.ok(green.passed.includes(itemId("testGreeting")), `testGreeting reported as passed, got ${JSON.stringify(green)}`);
+  assert.deepEqual(green.failed, [], "no failures in the untouched sample");
+
+  const testSource = readFileSync(testKt.fsPath, "utf8");
+  const closing = testSource.lastIndexOf("}");
+  writeFileSync(testKt.fsPath, `${testSource.slice(0, closing)}\n    @Test\n    fun failing() = assertEquals(1, 2)\n${testSource.slice(closing)}`);
+  const red = await waitFor(
+    "added test discovered and reported",
+    async () => {
+      const summary = await api.runAll();
+      return summary.failed.includes(itemId("failing")) ? summary : undefined;
+    },
+    180_000,
+    2_000,
+  );
+  log("runAll with the added failing test:", JSON.stringify(red));
+  assert.ok(red.passed.includes(itemId("testGreeting")), "the untouched test still passes");
+  writeFileSync(testKt.fsPath, testSource);
+  await waitFor(
+    "removed test gone from the run",
+    async () => {
+      const summary = await api.runAll();
+      return summary.failed.length === 0 && summary.passed.includes(itemId("testGreeting")) ? summary : undefined;
+    },
+    180_000,
+    2_000,
+  );
+  log("test explorer ok");
+
   // 5. Debug: launch `elide run --debugger`, attach, hit a breakpoint, stop.
   const mainDoc = await vscode.workspace.openTextDocument(mainKt);
   const bpLine = mainDoc.getText().split("\n").findIndex((l) => l.includes("println(greeting"));
@@ -288,6 +326,35 @@ export async function run(): Promise<void> {
     }
   }, 20_000, 500);
   log("debuggee processes gone");
+
+  // 5b. The Debug run profile of the Test Explorer: the same TAP command runs under a JDWP agent (bare
+  //     `--debugger`, port 5005, banner on stdout as a `# out:` comment) and the JVM debugger attaches to it.
+  //     Ordered after the launch-config session above: with this stage first, that one attached but never stopped
+  //     at its breakpoint, so the session that needs breakpoints runs against a fresh debugger.
+  const { promise: testDebugSession, resolve: testDebugStarted, reject: testDebugFailed } = Promise.withResolvers<vscode.DebugSession>();
+  const testDebugTimer = setTimeout(() => testDebugFailed(new Error("no test attach session within 180s")), 180_000);
+  const testDebugListener = vscode.debug.onDidStartDebugSession((s) => {
+    if (s.name === "Elide: Test (debug)") testDebugStarted(s);
+  });
+  void vscode.commands.executeCommand("testing.debugAll");
+  let testSession: vscode.DebugSession;
+  try {
+    testSession = await testDebugSession;
+  } finally {
+    clearTimeout(testDebugTimer);
+    testDebugListener.dispose();
+  }
+  log("test debug session started:", testSession.type, testSession.name);
+  await vscode.debug.stopDebugging(testSession);
+  await waitFor("test debuggee exit", () => {
+    try {
+      execSync("pgrep -f 'elide test --reporter=tap --debugger|java.bin -agentlib:jdwp'", { stdio: "pipe" });
+      return undefined;
+    } catch {
+      return true;
+    }
+  }, 30_000, 500);
+  log("debug test profile ok");
 
   // 6. A bogus Elide home fails the sync and leaves the previous workspace.json untouched.
   const before = readFileSync(workspaceJson, "utf8");
