@@ -25,6 +25,26 @@ export function entrypointLabel(entrypoint: Entrypoint): string {
   return entrypoint.kind === "jvmMain" ? "run" : `run ${entrypoint.value}`;
 }
 
+/** Run one `elide` task for a project, as if the user had picked it from the task list. */
+export async function executeElideTask(
+  workspace: ElideWorkspace,
+  project: ElideProject,
+  command: ElideTaskCommand,
+  args: string[] = [],
+): Promise<vscode.TaskExecution | undefined> {
+  const rel = path.relative(project.folder.uri.fsPath, project.root);
+  const definition: ElideTaskDefinition = {
+    type: ELIDE_TASK_TYPE,
+    command,
+    ...(args.length ? { args } : {}),
+    ...(rel ? { project: rel } : {}),
+  };
+  const label = [command, ...args].join(" ");
+  const task = new ElideTaskProvider(workspace).resolveTask(new vscode.Task(definition, project.folder, label, ELIDE_TASK_TYPE));
+  if (!task) return undefined;
+  return await vscode.tasks.executeTask(task);
+}
+
 export class ElideTaskProvider implements vscode.TaskProvider<vscode.Task> {
   constructor(private readonly workspace: ElideWorkspace) {}
 
@@ -72,7 +92,7 @@ export class ElideTaskProvider implements vscode.TaskProvider<vscode.Task> {
     const taskName = name ?? `${label ?? [def.command, ...(def.args ?? [])].join(" ")}${suffix}`;
     const dist = resolveElideDistribution({ explicitHome: readConfig(project.folder).home });
     const execution = new vscode.ProcessExecution(dist.bin, [def.command, ...(def.args ?? [])], { cwd: project.root });
-    const task = new vscode.Task(def, project.folder, taskName, ELIDE_TASK_TYPE, execution);
+    const task = new vscode.Task(def, project.folder, taskName, ELIDE_TASK_TYPE, execution, ["$elide"]);
     task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, clear: true };
     return task;
   }

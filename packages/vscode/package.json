@@ -102,6 +102,21 @@
           ],
           "default": "intellij",
           "description": "Debug adapter used to attach to the JVM started by `elide run --debugger`."
+        },
+        "elide.install.classifiers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["sources", "docs"]
+          },
+          "default": ["sources"],
+          "uniqueItems": true,
+          "markdownDescription": "Classifier jars fetched by `elide install --with …` during sync. `sources` lets Go to Definition open library code in the Kotlin LSP."
+        },
+        "elide.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Run/Debug code lenses above JVM main functions and on entrypoints, scripts and artifacts in elide.pkl."
         }
       }
     },
@@ -126,6 +141,84 @@
         "command": "elide.runTask",
         "category": "Elide",
         "title": "Run Elide Command…"
+      },
+      {
+        "command": "elide.run",
+        "category": "Elide",
+        "title": "Run Entrypoint",
+        "icon": "$(play)"
+      },
+      {
+        "command": "elide.debug",
+        "category": "Elide",
+        "title": "Debug Entrypoint",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "elide.build",
+        "category": "Elide",
+        "title": "Build Artifact",
+        "icon": "$(package)"
+      },
+      {
+        "command": "elide.executeTask",
+        "category": "Elide",
+        "title": "Run Task",
+        "icon": "$(play)"
+      },
+      {
+        "command": "elide.openManifest",
+        "category": "Elide",
+        "title": "Open elide.pkl",
+        "icon": "$(file-code)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "elide.run",
+          "when": "false"
+        },
+        {
+          "command": "elide.debug",
+          "when": "false"
+        },
+        {
+          "command": "elide.build",
+          "when": "false"
+        },
+        {
+          "command": "elide.executeTask",
+          "when": "false"
+        }
+      ]
+    },
+    "problemMatchers": [
+      {
+        "name": "elide",
+        "label": "Elide build diagnostics",
+        "owner": "elide",
+        "source": "elide",
+        "fileLocation": [
+          "search",
+          {
+            "include": ["${workspaceFolder}"],
+            "exclude": ["${workspaceFolder}/.dev/**", "${workspaceFolder}/node_modules/**"]
+          }
+        ],
+        "pattern": [
+          {
+            "regexp": "^(?:\\[\\s*[^\\]]+\\]\\s?)?(error|warning|info):\\s+(?:\\[\\w+\\]\\s*)?(?:[\\w.+-]+:\\s+)?(.*)$",
+            "severity": 1,
+            "message": 2
+          },
+          {
+            "regexp": "^In file:\\s+(?:file://)?(\\S+?)(?::(\\d+))?(?::(\\d+))?\\s*$",
+            "file": 1,
+            "line": 2,
+            "column": 3
+          }
+        ]
       }
     ],
     "taskDefinitions": [

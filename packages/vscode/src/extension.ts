@@ -4,8 +4,8 @@ import * as vscode from "vscode";
 import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
 import { ElideUi } from "./output.js";
-import { ElideWorkspace } from "./projects.js";
-import { ELIDE_TASK_TYPE, ElideTaskProvider, entrypointArgs, entrypointLabel } from "./tasks.js";
+import { ElideWorkspace, type ElideProject } from "./projects.js";
+import { ELIDE_TASK_TYPE, ElideTaskProvider, entrypointArgs, entrypointLabel, executeElideTask, type ElideTaskCommand } from "./tasks.js";
 
 const DEBOUNCE_MS = 1_000;
 
@@ -19,20 +19,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("elide.showOutput", () => ui.output.show(true)),
     vscode.commands.registerCommand("elide.openWorkspaceJson", () => openWorkspaceJson(workspace)),
     vscode.commands.registerCommand("elide.runTask", () => runTaskCommand(workspace)),
+    vscode.commands.registerCommand("elide.run", (target: unknown) => runEntrypoint(workspace, target, "run")),
+    vscode.commands.registerCommand("elide.build", (target: unknown) => runEntrypoint(workspace, target, "build")),
+    vscode.commands.registerCommand("elide.debug", (target: unknown) => debugEntrypoint(workspace, target)),
+    vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, target)),
+    vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
     vscode.tasks.registerTaskProvider(ELIDE_TASK_TYPE, new ElideTaskProvider(workspace)),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_DEBUG_TYPE, new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions)),
   );
 
   registerWatchers(context, workspace, ui);
+  context.subscriptions.push(
+    workspace.onDidChange(() => void vscode.commands.executeCommand("setContext", "elide.hasProjects", workspace.projects.length > 0)),
+  );
 
   for (const folder of vscode.workspace.workspaceFolders ?? []) await workspace.discover(folder);
-  if (workspace.projects.length === 0) {
-    ui.log("No elide.pkl found in the workspace.");
-    return;
+  await vscode.commands.executeCommand("setContext", "elide.hasProjects", workspace.projects.length > 0);
+  // No project is not a dead end: commands, the welcome view and project creation stay available.
+  if (workspace.projects.length === 0) ui.log("No elide.pkl found in the workspace.");
+  else {
+    ui.setStatus("idle");
+    if (readConfig().syncOnStartup) void workspace.syncAll("startup");
+    else workspace.markStaleAll();
   }
-  ui.setStatus("idle");
-  if (readConfig().syncOnStartup) void workspace.syncAll("startup");
-  else workspace.markStaleAll();
 }
 
 export function deactivate(): void {}
@@ -162,12 +171,12 @@ async function openWorkspaceJson(workspace: ElideWorkspace): Promise<void> {
 }
 
 async function runTaskCommand(workspace: ElideWorkspace): Promise<void> {
-  const items: (vscode.QuickPickItem & { command: string; args: string[]; root: string; folder: vscode.WorkspaceFolder })[] = [];
+  const items: (vscode.QuickPickItem & { command: ElideTaskCommand; args: string[]; project: ElideProject })[] = [];
   for (const project of workspace.projects) {
     const rel = path.relative(project.folder.uri.fsPath, project.root);
     const desc = rel ? rel : project.folder.name;
-    const add = (command: string, args: string[] = [], label = [command, ...args].join(" ")) =>
-      items.push({ label: `elide ${label}`, description: desc, command, args, root: project.root, folder: project.folder });
+    const add = (command: ElideTaskCommand, args: string[] = [], label = [command, ...args].join(" ")) =>
+      items.push({ label: `elide ${label}`, description: desc, command, args, project });
     add("build");
     add("test");
     add("install");
@@ -179,9 +188,81 @@ async function runTaskCommand(workspace: ElideWorkspace): Promise<void> {
   }
   const pick = await vscode.window.showQuickPick(items, { placeHolder: "Elide command to run" });
   if (!pick) return;
-  const rel = path.relative(pick.folder.uri.fsPath, pick.root);
-  const definition = { type: ELIDE_TASK_TYPE, command: pick.command, ...(pick.args.length ? { args: pick.args } : {}), ...(rel ? { project: rel } : {}) };
-  const provider = new ElideTaskProvider(workspace);
-  const task = provider.resolveTask(new vscode.Task(definition, pick.folder, pick.label, ELIDE_TASK_TYPE));
-  if (task) await vscode.tasks.executeTask(task);
+  await executeElideTask(workspace, pick.project, pick.command, pick.args);
+}
+
+/** What a `elide.run`/`elide.debug`/`elide.build`/`elide.executeTask` invocation points at. */
+interface CommandTarget {
+  root: string;
+  args: string[];
+  command?: ElideTaskCommand;
+}
+
+const TASK_COMMANDS: Record<string, ElideTaskCommand> = { build: "build", run: "run", test: "test", install: "install" };
+
+/**
+ * Normalize a command argument: code lenses and menu items pass their own objects, but all of them carry the
+ * project root and, where it applies, the argument vector and the Elide subcommand.
+ */
+function toTarget(value: unknown): CommandTarget | undefined {
+  if (typeof value !== "object" || value === null || !("root" in value) || typeof value.root !== "string") return undefined;
+  const rawArgs = "args" in value ? value.args : undefined;
+  const args = Array.isArray(rawArgs) ? rawArgs.filter((a): a is string => typeof a === "string") : [];
+  const command = "command" in value && typeof value.command === "string" ? TASK_COMMANDS[value.command] : undefined;
+  return { root: value.root, args, ...(command ? { command } : {}) };
+}
+
+function projectForTarget(workspace: ElideWorkspace, target: CommandTarget): ElideProject | undefined {
+  const project = workspace.projectAt(target.root);
+  if (!project) void vscode.window.showWarningMessage(`Elide: project ${target.root} is not synced; run 'Elide: Sync Project(s)'.`);
+  return project;
+}
+
+async function runEntrypoint(workspace: ElideWorkspace, value: unknown, command: ElideTaskCommand): Promise<void> {
+  const target = toTarget(value);
+  if (!target) return;
+  const project = projectForTarget(workspace, target);
+  if (project) await executeElideTask(workspace, project, command, target.args);
+}
+
+async function runNamedTask(workspace: ElideWorkspace, value: unknown): Promise<void> {
+  const target = toTarget(value);
+  if (!target?.command) return;
+  const project = projectForTarget(workspace, target);
+  if (project) await executeElideTask(workspace, project, target.command, target.args);
+}
+
+async function debugEntrypoint(workspace: ElideWorkspace, value: unknown): Promise<void> {
+  const target = toTarget(value);
+  if (!target) return;
+  const project = projectForTarget(workspace, target);
+  if (!project) return;
+  const rel = path.relative(project.folder.uri.fsPath, project.root);
+  await vscode.debug.startDebugging(project.folder, {
+    type: ELIDE_DEBUG_TYPE,
+    request: "launch",
+    name: "Elide: Run (debug)",
+    ...(target.args[0] ? { entrypoint: target.args[0] } : {}),
+    ...(rel ? { project: rel } : {}),
+  });
+}
+
+async function openManifest(workspace: ElideWorkspace, value: unknown): Promise<void> {
+  let root = toTarget(value)?.root;
+  if (!root) {
+    const projects = workspace.projects;
+    if (projects.length === 0) {
+      void vscode.window.showInformationMessage("Elide: no elide.pkl found in the open workspace folders.");
+      return;
+    }
+    root =
+      projects.length === 1
+        ? projects[0]?.root
+        : (await vscode.window.showQuickPick(
+            projects.map((p) => ({ label: p.model?.name ?? path.basename(p.root), description: p.root, root: p.root })),
+            { placeHolder: "Which project?" },
+          ))?.root;
+  }
+  if (!root) return;
+  await vscode.window.showTextDocument(vscode.Uri.file(path.join(root, MANIFEST_NAME)));
 }

@@ -10,6 +10,9 @@ export interface ElideConfig {
   onManifestChange: ManifestChangePolicy;
   writeWorkspaceJson: boolean;
   debugAdapter: DebugAdapterChoice;
+  /** Classifier jars fetched during sync (`elide install --with …`). */
+  installClassifiers: string[];
+  codeLens: boolean;
 }
 
 export function readConfig(scope?: vscode.ConfigurationScope): ElideConfig {
@@ -22,5 +25,7 @@ export function readConfig(scope?: vscode.ConfigurationScope): ElideConfig {
     onManifestChange: c.get<ManifestChangePolicy>("sync.onManifestChange", "prompt"),
     writeWorkspaceJson: c.get<boolean>("kotlinLsp.writeWorkspaceJson", true),
     debugAdapter: c.get<DebugAdapterChoice>("debug.adapter", "intellij"),
+    installClassifiers: c.get<string[]>("install.classifiers", ["sources"]),
+    codeLens: c.get<boolean>("codeLens.enabled", true),
   };
 }
