@@ -2,7 +2,7 @@
   "name": "elide",
   "displayName": "Elide",
   "description": "Elide build tool integration: Kotlin/Java classpath for the Kotlin LSP, build/run/test tasks, and JDWP debugging.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "preview": true,
   "publisher": "elide",
   "author": "Elide Technologies, Inc.",
