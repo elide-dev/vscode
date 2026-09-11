@@ -51,9 +51,15 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
     );
   };
 
-  const onStale = (uri: vscode.Uri, what: string) => {
-    const folder = workspace.locate(uri)?.folder;
-    if (!folder || workspace.projectsIn(folder).length === 0 || workspace.isSelfInflicted(folder)) return;
+  /**
+   * React to a change under a project root. `rootOf` maps the changed file to the directory whose manifest owns it;
+   * a path that is not a tracked project root belongs to a nested (ignored) manifest and is not a reason to resync.
+   */
+  const onStale = (uri: vscode.Uri, what: string, rootOf: (fsPath: string) => string) => {
+    const located = workspace.locate(uri);
+    if (!located) return;
+    const folder = located.folder;
+    if (!workspace.projectAt(rootOf(located.fsPath)) || workspace.isSelfInflicted(folder)) return;
     workspace.markStale(folder);
     ui.log(`${what} changed: ${uri.fsPath}`);
     const policy = readConfig(folder).onManifestChange;
@@ -62,7 +68,7 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
   };
 
   const manifests = vscode.workspace.createFileSystemWatcher(`**/${MANIFEST_NAME}`);
-  manifests.onDidChange((uri) => onStale(uri, MANIFEST_NAME));
+  manifests.onDidChange((uri) => onStale(uri, MANIFEST_NAME, path.dirname));
   manifests.onDidCreate((uri) => {
     const project = workspace.addProject(uri);
     if (!project) return;
@@ -70,17 +76,20 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
     ui.setStatus("stale");
     schedule(project.folder, "project-added");
   });
-  manifests.onDidDelete((uri) => {
+  manifests.onDidDelete(async (uri) => {
     const project = workspace.removeProject(uri);
     if (!project) return;
     ui.log(`project removed: ${project.root}`);
+    // Manifests that were nested inside the deleted project become projects of their own.
+    await workspace.discover(project.folder);
     if (workspace.projectsIn(project.folder).length > 0) void workspace.syncFolder(project.folder, "project-removed");
     else ui.setStatus("none");
   });
 
   const lockfiles = vscode.workspace.createFileSystemWatcher("**/.dev/elide.lock*");
   const onLock = (uri: vscode.Uri) => {
-    if (isLockfileName(path.basename(uri.fsPath))) onStale(uri, "lockfile");
+    // `<project root>/.dev/elide.lock*.bin`: two levels up from the lockfile.
+    if (isLockfileName(path.basename(uri.fsPath))) onStale(uri, "lockfile", (p) => path.dirname(path.dirname(p)));
   };
   lockfiles.onDidChange(onLock);
   lockfiles.onDidCreate(onLock);

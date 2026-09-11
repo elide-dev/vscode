@@ -44,6 +44,27 @@ writeFileSync(
 const sample = mkdtempSync(path.join(realpathSync(tmpdir()), "elide-ktjvm-"));
 cpSync(path.join(repoRoot, "samples", "ktjvm"), sample, { recursive: true, filter: (src) => !src.includes(`${path.sep}.dev`) && !src.endsWith("workspace.json") });
 
+// A vendored checkout with its own manifest, nested inside the project: a separate build the sample never invokes,
+// so it must not appear in workspace.json (the module assertion in index.ts covers it).
+mkdirSync(path.join(sample, "vendored", "src", "main", "nested"), { recursive: true });
+writeFileSync(path.join(sample, "vendored", "src", "main", "nested", "Nested.kt"), "package nested\n\nfun vendored() = 1\n");
+writeFileSync(
+  path.join(sample, "vendored", "elide.pkl"),
+  `amends "elide:project.pkl"
+import "elide:Sources.pkl" as Sources
+
+name = "vendored-sample"
+
+sources {
+    ["main"] = new Sources.SourceSetSpec {
+        paths {
+            "src/main/**/*.kt"
+        }
+    }
+}
+`,
+);
+
 // A checked-in `.idea` (team members on IntelliJ) must not divert the Kotlin LSP away from workspace.json: the
 // server's auto-detection picks JPS whenever `.idea/modules.xml` exists, so the extension has to pin the importer.
 mkdirSync(path.join(sample, ".idea", "modules"), { recursive: true });

@@ -43,7 +43,10 @@ Opening a folder that contains `elide.pkl` runs a **sync**:
    `intellij.jdkForSymbolResolution` is written to **user** settings. A running Kotlin LSP is then asked to reload.
 
 `workspace.json` is a generated artifact — add it to `.gitignore`. Every `elide.pkl` under a workspace folder (outside
-`.dev/` and `node_modules/`) becomes a set of modules in that folder's single `workspace.json`.
+`.dev/` and `node_modules/`) becomes a set of modules in that folder's single `workspace.json`. A manifest nested
+inside another project's directory — a vendored checkout, a sample, a fixture — is a separate build the enclosing
+project does not invoke: only the outermost manifest of each tree is imported, and changes to the nested ones do not
+trigger a sync.
 
 ### Mixed-editor checkouts (`.idea`, Gradle, Maven)
 

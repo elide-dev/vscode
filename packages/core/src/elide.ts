@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { ElideCommandFailedError, ElideNotFoundError, InvalidElideHomeError, ManifestParseError } from "./errors.js";
 import { decodeManifest, type Manifest } from "./manifest.js";
+import { isPathUnder, normalizePath } from "./sourceRoots.js";
 
 export interface ElideDistribution {
   /** Distribution root, e.g. `~/.local/share/elide`. */
@@ -290,6 +291,34 @@ export function parseClasspath(text: string, root: string, delimiter: string = p
 
 export function isLockfileName(fileName: string): boolean {
   return fileName.startsWith(LOCKFILE_PREFIX) && fileName.endsWith(LOCKFILE_EXTENSION);
+}
+
+/** Whether `p` is a strict descendant of directory `dir`; both are resolved and compared as normalized paths. */
+export function isNestedUnder(p: string, dir: string): boolean {
+  const child = normalizePath(path.resolve(p));
+  const parent = normalizePath(path.resolve(dir));
+  return child !== parent && isPathUnder(child, parent);
+}
+
+/**
+ * Keep only the outermost manifest of each directory tree.
+ *
+ * Elide has no subproject concept: a manifest inside another project's directory (a vendored checkout, a sample, a
+ * test fixture) is a separate build the enclosing project never invokes. Importing both resolves the inner sources
+ * twice and produces overlapping content roots in the generated workspace model, so the nested ones are dropped.
+ * Input order is preserved.
+ */
+export function outermostManifests(manifestPaths: Iterable<string>): string[] {
+  const all = [...manifestPaths].map((manifest) => ({ manifest, root: path.dirname(path.resolve(manifest)) }));
+  const roots: string[] = [];
+  const kept = new Set<string>();
+  // Shallower roots first: an ancestor is always shorter than its descendants, so it is decided before them.
+  for (const entry of [...all].sort((a, b) => a.root.length - b.root.length)) {
+    if (roots.some((r) => r === entry.root || isNestedUnder(entry.root, r))) continue;
+    roots.push(entry.root);
+    kept.add(entry.manifest);
+  }
+  return all.map((e) => e.manifest).filter((m) => kept.has(m));
 }
 
 /**
