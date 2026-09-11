@@ -6,3 +6,4 @@ dist/
 workspace.json
 .DS_Store
 dist-test/
+.claude/
