@@ -111,7 +111,7 @@
           },
           "default": ["sources"],
           "uniqueItems": true,
-          "markdownDescription": "Classifier jars fetched by `elide install --with …` during sync. `sources` lets Go to Definition open library code in the Kotlin LSP."
+          "markdownDescription": "Classifier jars installed for the manifest's declared Maven packages. `sources` lets Go to Definition open library code in the Kotlin LSP; `docs` adds javadoc jars; an empty list installs classes only. Elide's own Kotlin and JUnit jars are published without classifiers."
         },
         "elide.codeLens.enabled": {
           "type": "boolean",
@@ -131,6 +131,12 @@
         "command": "elide.showOutput",
         "category": "Elide",
         "title": "Show Output"
+      },
+      {
+        "command": "elide.showMenu",
+        "category": "Elide",
+        "title": "Show Menu",
+        "icon": "$(list-unordered)"
       },
       {
         "command": "elide.openWorkspaceJson",

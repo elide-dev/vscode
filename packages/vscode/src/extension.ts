@@ -17,6 +17,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand("elide.sync", () => syncCommand(workspace)),
     vscode.commands.registerCommand("elide.showOutput", () => ui.output.show(true)),
+    vscode.commands.registerCommand("elide.showMenu", () => showMenu(workspace)),
     vscode.commands.registerCommand("elide.openWorkspaceJson", () => openWorkspaceJson(workspace)),
     vscode.commands.registerCommand("elide.runTask", () => runTaskCommand(workspace)),
     vscode.commands.registerCommand("elide.run", (target: unknown) => runEntrypoint(workspace, target, "run")),
@@ -168,6 +169,35 @@ async function openWorkspaceJson(workspace: ElideWorkspace): Promise<void> {
   } catch {
     void vscode.window.showWarningMessage(`Elide: ${file.fsPath} does not exist yet; run 'Elide: Sync Project(s)'.`);
   }
+}
+
+/** Actions offered by the status-bar menu, in order; entries whose command is not registered are skipped. */
+const MENU_ACTIONS: { label: string; description: string; command: string }[] = [
+  { label: "$(sync) Sync Project(s)", description: "Re-resolve the project model and refresh the Kotlin LSP", command: "elide.sync" },
+  { label: "$(play) Run Elide Command…", description: "Build, test, install, or run an entrypoint", command: "elide.runTask" },
+  { label: "$(beaker) Run All Tests", description: "Run every test in the Testing view", command: "testing.runAll" },
+  { label: "$(file-code) Open elide.pkl", description: "Project manifest", command: "elide.openManifest" },
+  { label: "$(json) Open generated Kotlin LSP workspace", description: WORKSPACE_JSON, command: "elide.openWorkspaceJson" },
+  { label: "$(output) Show Output", description: "Elide output channel", command: "elide.showOutput" },
+  { label: "$(new-folder) New Project…", description: "Create a project from an Elide template", command: "elide.newProject" },
+];
+
+async function showMenu(workspace: ElideWorkspace): Promise<void> {
+  const registered = new Set(await vscode.commands.getCommands(true));
+  const items: (vscode.QuickPickItem & { command: string })[] = [];
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const error = workspace.lastError(folder);
+    if (!error) continue;
+    items.push({
+      label: `$(error) Last sync failed: ${error.split("\n")[0]}`,
+      description: folder.name,
+      command: "elide.showOutput",
+    });
+    break;
+  }
+  items.push(...MENU_ACTIONS.filter((a) => registered.has(a.command)));
+  const pick = await vscode.window.showQuickPick(items, { placeHolder: "Elide" });
+  if (pick) await vscode.commands.executeCommand(pick.command);
 }
 
 async function runTaskCommand(workspace: ElideWorkspace): Promise<void> {
