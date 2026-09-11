@@ -33,7 +33,8 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 
 ## Getting started
 
-1. Open a folder containing `elide.pkl`. The status bar shows sync progress; `Elide: Show Output` has the CLI log.
+1. Open a folder containing `elide.pkl`. The status bar shows the project name and sync progress; click it for the
+   Elide actions, or run `Elide: Show Output` for the CLI log.
 2. Open a Kotlin or Java file. Once the Kotlin LSP has imported the generated `workspace.json`, completion and
    navigation resolve against the project's dependencies.
 3. Run `Elide: Run Elide Command…`, or press F5 with an `elide` launch configuration to debug.
@@ -44,7 +45,8 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 
 | Command | Description |
 | --- | --- |
-| `Elide: Sync Project(s)` | Re-run the sync (the status bar item does the same). |
+| `Elide: Sync Project(s)` | Re-run the sync. |
+| `Elide: Show Menu` | Quick pick with the Elide actions (what the status bar item opens). |
 | `Elide: Run Elide Command…` | Pick `build`, `test`, `install`, or `run <entrypoint>` and run it as a task. |
 | `Elide: Open generated Kotlin LSP workspace` | Open the generated `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel. |
@@ -58,6 +60,7 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `elide.sync.onStartup` | `true` | Sync when the workspace opens. |
 | `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` or the lockfile changes. |
 | `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json`. |
+| `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
 | `elide.debug.adapter` | `"intellij"` | Attach with the JetBrains JVM debugger (`intellij`) or Debugger for Java (`java`). |
 
 The extension also maintains two Kotlin LSP settings: `intellij.buildTool` (pinned to `json` in workspace settings) and

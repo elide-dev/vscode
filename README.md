@@ -74,7 +74,8 @@ anything you set by hand stays.
 
 | Command | Description |
 | --- | --- |
-| `Elide: Sync Project(s)` | Re-run the sync (status bar item does the same). |
+| `Elide: Sync Project(s)` | Re-run the sync. |
+| `Elide: Show Menu` | Quick pick with the Elide actions (what the status bar item opens). |
 | `Elide: Run Elide Command…` | Pick `build`, `test`, `install`, or `run <entrypoint>` and run it as a task. |
 | `Elide: Open generated Kotlin LSP workspace` | Open `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel (CLI output, sync log). |
@@ -107,6 +108,7 @@ session terminates the Elide process. The JDWP agent always binds port 5005, so 
 | `elide.sync.onStartup` | `true` | Sync when the workspace opens. |
 | `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` or the lockfile changes. |
 | `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json`. |
+| `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
 | `elide.debug.adapter` | `"intellij"` | `intellij` or `java`. |
 
 ## Repository layout

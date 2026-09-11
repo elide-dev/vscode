@@ -6,6 +6,16 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ## [Unreleased]
 
+### Added
+
+- `Elide: Show Menu` — a quick pick with sync, run, test, manifest, workspace and output actions. The status bar item
+  opens it instead of syncing directly, shows the project name when the window holds a single Elide project, and
+  offers the last sync failure as the first entry.
+- `elide.install.classifiers` (default `["sources"]`): the classifier jars installed for the manifest's declared
+  Maven packages, so Go to Definition opens library sources. Changing the setting forces a re-install.
+- A warning when the resolved Elide CLI is older than 1.5.0, shown once per distribution; the release is logged to
+  the output channel on every sync.
+
 ### Changed
 
 - Manifests nested inside another Elide project (vendored checkouts, samples, fixtures) are no longer imported as
