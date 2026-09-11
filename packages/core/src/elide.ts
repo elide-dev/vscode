@@ -3,7 +3,9 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { parseBuildInspect, type BuildTaskInfo } from "./buildTasks.js";
 import { ElideCommandFailedError, ElideNotFoundError, InvalidElideHomeError, ManifestParseError } from "./errors.js";
+import { decodeInitTemplates, initArgs, type InitTemplate } from "./init.js";
 import { decodeManifest, type Manifest } from "./manifest.js";
 import { isPathUnder, normalizePath } from "./sourceRoots.js";
 
@@ -136,7 +138,7 @@ const STDERR_CAPTURE_LIMIT = 64 * 1024;
 const TERMINATION_GRACE_MS = 5_000;
 
 /** Splits a stream into lines, forwarding complete lines and keeping the remainder. */
-class LineSplitter {
+export class LineSplitter {
   private rest = "";
   constructor(private readonly emit: (line: string) => void) {}
   push(chunk: string): void {
@@ -273,9 +275,43 @@ export class ElideCli {
     return parseClasspath(text, this.projectRoot);
   }
 
-  /** `elide install`. */
-  async install(opts: RunOptions = {}): Promise<void> {
-    await this.run(["install"], opts);
+  /** `elide install`, optionally fetching classifier jars (`--with sources`, `--with docs`) next to each jar. */
+  async install(opts: RunOptions & { with?: readonly string[] } = {}): Promise<void> {
+    await this.run(["install", ...(opts.with ?? []).flatMap((classifier) => ["--with", classifier])], opts);
+  }
+
+  /** `elide build --inspect` → the build targets of the project and the options they accept. */
+  async buildInspect(opts: RunOptions = {}): Promise<BuildTaskInfo[]> {
+    let text = "";
+    await this.run(["build", "--inspect"], {
+      ...opts,
+      onLine: (line, stderr) => {
+        if (!stderr) text += `${line}\n`;
+        opts.onLine?.(line, stderr);
+      },
+    });
+    return parseBuildInspect(text);
+  }
+
+  /** `elide init --templates --json` → the project templates the CLI can generate. */
+  async initTemplates(opts: RunOptions = {}): Promise<InitTemplate[]> {
+    let json = "";
+    await this.run(["init", "--templates", "--json"], {
+      ...opts,
+      onLine: (line, stderr) => {
+        if (!stderr) json += `${line}\n`;
+        opts.onLine?.(line, stderr);
+      },
+    });
+    return decodeInitTemplates(json);
+  }
+
+  /**
+   * Generate a project from a template, non-interactively. The CLI has no target-path flag, so the project lands
+   * in this instance's `projectRoot`, which must be the (existing) target directory.
+   */
+  async init(templateId: string, answers: Readonly<Record<string, string>>, opts: RunOptions = {}): Promise<void> {
+    await this.run(initArgs(templateId, answers), opts);
   }
 }
 

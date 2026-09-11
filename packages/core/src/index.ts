@@ -2,6 +2,7 @@ export * from "./errors.js";
 export {
   DEPENDENCIES_DIR,
   ElideCli,
+  LineSplitter,
   MANIFEST_NAME,
   OUTPUT_DIR,
   defaultHomeCandidates,

@@ -51,6 +51,10 @@ export interface BuildModelOptions {
   signal?: AbortSignal;
   /** Skip `elide install` even when the lockfile is stale. */
   skipInstall?: boolean;
+  /** Classifier jars to fetch alongside the dependencies (`sources`, `docs`). */
+  installWith?: readonly string[];
+  /** Run `elide install` even when the lockfile is current, e.g. after the requested classifiers changed. */
+  forceInstall?: boolean;
   jdk?: ResolveJdkOptions;
   exists?: (p: string) => boolean;
 }
@@ -67,9 +71,9 @@ export async function buildProjectModel(cli: ElideCli, manifest: Manifest, opts:
   opts.onProgress?.("Querying Elide version");
   const elideVersion = await cli.version(run);
 
-  if (!opts.skipInstall && !(await isLockfileCurrent(cli.projectRoot))) {
+  if (!opts.skipInstall && (opts.forceInstall || !(await isLockfileCurrent(cli.projectRoot)))) {
     opts.onProgress?.("Installing dependencies");
-    await cli.install(run);
+    await cli.install({ ...run, with: opts.installWith });
   }
 
   const librariesRoot = manifest.dependencies.maven?.localRepository ?? DEFAULT_LIBRARIES_ROOT;
