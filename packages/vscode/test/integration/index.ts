@@ -154,7 +154,7 @@ export async function run(): Promise<void> {
   // 4b. Target commands: the ids code lenses and menus invoke exist, run a task for a project root, and the
   //     manifest opener resolves the single project without an argument.
   const commands = await vscode.commands.getCommands(true);
-  for (const id of ["elide.run", "elide.debug", "elide.build", "elide.executeTask", "elide.openManifest", "elide.showMenu"]) {
+  for (const id of ["elide.run", "elide.debug", "elide.build", "elide.executeTask", "elide.openManifest", "elide.showMenu", "elide.revealLibrary"]) {
     assert.ok(commands.includes(id), `command ${id} registered`);
   }
   const runExit = await new Promise<number | undefined>((resolve) => {
@@ -276,6 +276,35 @@ export async function run(): Promise<void> {
     2_000,
   );
   log("test explorer ok");
+
+  // 4g. Sidebar: the activity-bar view focuses, the tree exposes the project with its four groups, and the lazily
+  //     loaded build targets come from `elide build --inspect`.
+  await vscode.commands.executeCommand("elide.projects.focus");
+  const explorer = await waitFor("extension explorer api", () => (extension.exports as ElideApi | undefined)?.explorer, 30_000, 500);
+  const roots = (await explorer.getChildren()) as { kind: string; label: string; root: string }[];
+  assert.deepEqual(roots.map((n) => [n.kind, n.root]), [["project", sample]], "one project node");
+  const groups = (await explorer.getChildren(roots[0])) as { kind: string; label: string; group: string }[];
+  assert.deepEqual(groups.map((g) => g.label), ["Entrypoints", "Tasks", "Source sets", "Dependencies"]);
+  const childrenOf = async (label: string) => {
+    const group = groups.find((g) => g.label === label);
+    assert.ok(group, `group ${label}`);
+    return (await explorer.getChildren(group)) as { kind: string; label: string; args?: string[]; attached?: string }[];
+  };
+  const entrypoints = await childrenOf("Entrypoints");
+  assert.deepEqual(entrypoints.map((n) => [n.label, n.args]), [["sample.MainKt", []]], "the manifest's jvm.main entrypoint");
+  const taskNodes = await childrenOf("Tasks");
+  assert.deepEqual(taskNodes.map((n) => n.label), ["build", "test", "install", "Build targets"]);
+  const targets = (await explorer.getChildren(taskNodes[3])) as { kind: string; label: string }[];
+  assert.ok(targets.length > 0 && targets.every((n) => n.kind === "buildTarget"), `elide build --inspect targets, got ${JSON.stringify(targets)}`);
+  const sourceSets = await childrenOf("Source sets");
+  assert.deepEqual(sourceSets.map((n) => n.label), ["main", "test"]);
+  const mainRoots = (await explorer.getChildren(sourceSets[0])) as { kind: string; label: string }[];
+  assert.ok(mainRoots.some((n) => n.label === path.join("src", "main")), `main source root, got ${JSON.stringify(mainRoots.map((n) => n.label))}`);
+  const libraries = await childrenOf("Dependencies");
+  const guavaNode = libraries.find((n) => n.label.includes("com.google.guava:guava"));
+  assert.ok(guavaNode, `guava dependency node, got ${JSON.stringify(libraries.map((n) => n.label))}`);
+  assert.equal(guavaNode.attached, "sources", "guava shows its attached sources jar");
+  log("sidebar ok:", JSON.stringify(groups.map((g) => g.label)), `${targets.length} build targets`);
 
   // 5. Debug: launch `elide run --debugger`, attach, hit a breakpoint, stop.
   const mainDoc = await vscode.workspace.openTextDocument(mainKt);

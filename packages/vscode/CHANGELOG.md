@@ -24,6 +24,10 @@ All notable changes to the Elide extension are documented here. The format follo
   `-t <pattern>` for a narrower selection. Failures carry the assertion message, the stack trace, and a location
   taken from the first frame in the test's own file. The Debug profile runs the same command under a JDWP agent and
   attaches `elide.debug.adapter`.
+- **Elide sidebar**: an activity-bar view listing every project with its entrypoints, tasks, build targets
+  (`elide build --inspect`, loaded on first expansion), source sets and dependencies. Rows carry inline Run, Debug,
+  Build, Sync and Open-manifest actions; a dependency can be revealed in the OS file manager. With no project in the
+  workspace the view shows what to do instead.
 - The `$elide` problem matcher on every `elide` task: kotlinc errors and warnings become diagnostics on the reported
   file and line, resolved by searching the workspace folder.
 - Commands `Elide: Run Entrypoint`, `Elide: Debug Entrypoint`, `Elide: Build Artifact`, `Elide: Run Task` and

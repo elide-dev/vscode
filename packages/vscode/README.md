@@ -21,6 +21,8 @@ Elide's build, run, test, and debug commands are available from the editor.
 - **Tasks.** `elide build`, `elide test`, `elide install`, and one run task per manifest entrypoint.
 - **Test Explorer.** JUnit tests of the project's test source roots in the **Testing** view, run and debugged through
   `elide test --reporter=tap` with live results, failure messages and stack-trace locations.
+- **Elide sidebar.** An activity-bar view with each project's entrypoints, tasks, build targets (`elide build
+  --inspect`), source sets and dependencies; run, debug, build and sync straight from the tree.
 - **Debugging.** Launch `elide run --debugger` and attach with breakpoints in Kotlin and Java.
 
 ## Requirements
@@ -39,7 +41,8 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
    Elide actions, or run `Elide: Show Output` for the CLI log.
 2. Open a Kotlin or Java file. Once the Kotlin LSP has imported the generated `workspace.json`, completion and
    navigation resolve against the project's dependencies.
-3. Run `Elide: Run Elide Command…`, or press F5 with an `elide` launch configuration to debug.
+3. Open the **Elide** view in the activity bar to run entrypoints, tasks and build targets, or press F5 with an
+   `elide` launch configuration to debug. `Elide: Run Elide Command…` does the same from the command palette.
 
 `workspace.json` is a generated artifact — add it to `.gitignore`.
 

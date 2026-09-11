@@ -60,7 +60,8 @@
   "activationEvents": [
     "workspaceContains:**/elide.pkl",
     "onDebugResolve:elide",
-    "onTaskType:elide"
+    "onTaskType:elide",
+    "onView:elide.projects"
   ],
   "contributes": {
     "configuration": {
@@ -147,7 +148,8 @@
       {
         "command": "elide.runTask",
         "category": "Elide",
-        "title": "Run Elide Command…"
+        "title": "Run Elide Command…",
+        "icon": "$(play)"
       },
       {
         "command": "elide.run",
@@ -178,6 +180,11 @@
         "category": "Elide",
         "title": "Open elide.pkl",
         "icon": "$(file-code)"
+      },
+      {
+        "command": "elide.revealLibrary",
+        "category": "Elide",
+        "title": "Reveal in Finder/Explorer"
       }
     ],
     "menus": {
@@ -197,9 +204,92 @@
         {
           "command": "elide.executeTask",
           "when": "false"
+        },
+        {
+          "command": "elide.revealLibrary",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "elide.sync",
+          "when": "view == elide.projects",
+          "group": "navigation@1"
+        },
+        {
+          "command": "elide.runTask",
+          "when": "view == elide.projects",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "elide.run",
+          "when": "view == elide.projects && viewItem == entrypoint",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.debug",
+          "when": "view == elide.projects && viewItem == entrypoint",
+          "group": "inline@2"
+        },
+        {
+          "command": "elide.run",
+          "when": "view == elide.projects && viewItem == script",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.executeTask",
+          "when": "view == elide.projects && viewItem == task",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.executeTask",
+          "when": "view == elide.projects && viewItem == buildTarget",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.sync",
+          "when": "view == elide.projects && viewItem == project",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.openManifest",
+          "when": "view == elide.projects && viewItem == project",
+          "group": "inline@2"
+        },
+        {
+          "command": "elide.revealLibrary",
+          "when": "view == elide.projects && viewItem == library"
         }
       ]
     },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "elide",
+          "title": "Elide",
+          "icon": "media/elide.svg"
+        }
+      ]
+    },
+    "views": {
+      "elide": [
+        {
+          "id": "elide.projects",
+          "name": "Projects",
+          "contextualTitle": "Elide",
+          "icon": "media/elide.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "elide.projects",
+        "when": "!elide.hasProjects",
+        "contents": "No Elide project (`elide.pkl`) in this workspace.\n[Open Folder](command:vscode.openFolder)\n[Elide documentation](https://docs.elide.dev)"
+      }
+    ],
     "problemMatchers": [
       {
         "name": "elide",

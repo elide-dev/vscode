@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import { ElideCodeLensProvider } from "./codelens.js";
 import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
+import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./explorer.js";
 import { ElideUi } from "./output.js";
 import { ElideWorkspace, type ElideProject } from "./projects.js";
 import { ELIDE_TASK_TYPE, ElideTaskProvider, entrypointArgs, entrypointLabel, executeElideTask, type ElideTaskCommand } from "./tasks.js";
@@ -12,6 +13,7 @@ import { ElideTestController, type ElideTestApi } from "./testing.js";
 /** What `activate` resolves to; consumed only by the extension-host integration test. */
 export interface ElideExtensionApi {
   tests: ElideTestApi;
+  explorer: ElideExplorerApi;
 }
 
 const DEBOUNCE_MS = 1_000;
@@ -24,6 +26,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const debugConfigurations = new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions);
   const tests = new ElideTestController(workspace, ui, debugConfigurations.sessions);
   const codeLenses = new ElideCodeLensProvider(workspace);
+  const explorer = new ElideProjectsView(workspace, ui);
   context.subscriptions.push(
     codeLenses,
     vscode.languages.registerCodeLensProvider(ElideCodeLensProvider.selector, codeLenses),
@@ -37,8 +40,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.debug", (target: unknown) => debugEntrypoint(workspace, target)),
     vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, target)),
     vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
+    vscode.commands.registerCommand("elide.revealLibrary", (target: unknown) => revealLibrary(target)),
     vscode.tasks.registerTaskProvider(ELIDE_TASK_TYPE, new ElideTaskProvider(workspace)),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_DEBUG_TYPE, debugConfigurations),
+    vscode.window.registerTreeDataProvider(PROJECTS_VIEW_ID, explorer),
+    explorer,
     tests,
   );
 
@@ -56,7 +62,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     if (readConfig().syncOnStartup) void workspace.syncAll("startup");
     else workspace.markStaleAll();
   }
-  return { tests };
+  return { tests, explorer };
 }
 
 export function deactivate(): void {}
@@ -309,4 +315,11 @@ async function openManifest(workspace: ElideWorkspace, value: unknown): Promise<
   }
   if (!root) return;
   await vscode.window.showTextDocument(vscode.Uri.file(path.join(root, MANIFEST_NAME)));
+}
+
+/** Show a dependency's jar in the OS file manager; invoked from the `library` rows of the Elide sidebar. */
+async function revealLibrary(value: unknown): Promise<void> {
+  const classes = typeof value === "object" && value !== null && "classes" in value ? value.classes : undefined;
+  if (typeof classes !== "string" || classes.length === 0) return;
+  await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(classes));
 }
