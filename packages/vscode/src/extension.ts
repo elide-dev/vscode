@@ -1,6 +1,7 @@
 import path from "node:path";
 import { MANIFEST_NAME, WORKSPACE_JSON, isLockfileName } from "@elide/ide-core";
 import * as vscode from "vscode";
+import { ElideCodeLensProvider } from "./codelens.js";
 import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
 import { ElideUi } from "./output.js";
@@ -14,7 +15,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const workspace = new ElideWorkspace(ui, context.globalState);
   context.subscriptions.push(ui, workspace);
 
+  const codeLenses = new ElideCodeLensProvider(workspace);
   context.subscriptions.push(
+    codeLenses,
+    vscode.languages.registerCodeLensProvider(ElideCodeLensProvider.selector, codeLenses),
     vscode.commands.registerCommand("elide.sync", () => syncCommand(workspace)),
     vscode.commands.registerCommand("elide.showOutput", () => ui.output.show(true)),
     vscode.commands.registerCommand("elide.showMenu", () => showMenu(workspace)),
