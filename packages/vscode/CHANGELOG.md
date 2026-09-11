@@ -32,6 +32,12 @@ All notable changes to the Elide extension are documented here. The format follo
   file and line, resolved by searching the workspace folder.
 - Commands `Elide: Run Entrypoint`, `Elide: Debug Entrypoint`, `Elide: Build Artifact`, `Elide: Run Task` and
   `Elide: Open elide.pkl`, invoked with a project root and argument vector by the code lenses and menus.
+- **`Elide: New Project…`**: a wizard over `elide init` — it lists the templates the installed CLI reports
+  (`elide init --templates --json`), asks for each template parameter with the CLI's own validation, asks which
+  optional blocks to include, generates the project in a directory you pick and opens it. Reachable from the
+  palette, the Elide view's title bar, the empty-workspace welcome view and the Elide menu.
+- A **Get started with Elide** walkthrough: install the CLI, open or create a project, sync with the Kotlin LSP,
+  run and debug, run tests.
 
 ### Changed
 

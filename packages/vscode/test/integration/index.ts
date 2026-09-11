@@ -306,6 +306,73 @@ export async function run(): Promise<void> {
   assert.equal(guavaNode.attached, "sources", "guava shows its attached sources jar");
   log("sidebar ok:", JSON.stringify(groups.map((g) => g.label)), `${targets.length} build targets`);
 
+  // 4h. New Project wizard: the real `elide.newProject` command, driven end to end. The extension host shares this
+  //     `vscode` module object with the extension, so the dialogs it opens are answered by standing in for the API
+  //     (as step 7 does for notifications); `vscode.openFolder` is intercepted because opening the generated
+  //     project would take the test's window with it.
+  assert.ok(commands.includes("elide.newProject"), "elide.newProject registered");
+  const wizardParent = path.join(tmpdir(), `elide-wizard-${process.pid}`);
+  rmSync(wizardParent, { recursive: true, force: true });
+  mkdirSync(path.join(wizardParent, "taken"), { recursive: true });
+  const windowStubs: Record<string, unknown> = vscode.window;
+  const commandStubs: Record<string, unknown> = vscode.commands;
+  const realQuickPick = windowStubs.showQuickPick;
+  const realInputBox = windowStubs.showInputBox;
+  const realOpenDialog = windowStubs.showOpenDialog;
+  const realExecuteCommand = vscode.commands.executeCommand;
+  const prompts: string[] = [];
+  let opened: vscode.Uri | undefined;
+  let nameProblems: (string | undefined)[] = [];
+  try {
+    // The template is chosen by id; every other pick takes the first entry, which the wizard orders as the default.
+    windowStubs.showQuickPick = (items: unknown, options?: vscode.QuickPickOptions) => {
+      const list = items as (string | { label: string; description?: string })[];
+      const chosen = list.find((i) => typeof i !== "string" && i.description === "ktjvm") ?? list[0]!;
+      prompts.push(`pick ${options?.title ?? options?.placeHolder}: ${typeof chosen === "string" ? chosen : chosen.label}`);
+      return Promise.resolve(chosen);
+    };
+    windowStubs.showOpenDialog = () => Promise.resolve([vscode.Uri.file(wizardParent)]);
+    windowStubs.showInputBox = (options?: vscode.InputBoxOptions) => {
+      prompts.push(`input ${options?.title ?? options?.prompt}: ${options?.value ?? ""}`);
+      if (!options?.prompt?.startsWith("Project name")) return Promise.resolve(options?.value ?? "");
+      nameProblems = ["", "nested/name", "taken"].map((v) => options.validateInput?.(v) as string | undefined);
+      return Promise.resolve("wizard-check");
+    };
+    commandStubs.executeCommand = (command: string, ...args: unknown[]) => {
+      if (command !== "vscode.openFolder") return realExecuteCommand.call(vscode.commands, command, ...args);
+      opened = args[0] as vscode.Uri;
+      return Promise.resolve(undefined);
+    };
+    await realExecuteCommand.call(vscode.commands, "elide.newProject");
+  } finally {
+    windowStubs.showQuickPick = realQuickPick;
+    windowStubs.showInputBox = realInputBox;
+    windowStubs.showOpenDialog = realOpenDialog;
+    commandStubs.executeCommand = realExecuteCommand;
+  }
+  log("wizard prompts:", JSON.stringify(prompts));
+  // The name is a single, new directory name: empty, separator-bearing and existing names are all rejected.
+  assert.equal(nameProblems.length, 3);
+  for (const problem of nameProblems) assert.equal(typeof problem, "string", `rejected name reported, got ${JSON.stringify(nameProblems)}`);
+  const generated = path.join(wizardParent, "wizard-check");
+  assert.equal(opened?.fsPath, generated, `the generated project is opened, prompts: ${JSON.stringify(prompts)}`);
+  assert.ok(existsSync(path.join(generated, "elide.pkl")), "generated project has a manifest");
+  assert.ok(existsSync(path.join(generated, "src")), "generated project has sources");
+  assert.match(readFileSync(path.join(generated, "elide.pkl"), "utf8"), /wizard-check/, "the project name answer reached the manifest");
+  rmSync(wizardParent, { recursive: true, force: true });
+  log("new project wizard ok");
+
+  // 4i. Walkthrough: the contributed steps open, and the markdown each step renders exists in the packaged media
+  //     directory — a wrong path leaves the step body silently empty.
+  const walkthroughs = extension.packageJSON.contributes.walkthroughs as { id: string; steps: { id: string; media: { markdown: string } }[] }[];
+  const gettingStarted = walkthroughs.find((w) => w.id === "elide.gettingStarted");
+  assert.ok(gettingStarted, `getting-started walkthrough contributed, got ${JSON.stringify(walkthroughs.map((w) => w.id))}`);
+  for (const step of gettingStarted.steps) {
+    assert.ok(existsSync(path.join(extension.extensionPath, step.media.markdown)), `${step.id} media ${step.media.markdown} exists`);
+  }
+  await vscode.commands.executeCommand("workbench.action.openWalkthrough", `${extension.id}#elide.gettingStarted`);
+  log("walkthrough ok:", gettingStarted.steps.map((s) => s.id).join(", "));
+
   // 5. Debug: launch `elide run --debugger`, attach, hit a breakpoint, stop.
   const mainDoc = await vscode.workspace.openTextDocument(mainKt);
   const bpLine = mainDoc.getText().split("\n").findIndex((l) => l.includes("println(greeting"));

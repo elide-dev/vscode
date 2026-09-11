@@ -23,6 +23,8 @@ Elide's build, run, test, and debug commands are available from the editor.
   `elide test --reporter=tap` with live results, failure messages and stack-trace locations.
 - **Elide sidebar.** An activity-bar view with each project's entrypoints, tasks, build targets (`elide build
   --inspect`), source sets and dependencies; run, debug, build and sync straight from the tree.
+- **New project wizard.** `Elide: New Project…` lists the templates of the installed CLI (`elide init --templates`),
+  asks for the parameters that template declares, generates the project and opens it.
 - **Debugging.** Launch `elide run --debugger` and attach with breakpoints in Kotlin and Java.
 
 ## Requirements
@@ -44,6 +46,8 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 3. Open the **Elide** view in the activity bar to run entrypoints, tasks and build targets, or press F5 with an
    `elide` launch configuration to debug. `Elide: Run Elide Command…` does the same from the command palette.
 
+   The **Get started with Elide** walkthrough (Help → Get Started) covers the same ground step by step.
+
 `workspace.json` is a generated artifact — add it to `.gitignore`.
 
 ## Commands
@@ -53,6 +57,7 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `Elide: Sync Project(s)` | Re-run the sync. |
 | `Elide: Show Menu` | Quick pick with the Elide actions (what the status bar item opens). |
 | `Elide: Run Elide Command…` | Pick `build`, `test`, `install`, or `run <entrypoint>` and run it as a task. |
+| `Elide: New Project…` | Create a project from an Elide template in a directory you pick. |
 | `Elide: Open generated Kotlin LSP workspace` | Open the generated `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel. |
 

@@ -446,10 +446,7 @@ export class ElideWorkspace implements vscode.Disposable {
     const message = e instanceof Error ? e.message : String(e);
     this.ui.log(`sync failed: ${message}`);
     if (e instanceof ElideNotFoundError || e instanceof InvalidElideHomeError) {
-      void vscode.window.showErrorMessage(`Elide: ${message}`, "Set elide.home", "Install Elide").then((pick) => {
-        if (pick === "Set elide.home") void vscode.commands.executeCommand("workbench.action.openSettings", "elide.home");
-        else if (pick === "Install Elide") void vscode.env.openExternal(vscode.Uri.parse("https://docs.elide.dev/installation"));
-      });
+      reportElideMissing(this.ui, e);
       return;
     }
     const summary = e instanceof ElideCommandFailedError ? `elide ${e.args.join(" ")} failed (exit ${e.exitCode ?? "signal"})` : e instanceof ManifestParseError ? e.message : message;
@@ -472,6 +469,17 @@ export class ElideWorkspace implements vscode.Disposable {
     for (const f of this.folders.values()) f.syncing?.abort();
     this.changed.dispose();
   }
+}
+
+/**
+ * Notify that no usable Elide distribution was found, offering the two ways out. Shared by sync and the New
+ * Project wizard; the caller logs, because only it knows what was being attempted.
+ */
+export function reportElideMissing(ui: ElideUi, e: ElideNotFoundError | InvalidElideHomeError): void {
+  void vscode.window.showErrorMessage(`Elide: ${e.message}`, "Set elide.home", "Install Elide").then((pick) => {
+    if (pick === "Set elide.home") void vscode.commands.executeCommand("workbench.action.openSettings", "elide.home");
+    else if (pick === "Install Elide") void vscode.env.openExternal(vscode.Uri.parse(INSTALL_DOCS));
+  });
 }
 
 function realpathOrSelf(p: string): string {

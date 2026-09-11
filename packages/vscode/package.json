@@ -152,6 +152,12 @@
         "icon": "$(play)"
       },
       {
+        "command": "elide.newProject",
+        "category": "Elide",
+        "title": "New Project…",
+        "icon": "$(new-folder)"
+      },
+      {
         "command": "elide.run",
         "category": "Elide",
         "title": "Run Entrypoint",
@@ -220,6 +226,11 @@
           "command": "elide.runTask",
           "when": "view == elide.projects",
           "group": "navigation@2"
+        },
+        {
+          "command": "elide.newProject",
+          "when": "view == elide.projects",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -287,7 +298,7 @@
       {
         "view": "elide.projects",
         "when": "!elide.hasProjects",
-        "contents": "No Elide project (`elide.pkl`) in this workspace.\n[Open Folder](command:vscode.openFolder)\n[Elide documentation](https://docs.elide.dev)"
+        "contents": "No Elide project (`elide.pkl`) in this workspace.\n[New Project…](command:elide.newProject)\n[Open Folder](command:vscode.openFolder)\n[Elide documentation](https://docs.elide.dev)"
       }
     ],
     "problemMatchers": [
@@ -399,6 +410,60 @@
               "request": "launch",
               "name": "Elide: Run (debug)"
             }
+          }
+        ]
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "elide.gettingStarted",
+        "title": "Get started with Elide",
+        "description": "Build, run, test and debug Kotlin/JVM projects with the Elide build tool.",
+        "steps": [
+          {
+            "id": "install",
+            "title": "Install Elide",
+            "description": "The extension drives the `elide` CLI, so Elide 1.5+ must be installed.\n[Installation docs](https://docs.elide.dev/installation)\n[Set elide.home](command:workbench.action.openSettings?%22elide.home%22)",
+            "media": {
+              "markdown": "media/walkthrough/install.md"
+            },
+            "completionEvents": ["onSettingChanged:elide.home"]
+          },
+          {
+            "id": "project",
+            "title": "Open or create a project",
+            "description": "A project is a folder with an `elide.pkl` manifest.\n[New Project…](command:elide.newProject)\n[Open Folder](command:vscode.openFolder)",
+            "media": {
+              "markdown": "media/walkthrough/project.md"
+            },
+            "completionEvents": ["onContext:elide.hasProjects"]
+          },
+          {
+            "id": "sync",
+            "title": "Sync with the Kotlin LSP",
+            "description": "Syncing writes `workspace.json` so the Kotlin LSP resolves your sources and dependencies.\n[Sync now](command:elide.sync)",
+            "media": {
+              "markdown": "media/walkthrough/sync.md"
+            },
+            "completionEvents": ["onCommand:elide.sync"]
+          },
+          {
+            "id": "run",
+            "title": "Run and debug",
+            "description": "Code lenses run or debug a `main` function and the targets of `elide.pkl`.\n[Run Elide Command…](command:elide.runTask)",
+            "media": {
+              "markdown": "media/walkthrough/run.md"
+            },
+            "completionEvents": ["onCommand:elide.run"]
+          },
+          {
+            "id": "test",
+            "title": "Run tests",
+            "description": "JUnit tests appear in the Testing view and run through `elide test`.\n[Open Testing](command:workbench.view.testing.focus)",
+            "media": {
+              "markdown": "media/walkthrough/test.md"
+            },
+            "completionEvents": ["onCommand:workbench.view.testing.focus"]
           }
         ]
       }

@@ -5,6 +5,7 @@ import { ElideCodeLensProvider } from "./codelens.js";
 import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
 import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./explorer.js";
+import { newProject } from "./newProject.js";
 import { ElideUi } from "./output.js";
 import { ElideWorkspace, type ElideProject } from "./projects.js";
 import { ELIDE_TASK_TYPE, ElideTaskProvider, entrypointArgs, entrypointLabel, executeElideTask, type ElideTaskCommand } from "./tasks.js";
@@ -35,6 +36,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.showMenu", () => showMenu(workspace)),
     vscode.commands.registerCommand("elide.openWorkspaceJson", () => openWorkspaceJson(workspace)),
     vscode.commands.registerCommand("elide.runTask", () => runTaskCommand(workspace)),
+    vscode.commands.registerCommand("elide.newProject", () => newProject(ui)),
     vscode.commands.registerCommand("elide.run", (target: unknown) => runEntrypoint(workspace, target, "run")),
     vscode.commands.registerCommand("elide.build", (target: unknown) => runEntrypoint(workspace, target, "build")),
     vscode.commands.registerCommand("elide.debug", (target: unknown) => debugEntrypoint(workspace, target)),
