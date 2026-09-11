@@ -136,6 +136,26 @@ export async function run(): Promise<void> {
   assert.equal(exit, 0, "elide build task exit code");
   log("build task ok");
 
+  // 4b. Target commands: the ids code lenses and menus invoke exist, run a task for a project root, and the
+  //     manifest opener resolves the single project without an argument.
+  const commands = await vscode.commands.getCommands(true);
+  for (const id of ["elide.run", "elide.debug", "elide.build", "elide.executeTask", "elide.openManifest"]) {
+    assert.ok(commands.includes(id), `command ${id} registered`);
+  }
+  const runExit = await new Promise<number | undefined>((resolve) => {
+    const d = vscode.tasks.onDidEndTaskProcess((e) => {
+      if (e.execution.task.name === "run") {
+        d.dispose();
+        resolve(e.exitCode);
+      }
+    });
+    void vscode.commands.executeCommand("elide.run", { root: sample, args: [] });
+  });
+  assert.equal(runExit, 0, "elide.run executed the run task");
+  await vscode.commands.executeCommand("elide.openManifest");
+  assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, path.join(sample, "elide.pkl"), "elide.openManifest opened the manifest");
+  log("target commands ok");
+
   // 5. Debug: launch `elide run --debugger`, attach, hit a breakpoint, stop.
   const mainDoc = await vscode.workspace.openTextDocument(mainKt);
   const bpLine = mainDoc.getText().split("\n").findIndex((l) => l.includes("println(greeting"));
