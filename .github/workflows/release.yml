@@ -2,19 +2,45 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
+  release-please:
+    name: Release
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          # a PAT lets CI run on the release pull request; with the default token GitHub suppresses those events
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          skip-github-pull-request: ${{ github.event_name != 'workflow_dispatch' }}
+
   publish:
     name: Publish Extension
+    needs: release-please
+    if: needs.release-please.outputs.released == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -22,19 +48,10 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # `tools/deploy.sh` takes the version from package.json; a tag that disagrees would publish a surprise version.
-      - name: Verify tag matches the manifest version
-        run: |
-          manifest="$(jq -r '.version' packages/vscode/package.json)"
-          tag="${GITHUB_REF_NAME#v}"
-          if [[ "$manifest" != "$tag" ]]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match packages/vscode/package.json version $manifest"
-            exit 1
-          fi
-
       - name: Run unit tests
         run: bun run test
 
+      # the tag and `packages/vscode/package.json` are both written by release-please, so they cannot disagree
       - name: Publish extension to Elide repository
         run: tools/deploy.sh
         env:
@@ -55,8 +72,8 @@ jobs:
           version="$(jq -r '.version' packages/vscode/package.json)"
           bunx @vscode/vsce publish --no-dependencies --packagePath "packages/vscode/elide-${version}.vsix"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: packages/vscode/*.vsix
-          generate_release_notes: true
+      - name: Attach the extension to the GitHub Release
+        run: gh release upload "$TAG" packages/vscode/*.vsix --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag }}

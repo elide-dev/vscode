@@ -86,7 +86,11 @@
         },
         "elide.sync.onManifestChange": {
           "type": "string",
-          "enum": ["always", "prompt", "never"],
+          "enum": [
+            "always",
+            "prompt",
+            "never"
+          ],
           "default": "prompt",
           "description": "What to do when elide.pkl changes, or when the lockfile's resolved dependencies do. Rewrites of .dev/elide.lock*.bin that leave the dependencies unchanged (every elide run/test/build does one) are ignored."
         },
@@ -97,7 +101,10 @@
         },
         "elide.debug.adapter": {
           "type": "string",
-          "enum": ["intellij", "java"],
+          "enum": [
+            "intellij",
+            "java"
+          ],
           "enumDescriptions": [
             "Attach with the Kotlin LSP's JVM debugger (JetBrains.kotlin-server).",
             "Attach with Debugger for Java (vscjava.vscode-java-debug)."
@@ -109,9 +116,14 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["sources", "docs"]
+            "enum": [
+              "sources",
+              "docs"
+            ]
           },
-          "default": ["sources"],
+          "default": [
+            "sources"
+          ],
           "uniqueItems": true,
           "markdownDescription": "Classifier jars installed for the manifest's declared Maven packages. `sources` lets Go to Definition open library code in the Kotlin LSP; `docs` adds javadoc jars; an empty list installs classes only. Elide's own Kotlin and JUnit jars are published without classifiers."
         },
@@ -127,9 +139,17 @@
           "type": "object",
           "default": {},
           "additionalProperties": {
-            "type": ["string", "number", "boolean", "array"],
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "array"
+            ],
             "items": {
-              "type": ["string", "number"]
+              "type": [
+                "string",
+                "number"
+              ]
             }
           },
           "markdownDescription": "Default options for `elide build`, keyed by option name: `{ \"no-cache\": true, \"offline\": true }` runs `elide build --no-cache --offline`. `true` emits the bare flag, `false` omits it, an array repeats the option, anything else becomes `--name=value`. Tasks and launch configurations override individual keys."
@@ -138,9 +158,17 @@
           "type": "object",
           "default": {},
           "additionalProperties": {
-            "type": ["string", "number", "boolean", "array"],
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "array"
+            ],
             "items": {
-              "type": ["string", "number"]
+              "type": [
+                "string",
+                "number"
+              ]
             }
           },
           "markdownDescription": "Default options for `elide run`, keyed by option name: `{ \"coverage\": true, \"timeout\": \"30s\" }` runs `elide run --coverage --timeout=30s`."
@@ -149,9 +177,17 @@
           "type": "object",
           "default": {},
           "additionalProperties": {
-            "type": ["string", "number", "boolean", "array"],
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "array"
+            ],
             "items": {
-              "type": ["string", "number"]
+              "type": [
+                "string",
+                "number"
+              ]
             }
           },
           "markdownDescription": "Default options for `elide test`, keyed by option name: `{ \"bail\": 3, \"concurrency\": 4 }` runs `elide test --bail=3 --concurrency=4`. Test Explorer runs use them too, except for `reporter`, which stays `tap` because the extension parses that stream."
@@ -160,9 +196,17 @@
           "type": "object",
           "default": {},
           "additionalProperties": {
-            "type": ["string", "number", "boolean", "array"],
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "array"
+            ],
             "items": {
-              "type": ["string", "number"]
+              "type": [
+                "string",
+                "number"
+              ]
             }
           },
           "markdownDescription": "Default options for the `elide install` task, keyed by option name. Project sync installs dependencies itself, driven by `elide.install.classifiers`."
@@ -372,8 +416,14 @@
         "fileLocation": [
           "search",
           {
-            "include": ["${workspaceFolder}"],
-            "exclude": ["${workspaceFolder}/.dev", "${workspaceFolder}/.git", "${workspaceFolder}/node_modules"]
+            "include": [
+              "${workspaceFolder}"
+            ],
+            "exclude": [
+              "${workspaceFolder}/.dev",
+              "${workspaceFolder}/.git",
+              "${workspaceFolder}/node_modules"
+            ]
           }
         ],
         "pattern": [
@@ -394,11 +444,18 @@
     "taskDefinitions": [
       {
         "type": "elide",
-        "required": ["command"],
+        "required": [
+          "command"
+        ],
         "properties": {
           "command": {
             "type": "string",
-            "enum": ["build", "run", "test", "install"],
+            "enum": [
+              "build",
+              "run",
+              "test",
+              "install"
+            ],
             "description": "Elide CLI command to run."
           },
           "args": {
@@ -418,9 +475,17 @@
           "options": {
             "type": "object",
             "additionalProperties": {
-              "type": ["string", "number", "boolean", "array"],
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "array"
+              ],
               "items": {
-                "type": ["string", "number"]
+                "type": [
+                  "string",
+                  "number"
+                ]
               }
             },
             "markdownDescription": "CLI options for the command: `{ \"no-cache\": true, \"bail\": 3 }` becomes `--no-cache --bail=3`. `true` emits the bare flag, `false` omits it (cancelling a default from `elide.<command>.options`), an array repeats the option."
@@ -458,13 +523,20 @@
       {
         "type": "elide",
         "label": "Elide",
-        "languages": ["kotlin", "java"],
+        "languages": [
+          "kotlin",
+          "java"
+        ],
         "configurationAttributes": {
           "launch": {
             "properties": {
               "command": {
                 "type": "string",
-                "enum": ["run", "test", "build"],
+                "enum": [
+                  "run",
+                  "test",
+                  "build"
+                ],
                 "default": "run",
                 "markdownDescription": "Elide command to debug: `run` (the default), `test`, or `build` for one or more build targets."
               },
@@ -503,9 +575,17 @@
               "options": {
                 "type": "object",
                 "additionalProperties": {
-                  "type": ["string", "number", "boolean", "array"],
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "array"
+                  ],
                   "items": {
-                    "type": ["string", "number"]
+                    "type": [
+                      "string",
+                      "number"
+                    ]
                   }
                 },
                 "markdownDescription": "CLI options for the command: `{ \"test-name-pattern\": \"MyTest\", \"no-cache\": true }` becomes `--test-name-pattern=MyTest --no-cache`. `--debugger` is always added; set `debugger` here to choose its value."
@@ -563,7 +643,9 @@
               "request": "launch",
               "name": "Elide: Build (debug)",
               "command": "build",
-              "targets": ["${1|run,jvm-test|}"],
+              "targets": [
+                "${1|run,jvm-test|}"
+              ],
               "options": {}
             }
           }
@@ -583,7 +665,9 @@
             "media": {
               "markdown": "media/walkthrough/install.md"
             },
-            "completionEvents": ["onSettingChanged:elide.home"]
+            "completionEvents": [
+              "onSettingChanged:elide.home"
+            ]
           },
           {
             "id": "project",
@@ -592,7 +676,9 @@
             "media": {
               "markdown": "media/walkthrough/project.md"
             },
-            "completionEvents": ["onContext:elide.hasProjects"]
+            "completionEvents": [
+              "onContext:elide.hasProjects"
+            ]
           },
           {
             "id": "sync",
@@ -601,7 +687,9 @@
             "media": {
               "markdown": "media/walkthrough/sync.md"
             },
-            "completionEvents": ["onCommand:elide.sync"]
+            "completionEvents": [
+              "onCommand:elide.sync"
+            ]
           },
           {
             "id": "run",
@@ -610,7 +698,9 @@
             "media": {
               "markdown": "media/walkthrough/run.md"
             },
-            "completionEvents": ["onCommand:elide.run"]
+            "completionEvents": [
+              "onCommand:elide.run"
+            ]
           },
           {
             "id": "test",
@@ -619,7 +709,9 @@
             "media": {
               "markdown": "media/walkthrough/test.md"
             },
-            "completionEvents": ["onCommand:workbench.view.testing.focus"]
+            "completionEvents": [
+              "onCommand:workbench.view.testing.focus"
+            ]
           }
         ]
       }

@@ -20,6 +20,6 @@ Closes #
 ## Checklist
 
 - [ ] Build, typecheck, and unit tests pass locally.
-- [ ] Docs and `packages/vscode/CHANGELOG.md` updated for any user-visible change.
+- [ ] Docs updated for any user-visible change.
 - [ ] No generated artifacts committed (`dist/`, `*.vsix`, `workspace.json`).
 - [ ] Commit messages follow Conventional Commits.

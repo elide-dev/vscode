@@ -69,6 +69,9 @@ pull requests by the `commitlint` GitHub Actions workflow using
 - `style` — changes that do not affect the meaning of the code (whitespace, formatting, etc.)
 - `revert` — reverts a previous commit
 
+Commit subjects are the changelog: `packages/vscode/CHANGELOG.md` is generated from them by release-please, so write
+each subject as the entry you want users to read on the Marketplace.
+
 ## Pull request checklist
 
 Before opening a PR, confirm:
@@ -76,7 +79,7 @@ Before opening a PR, confirm:
 - [ ] `bun run build` succeeds.
 - [ ] `bun run --filter elide typecheck` succeeds.
 - [ ] `bun test` passes.
-- [ ] Docs and `packages/vscode/CHANGELOG.md` are updated for any user-visible change.
+- [ ] Docs are updated for any user-visible change (the changelog is generated on release).
 - [ ] No generated artifacts are committed (`dist/`, `*.vsix`, and `workspace.json` are gitignored —
       make sure your diff doesn't reintroduce them).
 
@@ -88,12 +91,17 @@ Participation in this project is governed by the [Code of Conduct](CODE_OF_CONDU
 
 ## Release process
 
-Releases are cut by maintainers only:
+Releases are cut on demand by maintainers, driven by
+[release-please](https://github.com/googleapis/release-please):
 
-1. Bump `version` in `packages/vscode/package.json`.
-2. Move the `Unreleased` entries of `packages/vscode/CHANGELOG.md` under the new version heading.
-3. Tag the commit `vX.Y.Z` matching that version and push the tag.
+1. Run the **Release** workflow from the Actions tab. It opens or refreshes a release pull request that bumps
+   `.version` and `packages/vscode/package.json` and adds the `packages/vscode/CHANGELOG.md` section for the next
+   version, derived from the commits since the last tag.
+2. Amend that section in the pull request if the generated entries need polish; the merged text is what the
+   Marketplace shows. Run the workflow again to fold in commits that landed after the pull request was opened.
+3. Merging it tags `v<version>` and creates the GitHub Release, which triggers the publish job: unit tests, the
+   `.vsix` published to `plugins.elide.dev` via `tools/deploy.sh`, publication to the Visual Studio Marketplace when
+   the `VSCE_PAT` secret is configured, and the `.vsix` attached to the release.
 
-The `Release` workflow verifies the tag against the manifest, runs the unit tests, publishes the `.vsix` to
-`plugins.elide.dev` via `tools/deploy.sh`, publishes to the Visual Studio Marketplace when the `VSCE_PAT` secret is
-configured, and attaches the `.vsix` to a GitHub release.
+The next version follows the merged commits: `fix:` bumps the patch, `feat:` the minor, and `feat!:` (or a
+`BREAKING CHANGE:` footer) the major. `.release-please-manifest.json` holds the last released version.

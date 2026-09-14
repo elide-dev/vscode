@@ -228,7 +228,8 @@ offers a Debug action on every target that declares `--debugger`.
 
 - `packages/core` — `@elide/ide-core`: editor-agnostic library (Elide discovery, CLI runner, manifest decoding, project
   model, `workspace.json` emitter). No VS Code dependency; reusable by other TypeScript-based editor integrations.
-- `packages/vscode` — the extension; its `CHANGELOG.md` is the release history shown on the Marketplace.
+- `packages/vscode` — the extension; its `CHANGELOG.md` is the release history shown on the Marketplace, generated
+  from commit subjects by [release-please](https://github.com/googleapis/release-please) when a release is cut.
 - `samples/ktjvm` — Kotlin/JVM sample used by the integration test.
 - `tools/deploy.sh` — packaging and publication to `plugins.elide.dev`.
 
