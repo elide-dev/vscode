@@ -92,6 +92,31 @@ export function nativeImageBinary(root: string, output: NativeImageOutput = {}):
   return path.join(root, NATIVE_IMAGE_DIR, (output.platform ?? process.platform) === "win32" ? `${image}.exe` : image);
 }
 
+/** Subdirectory `native-image -g` caches the compiled sources in, beside the image it wrote. */
+export const NATIVE_IMAGE_SOURCES_DIR = "sources";
+/** GDB pretty-printer for Java objects, arrays, strings and enums, copied beside an image built with `-g`. */
+export const NATIVE_IMAGE_GDB_HELPERS = "gdb-debughelpers.py";
+
+/** What a Native Image built with `-g` leaves beside the image for a debugger to use. */
+export interface NativeImageDebugInfo {
+  /**
+   * Cache of the Java and Kotlin sources the image was compiled from. GDB looks for it in `./sources` relative to
+   * its own working directory, so it has to be pointed at this path explicitly.
+   */
+  sources: string;
+  /**
+   * Pretty-printer script for the image. Its `.debug_gdb_scripts` section makes GDB auto-load the file from the
+   * working directory, which is not where it lands, so it has to be sourced explicitly too.
+   */
+  gdbHelpers: string;
+}
+
+/** Where the debug-info products of a Native Image are, given the image `elide build` wrote. */
+export function nativeImageDebugInfo(binary: string): NativeImageDebugInfo {
+  const dir = path.dirname(binary);
+  return { sources: path.join(dir, NATIVE_IMAGE_SOURCES_DIR), gdbHelpers: path.join(dir, NATIVE_IMAGE_GDB_HELPERS) };
+}
+
 /** The line without its `//` comment; a `//` inside a string literal is content, not a comment. */
 function stripComment(line: string): string {
   let quoted = false;

@@ -16,6 +16,7 @@ export {
   outermostManifests,
   parseClasspath,
   resolveElideDistribution,
+  whichExecutable,
   type ClasspathUsage,
   type ElideDistribution,
   type ResolveElideOptions,
