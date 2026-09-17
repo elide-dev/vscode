@@ -6,6 +6,7 @@ import { ElideCodeLensProvider } from "./codelens.js";
 import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
 import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./explorer.js";
+import { ELIDE_NATIVE_DEBUG_TYPE, ElideNativeDebugConfigurationProvider } from "./nativeDebug.js";
 import { newProject } from "./newProject.js";
 import { ElideUi } from "./output.js";
 import { ElideWorkspace, type ElideProject } from "./projects.js";
@@ -26,6 +27,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   context.subscriptions.push(ui, workspace);
 
   const debugConfigurations = new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions);
+  const nativeDebugConfigurations = new ElideNativeDebugConfigurationProvider(workspace, ui);
   const tests = new ElideTestController(workspace, ui, debugConfigurations.sessions);
   const codeLenses = new ElideCodeLensProvider(workspace);
   const explorer = new ElideProjectsView(workspace, ui);
@@ -42,11 +44,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.build", (target: unknown) => runEntrypoint(workspace, target, "build")),
     vscode.commands.registerCommand("elide.runArtifact", (target: unknown) => runArtifact(workspace, ui, target)),
     vscode.commands.registerCommand("elide.debug", (target: unknown) => debugEntrypoint(workspace, target)),
+    vscode.commands.registerCommand("elide.debugArtifact", (target: unknown) => debugArtifact(workspace, target)),
     vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, target)),
     vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
     vscode.commands.registerCommand("elide.revealLibrary", (target: unknown) => revealLibrary(target)),
     vscode.tasks.registerTaskProvider(ELIDE_TASK_TYPE, new ElideTaskProvider(workspace)),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_DEBUG_TYPE, debugConfigurations),
+    vscode.debug.registerDebugConfigurationProvider(ELIDE_NATIVE_DEBUG_TYPE, nativeDebugConfigurations),
     vscode.window.registerTreeDataProvider(PROJECTS_VIEW_ID, explorer),
     explorer,
     tests,
@@ -266,7 +270,7 @@ async function runTaskCommand(workspace: ElideWorkspace): Promise<void> {
   await executeElideTask(workspace, pick.project, pick.command, { args: pick.args });
 }
 
-/** What a `elide.run`/`elide.debug`/`elide.build`/`elide.runArtifact`/`elide.executeTask` invocation points at. */
+/** What an `elide.run`/`elide.debug`/`elide.build`/`elide.runArtifact`/`elide.debugArtifact`/`elide.executeTask` invocation points at. */
 interface CommandTarget {
   root: string;
   args: string[];
@@ -356,6 +360,26 @@ async function debugEntrypoint(workspace: ElideWorkspace, value: unknown): Promi
     name: `Elide: ${label} (debug)`,
     ...(command === "run" ? {} : { command }),
     ...(command === "build" ? { targets: target.args } : target.args[0] ? { entrypoint: target.args[0] } : {}),
+    ...(rel ? { project: rel } : {}),
+  });
+}
+
+/**
+ * Build a Native Image artifact, then debug the binary it produced. An `elide-native` configuration owns the whole
+ * sequence, so the command only names the artifact.
+ */
+async function debugArtifact(workspace: ElideWorkspace, value: unknown): Promise<void> {
+  const target = toTarget(value);
+  const artifact = target?.args[0];
+  if (!target || !artifact) return;
+  const project = projectForTarget(workspace, target);
+  if (!project) return;
+  const rel = path.relative(project.folder.uri.fsPath, project.root);
+  await vscode.debug.startDebugging(project.folder, {
+    type: ELIDE_NATIVE_DEBUG_TYPE,
+    request: "launch",
+    name: `Elide: Debug ${artifact}`,
+    artifact,
     ...(rel ? { project: rel } : {}),
   });
 }

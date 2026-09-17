@@ -8,10 +8,17 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ### Added
 
-- `Build & Run` for Native Image artifacts: builds the artifact, then runs the binary it produced
+- `Run` for Native Image artifacts: builds the artifact, then runs the binary it produced
   (`.dev/artifacts/native-image/<image>`) as a task of its own. Offered as a code lens on the artifact in `elide.pkl`
-  and as an inline action on its sidebar build-target row. Library images and other artifact types keep `Build`
-  alone.
+  and as an inline action on its sidebar build-target row, alongside the `Debug` of the same pair an entrypoint
+  carries. Library images and other artifact types keep `Build` alone.
+- Native Image debugging: launch type `elide-native` builds a Native Image artifact and debugs the binary it
+  produced through the C/C++ extension's GDB/LLDB adapter. The session points the debugger at the source cache
+  (`set directories`) and loads GraalVM's `gdb-debughelpers.py` so Java objects, arrays and strings print as such.
+  Offered as a `Debug` code lens on the artifact in `elide.pkl` and as an inline action on its sidebar build-target
+  row. An image built without `-g` still starts a session, with a warning naming the flag to add.
+- `elide.debug.nativeMiMode` (`auto` | `gdb` | `lldb`) and `elide.debug.miDebuggerPath` select the debugger
+  `elide-native` sessions drive. `auto` takes a GDB when one is on `PATH`, else LLDB on macOS.
 
 ### Fixed
 

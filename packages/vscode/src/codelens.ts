@@ -80,7 +80,11 @@ function runLenses(line: number, length: number, root: string, args: string[], q
   ];
 }
 
-/** Lenses of one `artifacts` entry: a Native Image binary is also runnable, the rest only build. */
+/**
+ * Lenses of one `artifacts` entry: a Native Image binary is also runnable and debuggable, the rest only build. Run
+ * and Debug are named as they are on an entrypoint — the build they need first is part of doing either, not a
+ * separate decision.
+ */
 function artifactLenses(line: number, length: number, root: string, artifact: ManifestArtifact): vscode.CodeLens[] {
   const range = new vscode.Range(line, 0, line, length);
   const build = new vscode.CodeLens(range, {
@@ -90,11 +94,16 @@ function artifactLenses(line: number, length: number, root: string, artifact: Ma
   });
   if (!isNativeImageBinary(artifact)) return [build];
   const run = new vscode.CodeLens(range, {
-    title: "$(play) Build & Run",
+    title: "$(play) Run",
     command: "elide.runArtifact",
     arguments: [{ root, args: [artifact.name], outputName: artifact.outputName }],
   });
-  return [run, build];
+  const debug = new vscode.CodeLens(range, {
+    title: "$(debug-alt) Debug",
+    command: "elide.debugArtifact",
+    arguments: [{ root, args: [artifact.name] }],
+  });
+  return [run, debug, build];
 }
 
 /** `main` functions in a production source root of the project (test sources are the Test Explorer's business). */

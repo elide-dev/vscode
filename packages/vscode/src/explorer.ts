@@ -274,7 +274,8 @@ function projectNode(project: ElideProject): ElideNode {
 
 /**
  * `view/item/context` key. A script entrypoint offers no Debug action (a script is a shell command line); a build
- * target offers Debug only when it declares `--debugger`, and Build & Run only when it is a Native Image binary.
+ * target offers the JVM Debug action only when it declares `--debugger`, and the Run/Debug pair of a Native Image
+ * only when it is a binary one.
  */
 function contextValueOf(node: ElideNode): string {
   if (node.kind === "entrypoint") return node.script ? "script" : node.kind;

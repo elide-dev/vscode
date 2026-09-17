@@ -25,7 +25,8 @@ Elide's build, run, test, and debug commands are available from the editor.
   --inspect`), source sets and dependencies; run, debug, build and sync straight from the tree.
 - **New project wizard.** `Elide: New Project…` lists the templates of the installed CLI (`elide init --templates`),
   asks for the parameters that template declares, generates the project and opens it.
-- **Debugging.** Launch `elide run --debugger` and attach with breakpoints in Kotlin and Java.
+- **Debugging.** Launch `elide run --debugger` and attach with breakpoints in Kotlin and Java, or build a Native
+  Image artifact and debug the binary it produced under GDB.
 
 ## Requirements
 
@@ -74,6 +75,8 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `elide.flags` | `[]` | `-f NAME[=VALUE]` build flags for every Elide invocation, project sync included. |
 | `elide.build.options`, `elide.run.options`, `elide.test.options`, `elide.install.options` | `{}` | Default CLI options per command. |
 | `elide.debug.adapter` | `"intellij"` | Attach with the JetBrains JVM debugger (`intellij`) or Debugger for Java (`java`). |
+| `elide.debug.nativeMiMode` | `"auto"` | Debugger an `elide-native` session drives: `gdb`, `lldb`, or `auto` (a GDB on `PATH`, else LLDB on macOS). |
+| `elide.debug.miDebuggerPath` | `""` | `gdb` / `lldb-mi` binary for `elide-native` sessions; empty resolves `gdb` on `PATH`. |
 
 The extension also maintains two Kotlin LSP settings: `intellij.buildTool` (pinned to `json` in workspace settings) and
 `intellij.jdkForSymbolResolution` (an absolute path, written to user settings only). Explicit values you set by hand
@@ -103,6 +106,39 @@ ending the session stops the Elide process. The JDWP agent binds port 5005 by de
 time. `"command": "test"` debugs `elide test` instead, and `"command": "build"` debugs the build targets listed in
 `targets` (`run`, `jvm-test`, … — `elide build --inspect` lists them); the Elide sidebar offers a Debug action on
 every build target that supports it.
+
+### Native Image
+
+Launch type `elide-native` builds a Native Image artifact and debugs the binary it produced. `artifact` is the key of
+its entry in the `artifacts` block of `elide.pkl`; `program` debugs a binary directly, `build: false` skips the
+build, and `args`, `cwd`, `env`, `stopAtEntry` and `project` apply to the debugged program.
+
+```jsonc
+{ "type": "elide-native", "request": "launch", "name": "Elide: Debug Native Image", "artifact": "bin", "args": [] }
+```
+
+The binary is handed to the **C/C++** extension (`ms-vscode.cpptools`), which drives GDB; the extension offers to
+install it when it is missing. The session points the debugger at the source cache GraalVM writes next to the image
+and loads the `gdb-debughelpers.py` that comes with it, so Java objects, arrays and strings print as such.
+
+Source-level debugging needs the image to carry debug info, which comes from the manifest — Elide passes an
+artifact's `options.flags` straight to `native-image`:
+
+```pkl
+["bin"] = new NativeImage.NativeImage {
+    from { "jar" }
+    entrypoint = "sample.MainKt"
+    options {
+        flags {
+            "-g"
+            "-O0"
+        }
+    }
+}
+```
+
+GraalVM only emits that debug info on Linux; elsewhere `-g` copies the GDB helpers but produces no DWARF and no
+source cache, so breakpoints do not bind and the session warns about it. Machine-level stepping still works.
 
 ## Links
 

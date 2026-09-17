@@ -9,6 +9,8 @@ import * as vscode from "vscode";
 
 export type ManifestChangePolicy = "always" | "prompt" | "never";
 export type DebugAdapterChoice = "intellij" | "java";
+/** Machine-interface debugger the C/C++ extension drives for a Native Image; `auto` prefers a GDB on `PATH`. */
+export type NativeMiMode = "auto" | "gdb" | "lldb";
 
 export interface ElideConfig {
   home: string | undefined;
@@ -17,6 +19,9 @@ export interface ElideConfig {
   onManifestChange: ManifestChangePolicy;
   writeWorkspaceJson: boolean;
   debugAdapter: DebugAdapterChoice;
+  nativeMiMode: NativeMiMode;
+  /** Explicit `gdb`/`lldb-mi` binary for Native Image sessions; empty resolves one from `PATH`. */
+  miDebuggerPath: string | undefined;
   /** Classifier jars fetched during sync (`elide install --with …`). */
   installClassifiers: string[];
   codeLens: boolean;
@@ -36,6 +41,8 @@ export function readConfig(scope?: vscode.ConfigurationScope): ElideConfig {
     onManifestChange: c.get<ManifestChangePolicy>("sync.onManifestChange", "prompt"),
     writeWorkspaceJson: c.get<boolean>("kotlinLsp.writeWorkspaceJson", true),
     debugAdapter: c.get<DebugAdapterChoice>("debug.adapter", "intellij"),
+    nativeMiMode: c.get<NativeMiMode>("debug.nativeMiMode", "auto"),
+    miDebuggerPath: nonEmpty(c.get<string>("debug.miDebuggerPath")),
     installClassifiers: c.get<string[]>("install.classifiers", ["sources"]),
     codeLens: c.get<boolean>("codeLens.enabled", true),
     flags: elideStringArrayFrom(c.get("flags")),
