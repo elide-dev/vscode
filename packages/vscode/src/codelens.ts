@@ -1,5 +1,12 @@
 import path from "node:path";
-import { MANIFEST_NAME, isPathUnder, normalizePath } from "@elide/ide-core";
+import {
+  MANIFEST_NAME,
+  isNativeImageBinary,
+  isPathUnder,
+  normalizePath,
+  parseManifestArtifacts,
+  type ManifestArtifact,
+} from "@elide/ide-core";
 import * as vscode from "vscode";
 import { readConfig } from "./config.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
@@ -73,6 +80,23 @@ function runLenses(line: number, length: number, root: string, args: string[], q
   ];
 }
 
+/** Lenses of one `artifacts` entry: a Native Image binary is also runnable, the rest only build. */
+function artifactLenses(line: number, length: number, root: string, artifact: ManifestArtifact): vscode.CodeLens[] {
+  const range = new vscode.Range(line, 0, line, length);
+  const build = new vscode.CodeLens(range, {
+    title: "$(package) Build",
+    command: "elide.build",
+    arguments: [{ root, args: [artifact.name] }],
+  });
+  if (!isNativeImageBinary(artifact)) return [build];
+  const run = new vscode.CodeLens(range, {
+    title: "$(play) Build & Run",
+    command: "elide.runArtifact",
+    arguments: [{ root, args: [artifact.name], outputName: artifact.outputName }],
+  });
+  return [run, build];
+}
+
 /** `main` functions in a production source root of the project (test sources are the Test Explorer's business). */
 function sourceLenses(document: vscode.TextDocument, project: ElideProject): vscode.CodeLens[] {
   const model = project.model;
@@ -115,11 +139,16 @@ function entryArgs(document: vscode.TextDocument, project: ElideProject, java: b
 function manifestLenses(document: vscode.TextDocument, root: string): vscode.CodeLens[] {
   const lenses: vscode.CodeLens[] = [];
   const stack: { name: string; depth: number }[] = [];
+  // Artifacts carry settings of their own (the image name, the image type), which the core parser reads.
+  const artifacts = new Map(parseManifestArtifacts(document.getText()).map((a) => [a.line, a] as const));
   let depth = 0;
   for (let i = 0; i < document.lineCount; i++) {
     const text = document.lineAt(i).text;
     const block = stack[stack.length - 1]?.name;
-    if (block === "jvm" && MANIFEST_MAIN.test(text)) {
+    const artifact = artifacts.get(i);
+    if (artifact) {
+      lenses.push(...artifactLenses(i, text.length, root, artifact));
+    } else if (block === "jvm" && MANIFEST_MAIN.test(text)) {
       lenses.push(...runLenses(i, text.length, root, []));
     } else if (block === "entrypoint") {
       const entry = LIST_ENTRY.exec(text);
@@ -133,17 +162,6 @@ function manifestLenses(document: vscode.TextDocument, root: string): vscode.Cod
             title: "$(play) Run script",
             command: "elide.run",
             arguments: [{ root, args: [script[1]] }],
-          }),
-        );
-      }
-    } else if (block === "artifacts") {
-      const artifact = MAP_ENTRY.exec(text);
-      if (artifact?.[1]) {
-        lenses.push(
-          new vscode.CodeLens(new vscode.Range(i, 0, i, text.length), {
-            title: "$(package) Build",
-            command: "elide.build",
-            arguments: [{ root, args: [artifact[1]] }],
           }),
         );
       }

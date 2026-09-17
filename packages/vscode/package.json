@@ -272,6 +272,12 @@
         "icon": "$(package)"
       },
       {
+        "command": "elide.runArtifact",
+        "category": "Elide",
+        "title": "Build and Run Artifact",
+        "icon": "$(play)"
+      },
+      {
         "command": "elide.executeTask",
         "category": "Elide",
         "title": "Run Task",
@@ -301,6 +307,10 @@
         },
         {
           "command": "elide.build",
+          "when": "false"
+        },
+        {
+          "command": "elide.runArtifact",
           "when": "false"
         },
         {
@@ -363,6 +373,16 @@
         {
           "command": "elide.debug",
           "when": "view == elide.projects && viewItem == buildTargetDebuggable",
+          "group": "inline@2"
+        },
+        {
+          "command": "elide.runArtifact",
+          "when": "view == elide.projects && viewItem == buildTargetRunnable",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.executeTask",
+          "when": "view == elide.projects && viewItem == buildTargetRunnable",
           "group": "inline@2"
         },
         {

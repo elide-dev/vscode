@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
-import { MANIFEST_NAME, WORKSPACE_JSON, isLockfileName, type ElideCommand } from "@elide/ide-core";
+import { MANIFEST_NAME, WORKSPACE_JSON, isLockfileName, nativeImageBinary, type ElideCommand } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { ElideCodeLensProvider } from "./codelens.js";
 import { readConfig } from "./config.js";
@@ -8,7 +9,7 @@ import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./ex
 import { newProject } from "./newProject.js";
 import { ElideUi } from "./output.js";
 import { ElideWorkspace, type ElideProject } from "./projects.js";
-import { ELIDE_TASK_TYPE, ElideTaskProvider, entrypointArgs, entrypointLabel, executeElideTask } from "./tasks.js";
+import { ELIDE_TASK_TYPE, ElideTaskProvider, entrypointArgs, entrypointLabel, executeElideTask, executeProgramTask, taskExitCode } from "./tasks.js";
 import { ElideTestController, type ElideTestApi } from "./testing.js";
 
 /** What `activate` resolves to; consumed only by the extension-host integration test. */
@@ -39,6 +40,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.newProject", () => newProject(ui)),
     vscode.commands.registerCommand("elide.run", (target: unknown) => runEntrypoint(workspace, target, "run")),
     vscode.commands.registerCommand("elide.build", (target: unknown) => runEntrypoint(workspace, target, "build")),
+    vscode.commands.registerCommand("elide.runArtifact", (target: unknown) => runArtifact(workspace, ui, target)),
     vscode.commands.registerCommand("elide.debug", (target: unknown) => debugEntrypoint(workspace, target)),
     vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, target)),
     vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
@@ -264,11 +266,13 @@ async function runTaskCommand(workspace: ElideWorkspace): Promise<void> {
   await executeElideTask(workspace, pick.project, pick.command, { args: pick.args });
 }
 
-/** What a `elide.run`/`elide.debug`/`elide.build`/`elide.executeTask` invocation points at. */
+/** What a `elide.run`/`elide.debug`/`elide.build`/`elide.runArtifact`/`elide.executeTask` invocation points at. */
 interface CommandTarget {
   root: string;
   args: string[];
   command?: ElideCommand;
+  /** Output name an artifact declares, which decides the file `elide.runArtifact` runs. */
+  outputName?: string;
 }
 
 const TASK_COMMANDS: Record<string, ElideCommand> = { build: "build", run: "run", test: "test", install: "install" };
@@ -282,7 +286,8 @@ function toTarget(value: unknown): CommandTarget | undefined {
   const rawArgs = "args" in value ? value.args : undefined;
   const args = Array.isArray(rawArgs) ? rawArgs.filter((a): a is string => typeof a === "string") : [];
   const command = "command" in value && typeof value.command === "string" ? TASK_COMMANDS[value.command] : undefined;
-  return { root: value.root, args, ...(command ? { command } : {}) };
+  const outputName = "outputName" in value && typeof value.outputName === "string" ? value.outputName : undefined;
+  return { root: value.root, args, ...(command ? { command } : {}), ...(outputName ? { outputName } : {}) };
 }
 
 function projectForTarget(workspace: ElideWorkspace, target: CommandTarget): ElideProject | undefined {
@@ -296,6 +301,33 @@ async function runEntrypoint(workspace: ElideWorkspace, value: unknown, command:
   if (!target) return;
   const project = projectForTarget(workspace, target);
   if (project) await executeElideTask(workspace, project, command, { args: target.args });
+}
+
+/**
+ * Build a Native Image artifact, then run the binary it produced. `elide run` executes manifest entrypoints, not
+ * built images, so the binary is started directly once `elide build <artifact>` has succeeded.
+ */
+async function runArtifact(workspace: ElideWorkspace, ui: ElideUi, value: unknown): Promise<void> {
+  const target = toTarget(value);
+  const artifact = target?.args[0];
+  if (!target || !artifact) return;
+  const project = projectForTarget(workspace, target);
+  if (!project) return;
+
+  const execution = await executeElideTask(workspace, project, "build", { args: [artifact] });
+  if (!execution) return;
+  const code = await taskExitCode(execution);
+  // A failed or cancelled build already reports itself in its terminal and in the Problems view.
+  if (code !== 0) return;
+
+  const binary = nativeImageBinary(project.root, { outputName: target.outputName, projectName: project.model?.name });
+  if (!existsSync(binary)) {
+    ui.log(`no binary at ${binary} after building ${artifact}`);
+    void vscode.window.showWarningMessage(`Elide: ${artifact} built, but no binary was found at ${binary}.`);
+    return;
+  }
+  ui.log(`running ${binary}`);
+  await executeProgramTask(project, `run ${artifact}`, binary);
 }
 
 async function runNamedTask(workspace: ElideWorkspace, value: unknown): Promise<void> {

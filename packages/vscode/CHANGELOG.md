@@ -6,6 +6,13 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ## [0.3.1]
 
+### Added
+
+- `Build & Run` for Native Image artifacts: builds the artifact, then runs the binary it produced
+  (`.dev/artifacts/native-image/<image>`) as a task of its own. Offered as a code lens on the artifact in `elide.pkl`
+  and as an inline action on its sidebar build-target row. Library images and other artifact types keep `Build`
+  alone.
+
 ### Fixed
 
 - Running an entrypoint, a build or the tests no longer asks to reload the project.

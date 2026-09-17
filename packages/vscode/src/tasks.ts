@@ -55,6 +55,42 @@ export async function executeElideTask(
   return await vscode.tasks.executeTask(task);
 }
 
+/**
+ * Exit code of a running task's process, once it ends. `undefined` means no process reported one: the task was
+ * terminated, or it never started.
+ */
+export function taskExitCode(execution: vscode.TaskExecution): Promise<number | undefined> {
+  const { promise, resolve } = Promise.withResolvers<number | undefined>();
+  const subscriptions: vscode.Disposable[] = [];
+  const settle = (code: number | undefined) => {
+    for (const s of subscriptions) s.dispose();
+    resolve(code);
+  };
+  // A process task fires `onDidEndTaskProcess` before `onDidEndTask`, so the exit code wins whenever there is one.
+  subscriptions.push(
+    vscode.tasks.onDidEndTaskProcess((e) => {
+      if (e.execution === execution) settle(e.exitCode);
+    }),
+    vscode.tasks.onDidEndTask((e) => {
+      if (e.execution === execution) settle(undefined);
+    }),
+  );
+  return promise;
+}
+
+/**
+ * Run a program an Elide build produced, as a task of the project. Its terminal is a dedicated one: the build that
+ * preceded it wrote to the shared Elide panel, and that log stays readable while the program runs.
+ */
+export async function executeProgramTask(project: ElideProject, label: string, program: string): Promise<vscode.TaskExecution> {
+  const rel = path.relative(project.folder.uri.fsPath, project.root);
+  const name = `${label}${rel ? ` (${rel})` : ""}`;
+  const execution = new vscode.ProcessExecution(program, { cwd: project.root });
+  const task = new vscode.Task({ type: "process", program }, project.folder, name, ELIDE_TASK_TYPE, execution);
+  task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated, clear: true };
+  return await vscode.tasks.executeTask(task);
+}
+
 export class ElideTaskProvider implements vscode.TaskProvider<vscode.Task> {
   constructor(private readonly workspace: ElideWorkspace) {}
 
