@@ -4,6 +4,13 @@ All notable changes to the Elide extension are documented here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/elide-dev/vscode/compare/v0.3.1...v0.4.0) (2026-09-17)
+
+
+### Added
+
+* Native Image run/debug actions ([d67922f](https://github.com/elide-dev/vscode/commit/d67922f69b6329d6c76f033be2ac20cb37607a0c))
+
 ## [0.3.1]
 
 ### Added
