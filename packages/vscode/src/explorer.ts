@@ -1,11 +1,15 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   ElideCli,
   LIBRARY_NAME_PREFIX,
+  isNativeImageBinary,
+  parseManifestArtifacts,
   resolveElideDistribution,
   type BuildTaskInfo,
   type ElideCommand,
   type Entrypoint,
+  type ManifestArtifact,
   type ModuleModel,
   type SourceRootKind,
 } from "@elide/ide-core";
@@ -51,7 +55,19 @@ export type ElideNode =
   | { kind: "group"; label: string; root: string; group: GroupKind }
   | { kind: "entrypoint"; label: string; root: string; args: string[]; script: boolean }
   | { kind: "task"; label: string; root: string; command: ElideCommand; args: string[] }
-  | { kind: "buildTarget"; label: string; root: string; command: ElideCommand; args: string[]; description: string; debuggable: boolean }
+  | {
+      kind: "buildTarget";
+      label: string;
+      root: string;
+      command: ElideCommand;
+      args: string[];
+      description: string;
+      debuggable: boolean;
+      /** Set when the target is a Native Image binary: `elide.runArtifact` builds it and runs what it produced. */
+      runnable: boolean;
+      /** Output name the artifact declares, which decides the binary `elide.runArtifact` runs. */
+      outputName?: string;
+    }
   | { kind: "module"; label: string; root: string; module: ModuleModel }
   | { kind: "sourceRoot"; label: string; root: string; module: string; path: string; sourceKind: SourceRootKind }
   | { kind: "library"; label: string; root: string; classes: string; attached: string }
@@ -73,8 +89,8 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
   private readonly changed = new vscode.EventEmitter<ElideNode | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
   private readonly subscriptions: vscode.Disposable[];
-  /** `elide build --inspect` results per project root, dropped whenever the project model changes. */
-  private readonly buildTargets = new Map<string, BuildTaskInfo[]>();
+  /** `elide build --inspect` tasks and the manifest's artifacts per project root, dropped when the model changes. */
+  private readonly buildTargets = new Map<string, { tasks: BuildTaskInfo[]; artifacts: ManifestArtifact[] }>();
 
   constructor(
     private readonly workspace: ElideWorkspace,
@@ -209,28 +225,46 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
   }
 
   private async buildTargetNodes(project: ElideProject): Promise<ElideNode[]> {
-    let targets = this.buildTargets.get(project.root);
-    if (!targets) {
+    let cached = this.buildTargets.get(project.root);
+    if (!cached) {
       try {
         const settings = readConfig(project.folder);
         const dist = resolveElideDistribution({ explicitHome: settings.home });
-        targets = await new ElideCli(dist, project.root, settings.flags).buildInspect();
-        this.buildTargets.set(project.root, targets);
+        const tasks = await new ElideCli(dist, project.root, settings.flags).buildInspect();
+        // A build target takes the name of the artifact it produces, so the manifest says which ones are binaries.
+        cached = { tasks, artifacts: await this.manifestArtifacts(project) };
+        this.buildTargets.set(project.root, cached);
       } catch (e) {
         this.ui.log(`could not list build targets of ${project.root}: ${e instanceof Error ? e.message : String(e)}`);
         return [{ kind: "message", label: "could not list build targets — see Elide output" }];
       }
     }
-    return targets.map((target) => ({
-      kind: "buildTarget",
-      label: target.name,
-      root: project.root,
-      command: "build",
-      args: [target.name],
-      description: target.description,
-      // Only a target that starts a JVM declares `--debugger`; compilation targets have nothing to attach to.
-      debuggable: target.options.some((option) => option.option === "--debugger"),
-    }));
+    const images = new Map(cached.artifacts.filter(isNativeImageBinary).map((a) => [a.name, a] as const));
+    return cached.tasks.map((target) => {
+      const image = images.get(target.name);
+      return {
+        kind: "buildTarget",
+        label: target.name,
+        root: project.root,
+        command: "build",
+        args: [target.name],
+        description: target.description,
+        // Only a target that starts a JVM declares `--debugger`; compilation targets have nothing to attach to.
+        debuggable: target.options.some((option) => option.option === "--debugger"),
+        runnable: image !== undefined,
+        ...(image?.outputName ? { outputName: image.outputName } : {}),
+      };
+    });
+  }
+
+  /** Artifacts declared in the project's `elide.pkl`; an unreadable manifest simply declares none. */
+  private async manifestArtifacts(project: ElideProject): Promise<ManifestArtifact[]> {
+    try {
+      return parseManifestArtifacts(await readFile(project.manifestPath, "utf8"));
+    } catch (e) {
+      this.ui.log(`could not read ${project.manifestPath}: ${e instanceof Error ? e.message : String(e)}`);
+      return [];
+    }
   }
 }
 
@@ -239,11 +273,13 @@ function projectNode(project: ElideProject): ElideNode {
 }
 
 /**
- * `view/item/context` key. A script entrypoint offers no Debug action (a script is a shell command line), and a
- * build target only does when the target itself declares `--debugger`.
+ * `view/item/context` key. A script entrypoint offers no Debug action (a script is a shell command line); a build
+ * target offers the JVM Debug action only when it declares `--debugger`, and the Run/Debug pair of a Native Image
+ * only when it is a binary one.
  */
 function contextValueOf(node: ElideNode): string {
   if (node.kind === "entrypoint") return node.script ? "script" : node.kind;
+  if (node.kind === "buildTarget" && node.runnable) return "buildTargetRunnable";
   if (node.kind === "buildTarget" && node.debuggable) return "buildTargetDebuggable";
   return node.kind;
 }

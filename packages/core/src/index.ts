@@ -16,12 +16,14 @@ export {
   outermostManifests,
   parseClasspath,
   resolveElideDistribution,
+  whichExecutable,
   type ClasspathUsage,
   type ElideDistribution,
   type ResolveElideOptions,
   type RunOptions,
   type RunResult,
 } from "./elide.js";
+export * from "./artifacts.js";
 export * from "./buildTasks.js";
 export * from "./invocation.js";
 export * from "./init.js";

@@ -47,7 +47,8 @@ function defaultIsFile(p: string): boolean {
   }
 }
 
-function defaultWhich(name: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | undefined {
+/** First executable named `name` on `PATH`, or `undefined` when there is none. */
+export function whichExecutable(name: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | undefined {
   const dirs = (env.PATH ?? "").split(path.delimiter).filter(Boolean);
   const names = platform === "win32" ? [`${name}.exe`, `${name}.cmd`, `${name}.bat`, name] : [name];
   for (const dir of dirs) {
@@ -83,7 +84,7 @@ export function resolveElideDistribution(opts: ResolveElideOptions = {}): ElideD
   const env = opts.env ?? process.env;
   const platform = opts.platform ?? process.platform;
   const isFile = opts.isFile ?? defaultIsFile;
-  const which = opts.which ?? ((name: string) => defaultWhich(name, env, platform));
+  const which = opts.which ?? ((name: string) => whichExecutable(name, env, platform));
 
   const valid = (home: string): ElideDistribution | undefined => {
     const dist = distributionAt(home, platform);

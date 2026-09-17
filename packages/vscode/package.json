@@ -112,6 +112,27 @@
           "default": "intellij",
           "description": "Debug adapter used to attach to the JVM started by `elide run --debugger`."
         },
+        "elide.debug.nativeMiMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "gdb",
+            "lldb"
+          ],
+          "enumDescriptions": [
+            "GDB when one is available, LLDB on macOS, which ships none.",
+            "Drive GDB, which is what Native Image emits DWARF for.",
+            "Drive LLDB through the `lldb-mi` the C/C++ extension bundles."
+          ],
+          "default": "auto",
+          "markdownDescription": "Machine-interface debugger the C/C++ extension drives for an `elide-native` session on a Native Image binary."
+        },
+        "elide.debug.miDebuggerPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "`gdb` (or `lldb-mi`) binary used by `elide-native` sessions. Empty: resolve `gdb` on `PATH`, and leave LLDB to the copy the C/C++ extension bundles."
+        },
         "elide.install.classifiers": {
           "type": "array",
           "items": {
@@ -272,6 +293,18 @@
         "icon": "$(package)"
       },
       {
+        "command": "elide.runArtifact",
+        "category": "Elide",
+        "title": "Run Artifact",
+        "icon": "$(play)"
+      },
+      {
+        "command": "elide.debugArtifact",
+        "category": "Elide",
+        "title": "Debug Artifact",
+        "icon": "$(debug-alt)"
+      },
+      {
         "command": "elide.executeTask",
         "category": "Elide",
         "title": "Run Task",
@@ -301,6 +334,14 @@
         },
         {
           "command": "elide.build",
+          "when": "false"
+        },
+        {
+          "command": "elide.runArtifact",
+          "when": "false"
+        },
+        {
+          "command": "elide.debugArtifact",
           "when": "false"
         },
         {
@@ -364,6 +405,21 @@
           "command": "elide.debug",
           "when": "view == elide.projects && viewItem == buildTargetDebuggable",
           "group": "inline@2"
+        },
+        {
+          "command": "elide.runArtifact",
+          "when": "view == elide.projects && viewItem == buildTargetRunnable",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.debugArtifact",
+          "when": "view == elide.projects && viewItem == buildTargetRunnable",
+          "group": "inline@2"
+        },
+        {
+          "command": "elide.executeTask",
+          "when": "view == elide.projects && viewItem == buildTargetRunnable",
+          "group": "inline@3"
         },
         {
           "command": "elide.sync",
@@ -647,6 +703,82 @@
                 "${1|run,jvm-test|}"
               ],
               "options": {}
+            }
+          }
+        ]
+      },
+      {
+        "type": "elide-native",
+        "label": "Elide Native Image",
+        "languages": [
+          "kotlin",
+          "java"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "artifact": {
+                "type": "string",
+                "markdownDescription": "Native Image artifact to build and debug: the key of its entry in the `artifacts` block of `elide.pkl`, which is also the build target `elide build` takes."
+              },
+              "program": {
+                "type": "string",
+                "markdownDescription": "Binary to debug, when it is not the one the artifact's build writes to `.dev/artifacts/native-image/`. A relative path resolves against the project root."
+              },
+              "build": {
+                "type": "boolean",
+                "default": true,
+                "markdownDescription": "Build `artifact` before debugging it. `false` debugs whatever the last build left behind."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "Arguments passed to the debugged program."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory of the debugged program; defaults to the project root."
+              },
+              "stopAtEntry": {
+                "type": "boolean",
+                "default": false,
+                "description": "Break on the image's entry point instead of running to the first breakpoint."
+              },
+              "project": {
+                "type": "string",
+                "description": "Project root relative to the workspace folder (multi-project workspaces)."
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Extra environment variables for the debugged program."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "elide-native",
+            "request": "launch",
+            "name": "Elide: Debug Native Image",
+            "artifact": ""
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Elide: Native Image (debug)",
+            "description": "Build a Native Image artifact and debug the binary it produced with GDB.",
+            "body": {
+              "type": "elide-native",
+              "request": "launch",
+              "name": "Elide: Debug Native Image",
+              "artifact": "${1:artifact}",
+              "args": []
             }
           }
         ]
