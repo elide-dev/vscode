@@ -1,0 +1,42 @@
+{
+    "name": "report",
+    "description": "Aggregates log records and renders them as text tables",
+    "dependencies": {
+        "maven": {
+            "packages": [
+                {
+                    "@type": "elide.jvm.MavenPackageDependency.OfProjectArtifact",
+                    "value": {
+                        "project": "model"
+                    }
+                },
+                {
+                    "@type": "elide.jvm.MavenPackageDependency.OfString",
+                    "value": "org.apache.commons:commons-lang3"
+                }
+            ]
+        }
+    },
+    "sources": {
+        "main": {
+            "@type": "elide.sources.SourceSetSpec",
+            "paths": [
+                "src/main/kotlin/**/*.kt"
+            ]
+        },
+        "test": {
+            "@type": "elide.sources.SourceSetSpec",
+            "paths": [
+                "src/test/kotlin/**/*.kt"
+            ]
+        }
+    },
+    "artifacts": {
+        "report": {
+            "@type": "elide.jvm.Jar",
+            "sources": [
+                "main"
+            ]
+        }
+    }
+}

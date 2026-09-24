@@ -17,6 +17,37 @@ export interface Manifest {
   sources: Record<string, SourceSet>;
   dependencies: { maven?: { localRepository?: string } };
   toolchain: { engines: Record<string, string> };
+  /**
+   * Directories of the member projects this manifest declares, relative to the directory holding it. A manifest that
+   * declares members is the root of a workspace; every other one declares none, members included: Elide workspaces
+   * are exactly two layers deep.
+   */
+  workspaceMembers: string[];
+  /** Every `project("name")` reference among the JVM dependencies, in declaration order. */
+  projectReferences: ProjectReference[];
+  /** JAR artifacts, keyed by the name they are declared under. */
+  jars: Record<string, JarArtifact>;
+}
+
+/**
+ * A reference from one project of a workspace to an artifact another one builds: `project("core")`, or
+ * `project("core").artifact("fat")`.
+ */
+export interface ProjectReference {
+  /** Name of the project declaring the artifact. */
+  project: string;
+  /** Name of the artifact; absent when the reference leaves the choice to a project declaring exactly one JAR. */
+  artifact?: string;
+  /** Whether the reference sits in `testPackages`, which only the tests consume. */
+  test: boolean;
+}
+
+/** A `Jvm.Jar` entry of the manifest's `artifacts`. */
+export interface JarArtifact {
+  /** Output name, which overrides the key the artifact is declared under. */
+  name?: string;
+  /** Source sets packaged into the JAR; empty means the default one. */
+  sources: string[];
 }
 
 export interface JvmSettings {
@@ -78,6 +109,51 @@ function stringMap(v: unknown): Record<string, string> {
   if (!isObject(v)) return out;
   for (const [k, val] of Object.entries(v)) if (typeof val === "string") out[k] = val;
   return out;
+}
+
+/**
+ * Maven buckets that put a dependency on a classpath, and whether only the tests consume it. `kotlinPlugins` is left
+ * out (a compiler plugin is loaded, not put on a classpath, and the CLI rejects a project reference there), and so is
+ * `exclusions`, which names what is *not* resolved.
+ */
+const MAVEN_BUCKETS: readonly (readonly [string, boolean])[] = [
+  ["packages", false],
+  ["devPackages", false],
+  ["modules", false],
+  ["compileOnly", false],
+  ["runtimeOnly", false],
+  ["processors", false],
+  ["testPackages", true],
+];
+
+function decodeProjectReferences(maven: Json | undefined): ProjectReference[] {
+  const references: ProjectReference[] = [];
+  const seen = new Set<string>();
+  for (const [bucket, test] of MAVEN_BUCKETS) {
+    const entries = maven?.[bucket];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!isObject(entry) || !typeTag(entry).endsWith(".OfProjectArtifact") || !isObject(entry.value)) continue;
+      const { project, artifact } = entry.value;
+      if (typeof project !== "string") continue;
+      const reference: ProjectReference = { project, ...(typeof artifact === "string" ? { artifact } : {}), test };
+      const key = JSON.stringify(reference);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      references.push(reference);
+    }
+  }
+  return references;
+}
+
+function decodeJars(v: unknown): Record<string, JarArtifact> {
+  const jars: Record<string, JarArtifact> = {};
+  if (!isObject(v)) return jars;
+  for (const [key, artifact] of Object.entries(v)) {
+    if (!isObject(artifact) || typeTag(artifact) !== "elide.jvm.Jar") continue;
+    jars[key] = { ...(typeof artifact.name === "string" ? { name: artifact.name } : {}), sources: strings(artifact.sources) };
+  }
+  return jars;
 }
 
 function decodeSourceSet(v: unknown): SourceSet | undefined {
@@ -207,5 +283,8 @@ export function decodeManifest(text: string): Manifest {
       maven: maven ? { localRepository: typeof maven.localRepository === "string" ? maven.localRepository : undefined } : undefined,
     },
     toolchain: { engines },
+    workspaceMembers: isObject(raw.workspace) ? strings(raw.workspace.members) : [],
+    projectReferences: decodeProjectReferences(maven),
+    jars: decodeJars(raw.artifacts),
   };
 }
