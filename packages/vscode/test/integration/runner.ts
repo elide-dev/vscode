@@ -2,10 +2,14 @@
  * Launches the locally installed VS Code with this extension under development, the installed JetBrains Kotlin
  * extension, and the `samples/ktjvm` project, then runs `./index.ts` inside the extension host.
  *
+ * `ELIDE_TEST_SCENARIO=workspace` opens a copy of the Elide workspace sample instead — the `elide-workspaces-sample`
+ * checkout beside this repository, or the directory `ELIDE_WORKSPACE_SAMPLE` names — and runs the checks of
+ * `./workspace.ts` against it.
+ *
  * Prerequisites: VS Code at /Applications/Visual Studio Code.app, `JetBrains.kotlin-server` installed in
  * ~/.vscode/extensions, `elide` installed. Usage: `bun run test:integration` from packages/vscode.
  */
-import { mkdtempSync, readdirSync, realpathSync, writeFileSync, mkdirSync, rmSync, cpSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, writeFileSync, mkdirSync, rmSync, cpSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { runTests } from "@vscode/test-electron";
@@ -40,17 +44,31 @@ writeFileSync(
   ),
 );
 
-// Work on a scratch copy of the sample so the test can mutate elide.pkl freely.
-const sample = mkdtempSync(path.join(realpathSync(tmpdir()), "elide-ktjvm-"));
-cpSync(path.join(repoRoot, "samples", "ktjvm"), sample, { recursive: true, filter: (src) => !src.includes(`${path.sep}.dev`) && !src.endsWith("workspace.json") });
+const scenario = process.env.ELIDE_TEST_SCENARIO === "workspace" ? "workspace" : "ktjvm";
 
-// A vendored checkout with its own manifest, nested inside the project: a separate build the sample never invokes,
-// so it must not appear in workspace.json (the module assertion in index.ts covers it).
-mkdirSync(path.join(sample, "vendored", "src", "main", "nested"), { recursive: true });
-writeFileSync(path.join(sample, "vendored", "src", "main", "nested", "Nested.kt"), "package nested\n\nfun vendored() = 1\n");
-writeFileSync(
-  path.join(sample, "vendored", "elide.pkl"),
-  `amends "elide:project.pkl"
+// Work on a scratch copy of the sample so the test can mutate elide.pkl freely.
+const sample = mkdtempSync(path.join(realpathSync(tmpdir()), `elide-${scenario}-`));
+if (scenario === "workspace") prepareWorkspaceSample();
+else prepareKtjvmSample();
+
+function prepareWorkspaceSample(): void {
+  const source = process.env.ELIDE_WORKSPACE_SAMPLE ?? path.resolve(repoRoot, "..", "elide-workspaces-sample");
+  if (!existsSync(path.join(source, "elide.pkl"))) throw new Error(`no Elide workspace sample at ${source}; set ELIDE_WORKSPACE_SAMPLE`);
+  // Build outputs, IDE state and a previously generated workspace.json would stand in for what the sync must produce.
+  const skipped = new Set([".dev", ".idea", "workspace.json"]);
+  cpSync(source, sample, { recursive: true, filter: (src) => !skipped.has(path.basename(src)) });
+}
+
+function prepareKtjvmSample(): void {
+  cpSync(path.join(repoRoot, "samples", "ktjvm"), sample, { recursive: true, filter: (src) => !src.includes(`${path.sep}.dev`) && !src.endsWith("workspace.json") });
+
+  // A vendored checkout with its own manifest, nested inside the project: a separate build the sample never invokes,
+  // so it must not appear in workspace.json (the module assertion in index.ts covers it).
+  mkdirSync(path.join(sample, "vendored", "src", "main", "nested"), { recursive: true });
+  writeFileSync(path.join(sample, "vendored", "src", "main", "nested", "Nested.kt"), "package nested\n\nfun vendored() = 1\n");
+  writeFileSync(
+    path.join(sample, "vendored", "elide.pkl"),
+    `amends "elide:project.pkl"
 import "elide:Sources.pkl" as Sources
 
 name = "vendored-sample"
@@ -63,14 +81,14 @@ sources {
     }
 }
 `,
-);
+  );
 
-// A checked-in `.idea` (team members on IntelliJ) must not divert the Kotlin LSP away from workspace.json: the
-// server's auto-detection picks JPS whenever `.idea/modules.xml` exists, so the extension has to pin the importer.
-mkdirSync(path.join(sample, ".idea", "modules"), { recursive: true });
-writeFileSync(
-  path.join(sample, ".idea", "modules.xml"),
-  `<?xml version="1.0" encoding="UTF-8"?>
+  // A checked-in `.idea` (team members on IntelliJ) must not divert the Kotlin LSP away from workspace.json: the
+  // server's auto-detection picks JPS whenever `.idea/modules.xml` exists, so the extension has to pin the importer.
+  mkdirSync(path.join(sample, ".idea", "modules"), { recursive: true });
+  writeFileSync(
+    path.join(sample, ".idea", "modules.xml"),
+    `<?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
@@ -79,10 +97,10 @@ writeFileSync(
   </component>
 </project>
 `,
-);
-writeFileSync(
-  path.join(sample, ".idea", "modules", "ktjvm-sample.iml"),
-  `<?xml version="1.0" encoding="UTF-8"?>
+  );
+  writeFileSync(
+    path.join(sample, ".idea", "modules", "ktjvm-sample.iml"),
+    `<?xml version="1.0" encoding="UTF-8"?>
 <module type="JAVA_MODULE" version="4">
   <component name="NewModuleRootManager" inherit-compiler-output="true">
     <exclude-output />
@@ -92,15 +110,16 @@ writeFileSync(
   </component>
 </module>
 `,
-);
+  );
 
-// A committed `.vscode/settings.json` from a teammate: the absolute JDK path does not exist here, and the JSON
-// importer rejects it outright, so the extension must clear it instead of honouring it.
-mkdirSync(path.join(sample, ".vscode"), { recursive: true });
-writeFileSync(
-  path.join(sample, ".vscode", "settings.json"),
-  `${JSON.stringify({ "intellij.jdkForSymbolResolution": "/nonexistent/teammate-jdk-21" }, null, 2)}\n`,
-);
+  // A committed `.vscode/settings.json` from a teammate: the absolute JDK path does not exist here, and the JSON
+  // importer rejects it outright, so the extension must clear it instead of honouring it.
+  mkdirSync(path.join(sample, ".vscode"), { recursive: true });
+  writeFileSync(
+    path.join(sample, ".vscode", "settings.json"),
+    `${JSON.stringify({ "intellij.jdkForSymbolResolution": "/nonexistent/teammate-jdk-21" }, null, 2)}\n`,
+  );
+}
 
 try {
   await runTests({
@@ -108,7 +127,7 @@ try {
     extensionDevelopmentPath,
     extensionTestsPath,
     launchArgs: [sample, "--extensions-dir", extensionsDir, "--user-data-dir", userDataDir, "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes"],
-    extensionTestsEnv: { ELIDE_TEST_SAMPLE: sample },
+    extensionTestsEnv: { ELIDE_TEST_SAMPLE: sample, ELIDE_TEST_SCENARIO: scenario },
   });
 } finally {
   if (!process.env.KEEP_TEST_DIRS) {
