@@ -7,7 +7,7 @@ import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
 import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./explorer.js";
 import { ELIDE_NATIVE_DEBUG_TYPE, ElideNativeDebugConfigurationProvider } from "./nativeDebug.js";
-import { newProject } from "./newProject.js";
+import { addWorkspaceMember, newProject } from "./newProject.js";
 import { ElideUi } from "./output.js";
 import { ElideWorkspace, type ElideProject } from "./projects.js";
 import { ELIDE_TASK_TYPE, ElideTaskProvider, entrypointArgs, entrypointLabel, executeElideTask, executeProgramTask, taskExitCode } from "./tasks.js";
@@ -40,6 +40,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.openWorkspaceJson", () => openWorkspaceJson(workspace)),
     vscode.commands.registerCommand("elide.runTask", () => runTaskCommand(workspace)),
     vscode.commands.registerCommand("elide.newProject", () => newProject(ui)),
+    vscode.commands.registerCommand("elide.addMember", (target: unknown) => addWorkspaceMember(workspace, ui, target)),
     vscode.commands.registerCommand("elide.run", (target: unknown) => runEntrypoint(workspace, target, "run")),
     vscode.commands.registerCommand("elide.build", (target: unknown) => runEntrypoint(workspace, target, "build")),
     vscode.commands.registerCommand("elide.runArtifact", (target: unknown) => runArtifact(workspace, ui, target)),
@@ -239,6 +240,7 @@ const MENU_ACTIONS: { label: string; description: string; command: string }[] = 
   { label: "$(json) Open generated Kotlin LSP workspace", description: WORKSPACE_JSON, command: "elide.openWorkspaceJson" },
   { label: "$(output) Show Output", description: "Elide output channel", command: "elide.showOutput" },
   { label: "$(new-folder) New Project…", description: "Create a project from an Elide template", command: "elide.newProject" },
+  { label: "$(add) Add Workspace Member…", description: "Create a project inside this one and declare it a member", command: "elide.addMember" },
 ];
 
 async function showMenu(workspace: ElideWorkspace): Promise<void> {
