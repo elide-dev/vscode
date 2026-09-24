@@ -4,6 +4,13 @@ All notable changes to the Elide extension are documented here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/elide-dev/vscode/compare/v0.4.0...v0.5.0) (2026-09-24)
+
+
+### Added
+
+* workspaces ([#11](https://github.com/elide-dev/vscode/issues/11)) ([d2e968d](https://github.com/elide-dev/vscode/commit/d2e968d172b306c1c2b343b33a717a61460169cb))
+
 ## [0.4.0](https://github.com/elide-dev/vscode/compare/v0.3.1...v0.4.0) (2026-09-17)
 
 
