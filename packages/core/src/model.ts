@@ -1,9 +1,10 @@
 import path from "node:path";
-import { ElideCli, isLockfileCurrent } from "./elide.js";
+import { ElideCli, MANIFEST_NAME, isLockfileCurrent, type RunOptions } from "./elide.js";
 import { resolveJdk, type Jdk, type ResolveJdkOptions } from "./jdk.js";
 import { DEFAULT_LIBRARIES_ROOT, libraryFor, type LibraryModel } from "./libraries.js";
 import { effectiveType, type Manifest, type SourceSetType } from "./manifest.js";
 import { collectContentRoots, isPathUnder, normalizePath } from "./sourceRoots.js";
+import { ArtifactIndex, artifactProjectRoot, projectName, referencedSourceSets, sourceSetsForArtifactOutput, type ArtifactOutput } from "./workspace.js";
 
 export type { LibraryModel } from "./libraries.js";
 
@@ -24,8 +25,18 @@ export interface ModuleModel {
   kind: Exclude<SourceSetType, "other">;
   contentRoots: ContentRootModel[];
   libraries: { name: string; scope: DependencyScope }[];
-  /** Names of modules this module depends on. */
-  moduleDeps: string[];
+  moduleDeps: ModuleDependency[];
+}
+
+/** A dependency of one module on another, possibly one of a sibling project of the same workspace. */
+export interface ModuleDependency {
+  /** Root of the project declaring the module depended on. */
+  project: string;
+  /** Name of the module depended on. */
+  module: string;
+  scope: DependencyScope;
+  /** Whether the modules depending on this module see the dependency as well. */
+  exported: boolean;
 }
 
 export type Entrypoint =
@@ -43,6 +54,10 @@ export interface ProjectModel {
   libraries: LibraryModel[];
   entrypoints: Entrypoint[];
   warnings: string[];
+  /** Roots of the members this project declares, in declaration order; empty unless it is a workspace root. */
+  members: string[];
+  /** Root of the workspace this project is a member of; absent for a workspace root or a standalone project. */
+  workspaceRoot?: string;
 }
 
 export interface BuildModelOptions {
@@ -64,36 +79,88 @@ export interface BuildModelOptions {
 
 const EXCLUDED_AT_ROOT = [".dev", "node_modules", ".git"];
 
-/** Resolve the project model of the Elide project the CLI points at. */
-export async function buildProjectModel(cli: ElideCli, manifest: Manifest, opts: BuildModelOptions = {}): Promise<ProjectModel> {
+/** One project a model is built for: where it is, the CLI focused on it, and its decoded manifest. */
+interface ProjectSpec {
+  name: string;
+  root: string;
+  cli: ElideCli;
+  manifest: Manifest;
+}
+
+/** What the models of one workspace share while they are built. */
+interface BuildContext {
+  opts: BuildModelOptions;
+  run: RunOptions;
+  elideVersion: string;
+  libraries: LibraryRegistry;
+  artifacts: ArtifactIndex;
+}
+
+/**
+ * Resolve the models of the Elide project the CLI points at and of the workspace members its manifest declares:
+ * the project first, then the members in declaration order. A standalone project is a workspace of one.
+ *
+ * A workspace resolves and builds as one graph from its root: one `elide install` there covers every member, into
+ * the root's repository. Each member's classpath is then resolved by the CLI focused on that member — invoked in its
+ * directory — which is the member's own classpath within the workspace. A sibling's JAR on it becomes a dependency
+ * on the modules packaged into that JAR, since those are what an editor can compile against and navigate into.
+ */
+export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts: BuildModelOptions = {}): Promise<ProjectModel[]> {
   const root = normalizePath(path.resolve(cli.projectRoot));
-  const name = manifest.name ?? path.basename(root);
-  const warnings: string[] = [];
-  const run = { onLine: opts.onLine, signal: opts.signal };
+  const run: RunOptions = { onLine: opts.onLine, signal: opts.signal };
 
   opts.onProgress?.("Querying Elide version");
   const elideVersion = await cli.version(run);
 
-  if (!opts.skipInstall && (opts.forceInstall || !(await isLockfileCurrent(cli.projectRoot)))) {
+  // `elide manifest` has already validated the member list at the root: every entry is a directory below it holding
+  // a manifest, and no two members share a name.
+  const projects: ProjectSpec[] = [{ name: projectName(manifest, root), root, cli, manifest }];
+  for (const entry of manifest.workspaceMembers) {
+    const memberRoot = normalizePath(path.resolve(root, entry));
+    opts.onProgress?.(`Reading member manifest: ${entry}`);
+    const memberCli = new ElideCli(cli.dist, memberRoot, cli.flags);
+    const memberManifest = await memberCli.manifest(run);
+    projects.push({ name: projectName(memberManifest, memberRoot), root: memberRoot, cli: memberCli, manifest: memberManifest });
+  }
+
+  const manifests = projects.map((p) => path.join(p.root, MANIFEST_NAME));
+  if (!opts.skipInstall && (opts.forceInstall || !(await isLockfileCurrent(root, manifests)))) {
     opts.onProgress?.("Installing dependencies");
     await cli.install({ ...run, with: opts.installWith });
   }
 
-  const librariesRoot = manifest.dependencies.maven?.localRepository ?? DEFAULT_LIBRARIES_ROOT;
-  const libraries = new Map<string, LibraryModel>();
-  const usedNames = new Set<string>();
-  const libraryNameFor = (entry: string): string => {
-    const abs = normalizePath(path.resolve(cli.projectRoot, entry));
-    const existing = libraries.get(abs);
-    if (existing) return existing.name;
-    const lib = libraryFor(abs, librariesRoot, opts.exists);
-    let candidate = lib.name;
-    for (let i = 2; usedNames.has(candidate); i++) candidate = `${lib.name} (${i})`;
-    lib.name = candidate;
-    usedNames.add(candidate);
-    libraries.set(abs, lib);
-    return candidate;
+  // Members resolve into the root's repository, so the layout library names are read against is the root's.
+  const ctx: BuildContext = {
+    opts,
+    run,
+    elideVersion,
+    libraries: new LibraryRegistry(manifest.dependencies.maven?.localRepository ?? DEFAULT_LIBRARIES_ROOT, opts.exists),
+    artifacts: new ArtifactIndex(projects),
   };
+  const resolved: ResolvedProject[] = [];
+  for (const project of projects) resolved.push(await resolveProject(project, ctx));
+
+  const members = projects.slice(1).map((p) => p.root);
+  if (members.length > 0) {
+    resolved[0]!.model.members = members;
+    for (const r of resolved.slice(1)) r.model.workspaceRoot = root;
+    wireProjectDependencies(resolved);
+  }
+  return resolved.map((r) => r.model);
+}
+
+/** A project's model, with what the dependency wiring across a workspace needs to know about it. */
+interface ResolvedProject {
+  spec: ProjectSpec;
+  model: ProjectModel;
+  /** Sibling artifacts each source set's classpath resolved, keyed by source set. */
+  artifacts: Map<string, ArtifactOutput[]>;
+}
+
+async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<ResolvedProject> {
+  const { root, cli, manifest, name } = project;
+  const { opts, run } = ctx;
+  const warnings: string[] = [];
 
   const sets = Object.entries(manifest.sources)
     .map(([setName, set]) => ({ setName, set, kind: effectiveType(setName, set) }))
@@ -101,11 +168,34 @@ export async function buildProjectModel(cli: ElideCli, manifest: Manifest, opts:
 
   const modules: ModuleModel[] = [];
   const compileLibs = new Map<string, string[]>();
+  const artifacts = new Map<string, ArtifactOutput[]>();
+  const used = new Set<string>();
   for (const { setName, set, kind } of sets) {
-    opts.onProgress?.(`Resolving classpath: ${setName}`);
+    opts.onProgress?.(`Resolving classpath: ${name}.${setName}`);
     const entries = await cli.classpath(setName, "compile", run);
-    const names = [...new Set(entries.map(libraryNameFor))];
+    const outputs: ArtifactOutput[] = [];
+    const names: string[] = [];
+    for (const entry of entries) {
+      const output = ctx.artifacts.resolve(entry);
+      if (output) {
+        if (!outputs.some((o) => o.project === output.project && o.name === output.name)) outputs.push(output);
+        continue;
+      }
+      // An entry below some project's `.dev/artifacts` is a build output, not a library: one of a project this
+      // model does not cover, which happens when a member of a workspace is resolved without its root. The jar
+      // may not even exist, and the sources behind it are what an editor would need.
+      const foreign = artifactProjectRoot(path.resolve(cli.projectRoot, entry));
+      if (foreign !== undefined) {
+        const warning = `Classpath names an artifact built by ${foreign}, which is not part of this project's workspace; its sources cannot be resolved.`;
+        if (!warnings.includes(warning)) warnings.push(warning);
+        continue;
+      }
+      const libName = ctx.libraries.nameFor(path.resolve(cli.projectRoot, entry));
+      if (!names.includes(libName)) names.push(libName);
+      used.add(libName);
+    }
     compileLibs.set(setName, names);
+    artifacts.set(setName, outputs);
 
     const sourceKind: SourceRootKind = kind === "test" ? "test" : "source";
     const resourceKind: SourceRootKind = kind === "test" ? "test-resource" : "resource";
@@ -159,10 +249,11 @@ export async function buildProjectModel(cli: ElideCli, manifest: Manifest, opts:
       const target = byName.get(depSet);
       if (target && target !== m) deps.add(target.name);
     }
-    m.moduleDeps = [...deps];
+    m.moduleDeps = [...deps].map((module) => ({ project: root, module, scope: "compile", exported: false }));
   }
 
-  if (![...libraries.keys()].some((p) => /kotlin-stdlib/.test(p))) {
+  const libraries = ctx.libraries.models(used);
+  if (!libraries.some((l) => /kotlin-stdlib/.test(l.classes))) {
     warnings.push("Compile classpath contains no kotlin-stdlib jar; Kotlin symbol resolution may be incomplete.");
   }
 
@@ -181,11 +272,96 @@ export async function buildProjectModel(cli: ElideCli, manifest: Manifest, opts:
   if (entrypoints.length === 0 && manifest.jvm?.main) entrypoints.push({ kind: "jvmMain", value: manifest.jvm.main });
   for (const script of Object.keys(manifest.scripts)) entrypoints.push({ kind: "script", value: script });
 
-  opts.onProgress?.("Resolving JDK");
+  opts.onProgress?.(`Resolving JDK: ${name}`);
   const jdk = await resolveJdk(manifest, cli.dist, opts.jdk);
   if (!jdk) warnings.push("No JDK found for symbol resolution; set `elide.jdk.home` or `JAVA_HOME`.");
 
-  return { root, name, elideVersion, jdk, kotlin, modules, libraries: [...libraries.values()], entrypoints, warnings };
+  return {
+    spec: project,
+    model: { root, name, elideVersion: ctx.elideVersion, jdk, kotlin, modules, libraries, entrypoints, warnings, members: [] },
+    artifacts,
+  };
+}
+
+/**
+ * Wire every artifact one project of a workspace consumes from another as dependencies on the modules packaged into
+ * it, exported so that a module depending on the consumer sees them too, the way the consumer's JAR carries them.
+ *
+ * What each source set resolved is the complete account of it: an artifact reached *through* a sibling sits on the
+ * consumer's classpath without the consumer declaring it anywhere, exactly as Elide compiles it. The declarations are
+ * walked as well, because a reference in a bucket whose classpath is never asked for (a processor, a runtime-only
+ * dependency) still relates the two projects.
+ */
+function wireProjectDependencies(projects: readonly ResolvedProject[]): void {
+  const byName = new Map(projects.map((p) => [p.spec.name, p]));
+  const wire = (consumer: ModuleModel, target: ResolvedProject, sourceSets: readonly string[], scope: DependencyScope) => {
+    for (const module of target.model.modules) {
+      if (module === consumer || !sourceSets.includes(module.sourceSet)) continue;
+      if (consumer.moduleDeps.some((d) => d.project === target.model.root && d.module === module.name)) continue;
+      consumer.moduleDeps.push({ project: target.model.root, module: module.name, scope, exported: true });
+    }
+  };
+
+  for (const project of projects) {
+    for (const consumer of project.model.modules) {
+      const scope: DependencyScope = consumer.kind === "test" ? "test" : "compile";
+      for (const output of project.artifacts.get(consumer.sourceSet) ?? []) {
+        // a project's own artifacts stand for its own source sets, which are already related by type
+        if (output.project === project.spec.name) continue;
+        const target = byName.get(output.project);
+        if (target) wire(consumer, target, sourceSetsForArtifactOutput(target.spec.manifest, output.name), scope);
+      }
+    }
+  }
+
+  for (const project of projects) {
+    for (const reference of project.spec.manifest.projectReferences) {
+      const target = byName.get(reference.project);
+      if (!target) {
+        // the CLI rejects an unresolvable reference when a build is configured; the model simply carries none
+        project.model.warnings.push(`References unknown workspace project '${reference.project}'.`);
+        continue;
+      }
+      const sourceSets = referencedSourceSets(target.spec.manifest, reference.artifact);
+      for (const consumer of project.model.modules) {
+        const applies = reference.test ? consumer.kind === "test" : consumer.kind === "source" || consumer.kind === "example";
+        if (applies) wire(consumer, target, sourceSets, reference.test ? "test" : "compile");
+      }
+    }
+  }
+}
+
+/**
+ * The libraries of every project of a workspace, named once: two projects resolving the same JAR name the same
+ * library, and two different JARs never share a name.
+ */
+class LibraryRegistry {
+  private readonly byPath = new Map<string, LibraryModel>();
+  private readonly byName = new Map<string, LibraryModel>();
+
+  constructor(
+    private readonly librariesRoot: string,
+    private readonly exists?: (p: string) => boolean,
+  ) {}
+
+  /** Name of the library for the classpath entry at the absolute path `entry`, registering it on first sight. */
+  nameFor(entry: string): string {
+    const abs = normalizePath(path.resolve(entry));
+    const existing = this.byPath.get(abs);
+    if (existing) return existing.name;
+    const lib = libraryFor(abs, this.librariesRoot, this.exists);
+    let candidate = lib.name;
+    for (let i = 2; this.byName.has(candidate); i++) candidate = `${lib.name} (${i})`;
+    lib.name = candidate;
+    this.byPath.set(abs, lib);
+    this.byName.set(candidate, lib);
+    return candidate;
+  }
+
+  /** The libraries named `names`, in registration order. */
+  models(names: ReadonlySet<string>): LibraryModel[] {
+    return [...this.byName.values()].filter((lib) => names.has(lib.name));
+  }
 }
 
 /**
