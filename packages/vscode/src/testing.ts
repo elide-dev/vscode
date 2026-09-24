@@ -49,6 +49,11 @@ const methodItemId = (root: string, binaryName: string, method: string): string 
 interface RunGroup {
   project: ElideProject;
   projectItem: vscode.TestItem;
+  /**
+   * Project items whose tests the invocation runs: the project's own, plus its members' when it is a workspace root
+   * run whole, since `elide test` at a root runs every project of the workspace.
+   */
+  coveredItems: vscode.TestItem[];
   /** Nothing narrower than the project was selected: run the whole suite instead of a `-t` pattern. */
   wholeProject: boolean;
   targets: { binaryName: string; method?: string }[];
@@ -204,10 +209,19 @@ export class ElideTestController implements vscode.Disposable {
     for (const [, item] of this.controller.items) deleteFileItems(item, uri.fsPath);
   }
 
-  /** The project whose test source roots contain `uri`, if any. */
+  /**
+   * The project whose test source roots contain `uri`, if any: the one with the deepest such root, since a workspace
+   * root's patterns may reach into the directories of its members.
+   */
   private testProjectFor(uri: vscode.Uri): ElideProject | undefined {
     const file = normalizePath(uri.fsPath);
-    return this.workspace.projects.find((project) => testDirs(project).some((dir) => isPathUnder(file, dir)));
+    let best: { project: ElideProject; depth: number } | undefined;
+    for (const project of this.workspace.projects) {
+      for (const dir of testDirs(project)) {
+        if (isPathUnder(file, dir) && (!best || dir.length > best.depth)) best = { project, depth: dir.length };
+      }
+    }
+    return best?.project;
   }
 
   private projectItem(project: ElideProject): vscode.TestItem {
@@ -250,7 +264,7 @@ export class ElideTestController implements vscode.Disposable {
       if (!project) continue;
       let group = groups.get(projectItem.id);
       if (!group) {
-        group = { project, projectItem, wholeProject: false, targets: [], leaves: [] };
+        group = { project, projectItem, coveredItems: [projectItem], wholeProject: false, targets: [], leaves: [] };
         groups.set(projectItem.id, group);
       }
       if (item === projectItem) group.wholeProject = true;
@@ -260,7 +274,29 @@ export class ElideTestController implements vscode.Disposable {
     }
     // Nothing narrower than a project item resolved to a `-t` target (e.g. only a dynamic label item was selected).
     for (const group of groups.values()) if (group.targets.length === 0) group.wholeProject = true;
+    this.absorbMembers(groups, excluded);
     return [...groups.values()];
+  }
+
+  /**
+   * `elide test` run whole at a workspace root runs the tests of every member as well: a member is then not run on
+   * its own a second time, and all of its tests are reported by the root's run. Run with a `-t` pattern, the root's
+   * invocation stays its own, since the pattern only names what was selected there.
+   */
+  private absorbMembers(groups: Map<string, RunGroup>, excluded: ReadonlySet<string>): void {
+    for (const group of [...groups.values()]) {
+      if (!group.wholeProject) continue;
+      for (const member of this.workspace.membersOf(group.project.root)) {
+        const memberItem = this.controller.items.get(projectItemId(member.root));
+        if (!memberItem) continue;
+        groups.delete(memberItem.id);
+        group.coveredItems.push(memberItem);
+        const leaves = new Set(group.leaves);
+        const covered: vscode.TestItem[] = [];
+        collectLeaves(memberItem, excluded, covered);
+        for (const leaf of covered) if (!leaves.has(leaf)) group.leaves.push(leaf);
+      }
+    }
   }
 
   private async runGroup(
@@ -291,7 +327,7 @@ export class ElideTestController implements vscode.Disposable {
     const argv = elideInvocationArgs("test", invocation);
     this.ui.log(`test: ${dist.bin} ${argv.join(" ")} (cwd ${project.root})`);
 
-    const index = classIndex(projectItem);
+    const index = classIndex(group.coveredItems);
     const selectedIds = new Set(leaves.map((l) => l.id));
     const byNumber = new Map<number, vscode.TestItem>();
     /** Items a start event announced, per label, consumed in settle order by the matching result. */
@@ -452,13 +488,13 @@ export class ElideTestController implements vscode.Disposable {
     selected: ReadonlySet<string>,
   ): vscode.TestItem {
     const { containers, name } = parseTapLabel(label);
-    const exact = index.get(containers.join("$"))?.children.get(methodItemId(root, containers.join("$"), name));
+    const exact = methodOf(index.get(containers.join("$")), name);
     if (exact) return exact;
 
     const candidates: vscode.TestItem[] = [];
     for (const [binaryName, classItem] of index) {
       if (!chainMatches(binaryName, containers)) continue;
-      const method = classItem.children.get(methodItemId(root, binaryName, name));
+      const method = methodOf(classItem, name);
       if (method) candidates.push(method);
     }
     const preferred = candidates.filter((c) => selected.has(c.id));
@@ -538,7 +574,8 @@ function targetOf(item: vscode.TestItem): { binaryName: string; method?: string 
   return { binaryName: tail.slice(0, hash), method: tail.slice(hash + 1).replace(/\[\d+\]$/, "") };
 }
 
-function classIndex(projectItem: vscode.TestItem): Map<string, vscode.TestItem> {
+/** Class items by binary name, across the project items one invocation reports on. */
+function classIndex(projectItems: readonly vscode.TestItem[]): Map<string, vscode.TestItem> {
   const index = new Map<string, vscode.TestItem>();
   const visit = (collection: vscode.TestItemCollection) => {
     for (const [id, item] of collection) {
@@ -546,8 +583,16 @@ function classIndex(projectItem: vscode.TestItem): Map<string, vscode.TestItem> 
       visit(item.children);
     }
   };
-  visit(projectItem.children);
+  for (const projectItem of projectItems) visit(projectItem.children);
   return index;
+}
+
+/** The item of method `name` of a class item, which is keyed by the root of the project declaring the class. */
+function methodOf(classItem: vscode.TestItem | undefined, name: string): vscode.TestItem | undefined {
+  if (!classItem) return undefined;
+  // `c:<root>:<binaryName>`: a binary name holds no `:`, so the root is everything between the prefix and the last one.
+  const separator = classItem.id.lastIndexOf(":");
+  return classItem.children.get(methodItemId(classItem.id.slice(2, separator), classItem.id.slice(separator + 1), name));
 }
 
 /**
