@@ -9,7 +9,8 @@ import {
   MIN_ELIDE_VERSION,
   ManifestParseError,
   WORKSPACE_JSON,
-  buildProjectModel,
+  buildProjectModels,
+  findEnclosingWorkspace,
   isNestedUnder,
   isSupportedElideVersion,
   lockfileDigest,
@@ -31,6 +32,12 @@ export interface ElideProject {
   manifestPath: string;
   folder: vscode.WorkspaceFolder;
   model?: ProjectModel;
+  /**
+   * Root of the Elide workspace this project is a member of. Members are never discovered on their own: their
+   * manifests are nested in the root's directory, and they are tracked once a sync of the root has read its member
+   * list. They are synced, installed and invalidated as part of that root.
+   */
+  workspaceRoot?: string;
   /**
    * Digest of the `.dev/elide.lock*.bin` content this extension has already accounted for; `undefined` until the
    * project's lockfiles have been read once. See {@link ElideWorkspace.lockfileChanged}.
@@ -63,6 +70,8 @@ const MIN_VERSION_DISPLAY = `${MIN_ELIDE_VERSION.major}.${MIN_ELIDE_VERSION.mino
 const INSTALL_DOCS = "https://docs.elide.dev/installation";
 /** Distribution homes already reported as too old, so the warning is shown once per window. */
 const warnedVersions = new Set<string>();
+/** Workspace roots already offered for a folder, so the prompt is shown once per window. */
+const offeredRoots = new Set<string>();
 
 /** Tracks Elide projects per workspace folder and runs syncs against the CLI. */
 export class ElideWorkspace implements vscode.Disposable {
@@ -80,7 +89,10 @@ export class ElideWorkspace implements vscode.Disposable {
     return [...this.folders.values()].flatMap((f) => [...f.projects.values()]);
   }
 
-  /** The project owning `fsPath` (deepest root that contains it), if any. */
+  /**
+   * The project owning `fsPath` (deepest root that contains it), if any. Inside an Elide workspace that is the member
+   * holding the file rather than the root, whose directory contains it as well.
+   */
   projectFor(fsPath: string): ElideProject | undefined {
     const abs = path.resolve(fsPath);
     let best: ElideProject | undefined;
@@ -96,6 +108,12 @@ export class ElideWorkspace implements vscode.Disposable {
     return [...(this.folders.get(folder.uri.toString())?.projects.values() ?? [])];
   }
 
+  /** The members of the workspace rooted at `root`, in declaration order; empty for a standalone project. */
+  membersOf(root: string): ElideProject[] {
+    const project = this.projectAt(root);
+    return (project?.model?.members ?? []).map((member) => this.projectAt(member)).filter((p): p is ElideProject => p !== undefined);
+  }
+
   /** The tracked project rooted exactly at `root`; `undefined` for a directory whose manifest is nested and ignored. */
   projectAt(root: string): ElideProject | undefined {
     const abs = path.resolve(root);
@@ -108,7 +126,9 @@ export class ElideWorkspace implements vscode.Disposable {
 
   /**
    * Find the projects of `folder`: every `elide.pkl` outside `.dev/` and `node_modules/`, minus the manifests nested
-   * inside another project's directory, which are separate builds this one does not include.
+   * inside another project's directory. Those are either members of the enclosing project's workspace, which its
+   * sync attaches, or separate builds that project does not include. Members already attached are kept along with
+   * their root.
    */
   async discover(folder: vscode.WorkspaceFolder): Promise<ElideProject[]> {
     const found = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, `**/${MANIFEST_NAME}`), DISCOVERY_EXCLUDE);
@@ -125,12 +145,44 @@ export class ElideWorkspace implements vscode.Disposable {
     }
     if (manifests.length < found.length) {
       const kept = new Set(manifests);
-      for (const uri of found) if (!kept.has(uri.fsPath)) this.ui.log(`ignoring nested manifest: ${uri.fsPath}`);
+      for (const uri of found) {
+        if (kept.has(uri.fsPath) || state.projects.get(path.dirname(uri.fsPath))?.workspaceRoot) continue;
+        this.ui.log(`nested manifest not tracked on its own: ${uri.fsPath}`);
+      }
     }
-    for (const root of [...state.projects.keys()]) if (!seen.has(root)) state.projects.delete(root);
+    for (const [root, project] of [...state.projects]) {
+      if (!seen.has(root) && !(project.workspaceRoot && seen.has(project.workspaceRoot))) state.projects.delete(root);
+    }
     this.changed.fire();
     this.updateProjectLabel();
-    return [...state.projects.values()];
+    const projects = [...state.projects.values()];
+    for (const project of projects) if (!project.workspaceRoot) this.offerWorkspaceRoot(project);
+    return projects;
+  }
+
+  /**
+   * Point out the Elide workspace `project` belongs to when its root sits above the opened folder.
+   *
+   * A member opened on its own resolves without the workspace: the CLI still puts its siblings' JARs on the
+   * classpath, but those are build outputs of projects this window does not hold, so their sources resolve to
+   * nothing until the root is opened. The prompt offers exactly that, once per root per window.
+   */
+  private offerWorkspaceRoot(project: ElideProject): void {
+    const folderPath = project.folder.uri.fsPath;
+    const enclosing = findEnclosingWorkspace(project.root);
+    if (!enclosing || isNestedUnder(enclosing.root, folderPath) || enclosing.root === path.resolve(folderPath)) return;
+    this.ui.log(`${project.root} is member '${enclosing.member}' of the Elide workspace at ${enclosing.root}`);
+    if (offeredRoots.has(enclosing.root)) return;
+    offeredRoots.add(enclosing.root);
+    const open = "Open Workspace Root";
+    void vscode.window
+      .showInformationMessage(
+        `Elide: ${path.basename(project.root)} is a member of the workspace at ${enclosing.root}. Open the root to resolve its sibling projects.`,
+        open,
+      )
+      .then((pick) => {
+        if (pick === open) void vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(enclosing.root));
+      });
   }
 
   /**
@@ -179,6 +231,7 @@ export class ElideWorkspace implements vscode.Disposable {
     return project;
   }
 
+  /** Drops the project whose manifest `manifestUri` is; dropping a workspace root drops its members with it. */
   removeProject(manifestUri: vscode.Uri): ElideProject | undefined {
     const located = this.locate(manifestUri);
     const state = located ? this.folders.get(located.folder.uri.toString()) : undefined;
@@ -186,6 +239,7 @@ export class ElideWorkspace implements vscode.Disposable {
     const project = state?.projects.get(root);
     if (state && project) {
       state.projects.delete(root);
+      for (const [other, p] of [...state.projects]) if (p.workspaceRoot === root) state.projects.delete(other);
       this.changed.fire();
     }
     return project;
@@ -217,9 +271,12 @@ export class ElideWorkspace implements vscode.Disposable {
     return this.folders.get(folder.uri.toString())?.lastError;
   }
 
-  /** Name the status bar shows beside "Elide": only meaningful when the window holds exactly one project. */
+  /**
+   * Name the status bar shows beside "Elide": only meaningful when the window holds exactly one project, counting a
+   * workspace as the one project it builds as.
+   */
   private updateProjectLabel(): void {
-    const projects = this.projects;
+    const projects = this.projects.filter((p) => !p.workspaceRoot);
     const only = projects.length === 1 ? projects[0] : undefined;
     this.ui.setProjectLabel(only ? (only.model?.name ?? path.basename(only.root)) : undefined);
   }
@@ -259,6 +316,9 @@ export class ElideWorkspace implements vscode.Disposable {
   /**
    * Resolve every project in `folder` through the Elide CLI, write `<folder>/workspace.json`, and hand the result
    * to the Kotlin LSP. A sync already running for the folder is cancelled and restarted.
+   *
+   * A workspace is resolved from its root, members included, and the members its manifest declares replace the ones
+   * tracked before.
    */
   async syncFolder(folder: vscode.WorkspaceFolder, reason: SyncReason): Promise<void> {
     const state = this.folderState(folder);
@@ -311,7 +371,7 @@ export class ElideWorkspace implements vscode.Disposable {
     const models: ProjectModel[] = [];
     const onLine = (line: string) => this.ui.log(`  ${line}`);
     const classifiers = [...config.installClassifiers].sort();
-    for (const project of state.projects.values()) {
+    for (const project of [...state.projects.values()].filter((p) => !p.workspaceRoot)) {
       const rel = path.relative(folderPath, project.root) || ".";
       progress.report({ message: rel });
       const cli = new ElideCli(dist, project.root, config.flags);
@@ -329,9 +389,9 @@ export class ElideWorkspace implements vscode.Disposable {
       // force an install whenever it differs from the set this project was last resolved with.
       const key = `${INSTALL_CLASSIFIERS_KEY}:${project.root}`;
       const requested = JSON.stringify(classifiers);
-      let model: ProjectModel;
+      let resolved: ProjectModel[];
       try {
-        model = await buildProjectModel(cli, manifest, {
+        resolved = await buildProjectModels(cli, manifest, {
           ...options,
           installWith: classifiers,
           forceInstall: this.state.get<string>(key) !== requested,
@@ -341,14 +401,21 @@ export class ElideWorkspace implements vscode.Disposable {
           e instanceof ElideCommandFailedError && e.args[0] === "install" && e.args.some((a) => a === "--with" || a === "--slim");
         if (!rejectedClassifiers) throw e;
         this.ui.log(`  [${rel}] elide install rejected the classifier flags; retrying with the CLI defaults`);
-        model = await buildProjectModel(cli, manifest, { ...options, forceInstall: false });
+        resolved = await buildProjectModels(cli, manifest, { ...options, forceInstall: false });
       }
       await this.state.update(key, requested);
-      for (const w of model.warnings) this.ui.log(`  [${rel}] warning: ${w}`);
+      for (const model of resolved) {
+        const where = path.relative(folderPath, model.root) || ".";
+        for (const w of model.warnings) this.ui.log(`  [${where}] warning: ${w}`);
+      }
+      const [model, ...members] = resolved;
+      if (!model) continue;
       project.model = model;
-      // The model was resolved from whatever `elide install` left behind: that content is now the baseline.
+      await this.attachMembers(state, project, members);
+      // The model was resolved from whatever `elide install` left behind: that content is now the baseline. A
+      // workspace records its one lockfile at the root.
       project.lockDigest = await lockfileDigest(project.root);
-      models.push(model);
+      models.push(...resolved);
     }
     if (signal.aborted) throw signal.reason;
     this.warnOnOldElide(dist, models[0]?.elideVersion);
@@ -367,6 +434,36 @@ export class ElideWorkspace implements vscode.Disposable {
           void vscode.window.showWarningMessage("Elide: Kotlin LSP did not reload; run 'IntelliJ: Restart Language Server'.");
         },
       );
+    }
+  }
+
+  /**
+   * Track the members a sync of the workspace root `root` resolved, replacing the ones tracked before. A member's
+   * manifest is nested in the root's directory, so discovery never tracks it on its own; a project that was tracked
+   * on its own and is now declared a member is taken over.
+   *
+   * Each member gets a lockfile baseline of its own: the workspace resolves into the root's repository, but a
+   * member still has a `.dev` the CLI writes to, and an event there must not be read as a dependency change.
+   */
+  private async attachMembers(state: FolderState, root: ElideProject, models: readonly ProjectModel[]): Promise<void> {
+    // Model roots are normalized to forward slashes; projects are keyed by the platform's own spelling.
+    const declared = new Map(models.map((m) => [path.resolve(m.root), m]));
+    for (const [other, p] of [...state.projects]) {
+      if (p.workspaceRoot === root.root && !declared.has(other)) {
+        state.projects.delete(other);
+        this.ui.log(`workspace member dropped: ${other}`);
+      }
+    }
+    for (const [memberRoot, model] of declared) {
+      if (!state.projects.get(memberRoot)?.workspaceRoot) this.ui.log(`workspace member: ${memberRoot} (of ${root.root})`);
+      state.projects.set(memberRoot, {
+        root: memberRoot,
+        manifestPath: path.join(memberRoot, MANIFEST_NAME),
+        folder: state.folder,
+        model,
+        workspaceRoot: root.root,
+        lockDigest: await lockfileDigest(memberRoot),
+      });
     }
   }
 
