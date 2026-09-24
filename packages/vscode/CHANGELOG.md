@@ -9,7 +9,7 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ### Added
 
-* workspaces ([#11](https://github.com/elide-dev/vscode/issues/11)) ([d2e968d](https://github.com/elide-dev/vscode/commit/d2e968d172b306c1c2b343b33a717a61460169cb))
+* Support for Elide multi-project workspaces. ([#11](https://github.com/elide-dev/vscode/issues/11)) ([d2e968d](https://github.com/elide-dev/vscode/commit/d2e968d172b306c1c2b343b33a717a61460169cb))
 
 ## [0.4.0](https://github.com/elide-dev/vscode/compare/v0.3.1...v0.4.0) (2026-09-17)
 
