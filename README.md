@@ -48,6 +48,18 @@ inside another project's directory — a vendored checkout, a sample, a fixture 
 project does not invoke: only the outermost manifest of each tree is imported, and changes to the nested ones do not
 trigger a sync.
 
+The exception is an Elide workspace: a root manifest declaring `workspace.members` is resolved with its members, the
+way the CLI builds them as one graph. `elide install` runs once at the root (the lockfile check weighs every member's
+manifest), and each member's classpath is then read by the CLI invoked in that member's directory. A member's
+classpath names a sibling's JAR as the path that sibling's build writes (`<member>/../<sibling>/.dev/artifacts/jar/…`);
+that entry is not a library but a module dependency on the source sets the JAR packages, exported so it carries
+through, which lets the Kotlin LSP resolve sibling code without building it. Once synced, every member is a project of
+its own for path-keyed features (code lenses, tests, tasks, debugging), and edits to its manifest resync the workspace.
+
+Opening a member's own directory instead of the root gives that member no siblings: the CLI still puts their JARs on
+its classpath, but they are build outputs of projects the window does not hold, so the sync reports them as
+unresolvable rather than inventing a library for a jar that may not exist, and offers to open the workspace root.
+
 ### Mixed-editor checkouts (`.idea`, Gradle, Maven)
 
 The Kotlin LSP only reads `workspace.json` when no build system claims the folder first: it matches `jps`

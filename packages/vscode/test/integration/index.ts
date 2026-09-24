@@ -7,44 +7,16 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { resolveElideDistribution } from "@elide/ide-core";
 import * as vscode from "vscode";
 import type { ElideExtensionApi as ElideApi } from "../../src/extension.js";
+import { errorsOf, hoverAt, log, waitFor } from "./helpers.js";
+import { runWorkspaceScenario } from "./workspace.js";
 
 const sample = process.env.ELIDE_TEST_SAMPLE!;
-const log = (...a: unknown[]) => console.log("[elide-test]", ...a);
-
-async function waitFor<T>(what: string, probe: () => Promise<T | undefined> | T | undefined, timeoutMs: number, intervalMs = 1_000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const v = await probe();
-    if (v !== undefined && v !== false) return v as T;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-}
-
-function hoverText(hovers: vscode.Hover[] | undefined): string {
-  return (hovers ?? [])
-    .flatMap((h) => h.contents)
-    .map((c) => (typeof c === "string" ? c : c.value))
-    .join("\n");
-}
-
-async function hoverAt(uri: vscode.Uri, needle: string): Promise<string> {
-  const doc = await vscode.workspace.openTextDocument(uri);
-  await vscode.window.showTextDocument(doc, { preview: false });
-  const offset = doc.getText().indexOf(needle);
-  assert.ok(offset >= 0, `${needle} not found in ${uri.fsPath}`);
-  const pos = doc.positionAt(offset + 1);
-  const hovers = await vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", uri, pos);
-  return hoverText(hovers);
-}
-
-function errorsOf(uri: vscode.Uri): vscode.Diagnostic[] {
-  return vscode.languages.getDiagnostics(uri).filter((d) => d.severity === vscode.DiagnosticSeverity.Error);
-}
 
 export async function run(): Promise<void> {
+  if (process.env.ELIDE_TEST_SCENARIO === "workspace") return await runWorkspaceScenario();
   const folder = vscode.workspace.workspaceFolders?.[0];
   assert.ok(folder, "sample workspace folder open");
   assert.equal(folder.uri.fsPath, sample);
@@ -570,7 +542,8 @@ export async function run(): Promise<void> {
   // 7. An Elide older than the extension's minimum warns the user, and the sync still completes against it.
   const stubHome = path.join(tmpdir(), `elide-old-${process.pid}`);
   mkdirSync(path.join(stubHome, "bin"), { recursive: true });
-  const realElide = execSync("command -v elide", { shell: "/bin/sh", encoding: "utf8" }).trim();
+  // The same distribution the extension resolves, so the stub wraps it whether or not `elide` is on this PATH.
+  const realElide = resolveElideDistribution({}).bin;
   writeFileSync(
     path.join(stubHome, "bin", "elide"),
     `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "1.4.0+stub"; exit 0; fi\nexec ${realElide} "$@"\n`,

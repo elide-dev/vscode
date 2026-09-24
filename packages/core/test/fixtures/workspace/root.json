@@ -1,0 +1,27 @@
+{
+    "name": "logstat",
+    "version": "1.0.0",
+    "description": "Access-log reporting CLI, built as an Elide workspace",
+    "dependencies": {
+        "maven": {
+            "packages": [
+                {
+                    "@type": "elide.jvm.MavenPackageDependency.OfString",
+                    "value": "com.google.guava:guava:33.4.8-jre"
+                },
+                {
+                    "@type": "elide.jvm.MavenPackageDependency.OfString",
+                    "value": "org.apache.commons:commons-lang3:3.17.0"
+                }
+            ]
+        }
+    },
+    "workspace": {
+        "members": [
+            "model",
+            "parser",
+            "report",
+            "cli"
+        ]
+    }
+}

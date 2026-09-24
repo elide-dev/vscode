@@ -1,0 +1,48 @@
+{
+    "name": "cli",
+    "description": "Command-line front end",
+    "dependencies": {
+        "maven": {
+            "packages": [
+                {
+                    "@type": "elide.jvm.MavenPackageDependency.OfProjectArtifact",
+                    "value": {
+                        "project": "parser"
+                    }
+                },
+                {
+                    "@type": "elide.jvm.MavenPackageDependency.OfProjectArtifact",
+                    "value": {
+                        "project": "report",
+                        "artifact": "report"
+                    }
+                }
+            ]
+        }
+    },
+    "jvm": {
+        "main": "logstat.cli.MainKt"
+    },
+    "sources": {
+        "main": {
+            "@type": "elide.sources.SourceSetSpec",
+            "paths": [
+                "src/main/kotlin/**/*.kt"
+            ]
+        },
+        "test": {
+            "@type": "elide.sources.SourceSetSpec",
+            "paths": [
+                "src/test/kotlin/**/*.kt"
+            ]
+        }
+    },
+    "artifacts": {
+        "cli": {
+            "@type": "elide.jvm.Jar",
+            "sources": [
+                "main"
+            ]
+        }
+    }
+}

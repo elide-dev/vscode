@@ -12,7 +12,16 @@ Elide's build, run, test, and debug commands are available from the editor.
 
 - **Project sync.** Opening a folder with `elide.pkl` resolves the manifest, installs dependencies when the lockfile is
   stale, and reads the compile classpath of every source set. Manifests nested inside another project (vendored
-  checkouts, samples) are separate builds and are not imported.
+  checkouts, samples) are separate builds and are not imported, unless that project declares them as workspace
+  members.
+- **Multi-project workspaces.** A manifest declaring `workspace.members` is synced as one build: a single install at
+  the root, then every member's own source sets, classpath and JDK. A member consuming a sibling's artifact with
+  `project("name")` depends on the sibling's modules, along with any siblings that artifact brings in the way Elide
+  resolves the classpath, so code intelligence works across the workspace without building anything first. Each member
+  is also a project of its own in the sidebar (nested under the root), the Test Explorer, tasks, code lenses and
+  debug configurations. Editing any member's manifest reloads the workspace. `Elide: Add Workspace Member…` generates
+  a new member from a template and declares it in the root's manifest; opening a member's directory on its own
+  offers to open the workspace root instead, since only the root resolves the siblings it depends on.
 - **Kotlin/Java code intelligence.** The project model is written as a `workspace.json` the Kotlin LSP imports —
   modules per source set, libraries with attached sources and javadoc, the selected JDK, and the manifest's Kotlin
   compiler options.
@@ -59,6 +68,7 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `Elide: Show Menu` | Quick pick with the Elide actions (what the status bar item opens). |
 | `Elide: Run Elide Command…` | Pick `build`, `test`, `install`, or `run <entrypoint>` and run it as a task. |
 | `Elide: New Project…` | Create a project from an Elide template in a directory you pick. |
+| `Elide: Add Workspace Member…` | Create a project inside an existing one and declare it in `workspace.members`. |
 | `Elide: Open generated Kotlin LSP workspace` | Open the generated `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel. |
 

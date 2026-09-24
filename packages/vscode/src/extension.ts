@@ -7,7 +7,7 @@ import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
 import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./explorer.js";
 import { ELIDE_NATIVE_DEBUG_TYPE, ElideNativeDebugConfigurationProvider } from "./nativeDebug.js";
-import { newProject } from "./newProject.js";
+import { addWorkspaceMember, newProject } from "./newProject.js";
 import { ElideUi } from "./output.js";
 import { ElideWorkspace, type ElideProject } from "./projects.js";
 import { ELIDE_TASK_TYPE, ElideTaskProvider, entrypointArgs, entrypointLabel, executeElideTask, executeProgramTask, taskExitCode } from "./tasks.js";
@@ -40,6 +40,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.openWorkspaceJson", () => openWorkspaceJson(workspace)),
     vscode.commands.registerCommand("elide.runTask", () => runTaskCommand(workspace)),
     vscode.commands.registerCommand("elide.newProject", () => newProject(ui)),
+    vscode.commands.registerCommand("elide.addMember", (target: unknown) => addWorkspaceMember(workspace, ui, target)),
     vscode.commands.registerCommand("elide.run", (target: unknown) => runEntrypoint(workspace, target, "run")),
     vscode.commands.registerCommand("elide.build", (target: unknown) => runEntrypoint(workspace, target, "build")),
     vscode.commands.registerCommand("elide.runArtifact", (target: unknown) => runArtifact(workspace, ui, target)),
@@ -116,7 +117,17 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
   });
   manifests.onDidCreate((uri) => {
     const project = workspace.addProject(uri);
-    if (!project) return;
+    if (!project) {
+      // A manifest nested in an Elide workspace can be a member its root declares — or the one whose absence failed
+      // the last sync — and only a sync of the root can tell: the member list is whatever `elide manifest` says.
+      const located = workspace.locate(uri);
+      const owner = located ? workspace.projectFor(path.dirname(located.fsPath)) : undefined;
+      const inWorkspace = owner !== undefined && (owner.workspaceRoot !== undefined || (owner.model?.members.length ?? 0) > 0);
+      if (owner && (inWorkspace || workspace.lastError(owner.folder)) && !workspace.isSelfInflicted(owner.folder)) {
+        onStale(owner.folder, MANIFEST_NAME, uri.fsPath);
+      }
+      return;
+    }
     ui.log(`project added: ${project.root}`);
     ui.setStatus("stale");
     debounce(project.folder.uri.toString(), () => void workspace.syncFolder(project.folder, "project-added"));
@@ -229,6 +240,7 @@ const MENU_ACTIONS: { label: string; description: string; command: string }[] = 
   { label: "$(json) Open generated Kotlin LSP workspace", description: WORKSPACE_JSON, command: "elide.openWorkspaceJson" },
   { label: "$(output) Show Output", description: "Elide output channel", command: "elide.showOutput" },
   { label: "$(new-folder) New Project…", description: "Create a project from an Elide template", command: "elide.newProject" },
+  { label: "$(add) Add Workspace Member…", description: "Create a project inside this one and declare it a member", command: "elide.addMember" },
 ];
 
 async function showMenu(workspace: ElideWorkspace): Promise<void> {

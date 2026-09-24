@@ -13,18 +13,21 @@ is referenced anywhere in this package.
 | `sourceRoots.ts`, `libraries.ts` | Derive source roots and resolve classpath entries into libraries with attached `-sources.jar` / `-javadoc.jar`. |
 | `jdk.ts` | Discover installed JDKs (SDKMAN, macOS, Linux, Windows locations) and pick one matching the project's `jvm.target`. |
 | `model.ts` | The resulting project model: projects, modules, libraries, SDK. |
+| `workspace.ts` | Elide workspaces: members declared by a manifest, sibling artifacts on a member's classpath and the source sets behind them. |
+| `pkl.ts` | Read and edit `elide.pkl` as text, for what `elide manifest` cannot answer (artifact source positions, the workspace above a folder). |
 | `kotlinLsp.ts` | Emit the JSON workspace (`workspace.json`) consumed by the JetBrains Kotlin language server. |
 
 ## Usage
 
 ```ts
-import { ElideCli, buildProjectModel, resolveElideDistribution, writeKotlinLspWorkspace } from "@elide/ide-core";
+import { ElideCli, buildProjectModels, resolveElideDistribution, writeKotlinLspWorkspace } from "@elide/ide-core";
 
 const distribution = resolveElideDistribution();
 const cli = new ElideCli(distribution, projectRoot);
 const manifest = await cli.manifest();
-const model = await buildProjectModel(cli, manifest);
-await writeKotlinLspWorkspace([model], workspaceRoot);
+// The project first, then the members its manifest declares when it is the root of an Elide workspace.
+const models = await buildProjectModels(cli, manifest);
+await writeKotlinLspWorkspace(models, workspaceRoot);
 ```
 
 The package is ESM-only, built with `tsc`, and ships type declarations. It is not published to npm today; it is

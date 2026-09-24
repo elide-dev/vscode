@@ -1,0 +1,34 @@
+{
+    "name": "model",
+    "description": "Log record types shared by every other project",
+    "dependencies": {
+        "maven": {
+            "packages": [
+                {
+                    "@type": "elide.jvm.MavenPackageDependency.OfString",
+                    "value": "com.google.guava:guava"
+                }
+            ]
+        }
+    },
+    "sources": {
+        "main": {
+            "@type": "elide.sources.SourceSetSpec",
+            "paths": [
+                "src/main/kotlin/**/*.kt"
+            ]
+        },
+        "test": {
+            "@type": "elide.sources.SourceSet.OfString",
+            "value": "test/**.*"
+        }
+    },
+    "artifacts": {
+        "model": {
+            "@type": "elide.jvm.Jar",
+            "sources": [
+                "main"
+            ]
+        }
+    }
+}

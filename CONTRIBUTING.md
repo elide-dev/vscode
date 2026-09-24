@@ -41,6 +41,15 @@ cd packages/vscode
 bun run test:integration
 ```
 
+The default scenario drives `samples/ktjvm`. `ELIDE_TEST_SCENARIO=workspace` runs the Elide-workspace
+scenario instead, against the `elide-workspaces-sample` checkout beside this repository or the directory
+`ELIDE_WORKSPACE_SAMPLE` names:
+
+```sh
+cd packages/vscode
+ELIDE_TEST_SCENARIO=workspace bun run test:integration
+```
+
 ## Code style
 
 - Formatting and whitespace rules are defined in `.editorconfig` (2-space indent, LF line endings,

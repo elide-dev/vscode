@@ -28,7 +28,7 @@ function model(over: Partial<ProjectModel> = {}): ProjectModel {
           { name: "Elide: junit:junit:4.13.2", scope: "test" },
           { name: "Elide: org.jetbrains.kotlin:kotlin-stdlib:2.4.10", scope: "compile" },
         ],
-        moduleDeps: ["app.main"],
+        moduleDeps: [{ project: "/ws", module: "app.main", scope: "compile", exported: false }],
       },
     ],
     libraries: [
@@ -112,11 +112,40 @@ describe("emitKotlinLspWorkspace", () => {
   });
 
   test("two projects with the same name get disambiguated module names", () => {
-    const a = model({ root: "/ws/a" });
-    const b = model({ root: "/ws/b" });
+    const rooted = (root: string) => {
+      const m = model({ root });
+      for (const module of m.modules) module.moduleDeps = module.moduleDeps.map((d) => ({ ...d, project: root }));
+      return m;
+    };
+    const a = rooted("/ws/a");
+    const b = rooted("/ws/b");
     const o = emitKotlinLspWorkspace([a, b], { workspaceRoot: ws });
     expect(o.modules.map((m) => m.name)).toEqual(["app.main", "app.test", "app.main (b)", "app.test (b)"]);
     expect(o.modules[3]!.dependencies.find((d) => d.type === "module")).toEqual({ type: "module", name: "app.main (b)", scope: "compile", isExported: false, isTestJar: false });
     expect(o.libraries).toHaveLength(2);
+  });
+
+  test("a dependency on a sibling project's module follows that module's rename, with its scope and export", () => {
+    const other = model({ root: "/ws/other" });
+    const core = model({ root: "/ws/lib/core", name: "core" });
+    core.modules = [{ ...core.modules[0]!, name: "app.main", moduleDeps: [] }];
+    const app = model({ root: "/ws/lib/app" });
+    app.modules = [
+      {
+        ...app.modules[1]!,
+        name: "app.test",
+        moduleDeps: [{ project: "/ws/lib/core", module: "app.main", scope: "test", exported: true }],
+      },
+    ];
+    // `other` claims `app.main` first, so both projects of the workspace get suffixed names.
+    const o = emitKotlinLspWorkspace([other, core, app], { workspaceRoot: ws });
+    expect(o.modules.map((m) => m.name)).toEqual(["app.main", "app.test", "app.main (lib/core)", "app.test (lib/app)"]);
+    expect(o.modules[3]!.dependencies.find((d) => d.type === "module")).toEqual({
+      type: "module",
+      name: "app.main (lib/core)",
+      scope: "test",
+      isExported: true,
+      isTestJar: false,
+    });
   });
 });

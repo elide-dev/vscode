@@ -87,6 +87,26 @@ describe("scanJvmTestSource", () => {
     ]);
   });
 
+  test("an annotation on the declaration's own line, with arguments, still marks it", () => {
+    const kotlin = [
+      "package logstat.cli",
+      "@DisplayName(\"cli\") class CliTest {",
+      "  @Test fun `no arguments prints usage`() {",
+      "  }",
+      "  @Nested inner class Help {",
+      "    @ParameterizedTest @ValueSource(strings = [\"a\", \"b\"]) fun each(value: String) {}",
+      "  }",
+      "  @Suppress(\"unused\") fun helper() {}",
+      "}",
+    ].join("\n");
+    expect(scanJvmTestSource(kotlin, "kotlin").classes).toEqual([
+      { binaryName: "logstat.cli.CliTest", simpleName: "CliTest", line: 1, methods: [{ name: "no arguments prints usage", line: 2 }] },
+      { binaryName: "logstat.cli.CliTest$Help", simpleName: "Help", line: 4, methods: [{ name: "each", line: 5 }] },
+    ]);
+    const java = "package p;\nclass T {\n  @Test @Timeout(value = 1, unit = TimeUnit.class) void works() {}\n}\n";
+    expect(scanJvmTestSource(java, "java").classes[0]?.methods).toEqual([{ name: "works", line: 2 }]);
+  });
+
   test("a file without a package still yields binary names", () => {
     const scanned = scanJvmTestSource("class T {\n  @Test\n  fun a() {}\n}\n", "kotlin");
     expect(scanned.packageName).toBe("");

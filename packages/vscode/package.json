@@ -275,6 +275,12 @@
         "icon": "$(new-folder)"
       },
       {
+        "command": "elide.addMember",
+        "category": "Elide",
+        "title": "Add Workspace Member…",
+        "icon": "$(add)"
+      },
+      {
         "command": "elide.run",
         "category": "Elide",
         "title": "Run Entrypoint",
@@ -423,13 +429,18 @@
         },
         {
           "command": "elide.sync",
-          "when": "view == elide.projects && viewItem == project",
+          "when": "view == elide.projects && viewItem =~ /^project/",
           "group": "inline@1"
         },
         {
           "command": "elide.openManifest",
-          "when": "view == elide.projects && viewItem == project",
+          "when": "view == elide.projects && viewItem =~ /^project/",
           "group": "inline@2"
+        },
+        {
+          "command": "elide.addMember",
+          "when": "view == elide.projects && viewItem == project",
+          "group": "inline@3"
         },
         {
           "command": "elide.revealLibrary",
@@ -562,7 +573,7 @@
           },
           "project": {
             "type": "string",
-            "description": "Project root relative to the workspace folder (multi-project workspaces)."
+            "description": "Project root relative to the workspace folder; in an Elide workspace, the member's directory."
           }
         }
       }
@@ -648,7 +659,7 @@
               },
               "project": {
                 "type": "string",
-                "description": "Project root relative to the workspace folder (multi-project workspaces)."
+                "description": "Project root relative to the workspace folder; in an Elide workspace, the member's directory."
               },
               "env": {
                 "type": "object",
@@ -749,7 +760,7 @@
               },
               "project": {
                 "type": "string",
-                "description": "Project root relative to the workspace folder (multi-project workspaces)."
+                "description": "Project root relative to the workspace folder; in an Elide workspace, the member's directory."
               },
               "env": {
                 "type": "object",
@@ -810,6 +821,17 @@
             },
             "completionEvents": [
               "onContext:elide.hasProjects"
+            ]
+          },
+          {
+            "id": "workspace",
+            "title": "Grow into a workspace",
+            "description": "A root manifest listing `workspace.members` builds several projects as one graph.\n[Add Workspace Member…](command:elide.addMember)",
+            "media": {
+              "markdown": "media/walkthrough/workspace.md"
+            },
+            "completionEvents": [
+              "onCommand:elide.addMember"
             ]
           },
           {

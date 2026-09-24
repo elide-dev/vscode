@@ -1,0 +1,38 @@
+{
+    "name": "parser",
+    "description": "Reads access-log text into model records",
+    "dependencies": {
+        "maven": {
+            "packages": [
+                {
+                    "@type": "elide.jvm.MavenPackageDependency.OfProjectArtifact",
+                    "value": {
+                        "project": "model"
+                    }
+                }
+            ]
+        }
+    },
+    "sources": {
+        "main": {
+            "@type": "elide.sources.SourceSetSpec",
+            "paths": [
+                "src/main/kotlin/**/*.kt"
+            ]
+        },
+        "test": {
+            "@type": "elide.sources.SourceSetSpec",
+            "paths": [
+                "src/test/kotlin/**/*.kt"
+            ]
+        }
+    },
+    "artifacts": {
+        "parser": {
+            "@type": "elide.jvm.Jar",
+            "sources": [
+                "main"
+            ]
+        }
+    }
+}

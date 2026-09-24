@@ -354,10 +354,11 @@ export function isNestedUnder(p: string, dir: string): boolean {
 /**
  * Keep only the outermost manifest of each directory tree.
  *
- * Elide has no subproject concept: a manifest inside another project's directory (a vendored checkout, a sample, a
- * test fixture) is a separate build the enclosing project never invokes. Importing both resolves the inner sources
- * twice and produces overlapping content roots in the generated workspace model, so the nested ones are dropped.
- * Input order is preserved.
+ * A manifest inside another project's directory is either a member of the workspace the enclosing manifest declares,
+ * which is resolved as part of that workspace, or a separate build the enclosing project never invokes (a vendored
+ * checkout, a sample, a test fixture). Neither is a project of its own: importing it on its own resolves its sources
+ * twice and produces overlapping content roots in the generated workspace model, so the nested ones are dropped here,
+ * and the members are attached once the enclosing manifest has been read. Input order is preserved.
  */
 export function outermostManifests(manifestPaths: Iterable<string>): string[] {
   const all = [...manifestPaths].map((manifest) => ({ manifest, root: path.dirname(path.resolve(manifest)) }));
@@ -409,9 +410,15 @@ export async function lockfileDigest(projectRoot: string): Promise<string> {
 
 /**
  * Whether installed dependencies can be trusted without `elide install`: `.dev/dependencies` exists and the
- * newest `.dev/elide.lock*.bin` is at least as recent as the manifest.
+ * newest `.dev/elide.lock*.bin` is at least as recent as every manifest in `manifestPaths`.
+ *
+ * A workspace resolves into its root's repository and records one lockfile there, so the manifests of its members
+ * count as well, although each member has a `.dev` of its own.
  */
-export async function isLockfileCurrent(projectRoot: string, manifestPath: string = path.join(projectRoot, MANIFEST_NAME)): Promise<boolean> {
+export async function isLockfileCurrent(
+  projectRoot: string,
+  manifestPaths: readonly string[] = [path.join(projectRoot, MANIFEST_NAME)],
+): Promise<boolean> {
   if (!existsSync(path.join(projectRoot, OUTPUT_DIR, DEPENDENCIES_DIR))) return false;
   let newest = -Infinity;
   for (const file of await lockfilesIn(projectRoot)) {
@@ -424,7 +431,8 @@ export async function isLockfileCurrent(projectRoot: string, manifestPath: strin
   }
   if (newest === -Infinity) return false;
   try {
-    return newest >= (await stat(manifestPath)).mtimeMs;
+    for (const manifestPath of manifestPaths) if ((await stat(manifestPath)).mtimeMs > newest) return false;
+    return true;
   } catch {
     return false;
   }
