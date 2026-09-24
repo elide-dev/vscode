@@ -29,6 +29,12 @@ const KOTLIN_METHOD =
 const JAVA_METHOD =
   /^\s*(?:(?:public|protected|private|static|final|synchronized)\s+)*(?:<[^>]+>\s+)?[\w<>\[\],.?\s]+?\s+([A-Za-z_]\w*)\s*\(/;
 const TEST_ANNOTATION = /@(?:[\w.]+\.)?(?:Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\b/;
+/**
+ * Annotations opening a line, with their arguments: `@Test fun works()` declares on the annotation's own line, and
+ * the declaration patterns match what follows them. Literals are already stripped, so arguments hold no parentheses
+ * of their own but those of a nested annotation or a class literal.
+ */
+const LEADING_ANNOTATIONS = /^\s*(?:@[\w.]+(?:\((?:[^()]|\([^()]*\))*\))?\s*)+/;
 
 /** Characters a Java regex reads as syntax, escaped so a class or method name matches itself. */
 const JAVA_REGEX_META = /[.*+?^${}()|[\]\\]/g;
@@ -145,7 +151,8 @@ export function scanJvmTestSource(text: string, language: "kotlin" | "java"): Sc
     const annotationHere = TEST_ANNOTATION.test(code);
     if (annotationHere) annotated = true;
 
-    const classMatch = classPattern.exec(code);
+    const declaration = code.replace(LEADING_ANNOTATIONS, "");
+    const classMatch = classPattern.exec(declaration);
     if (classMatch) {
       // a declaration that never opened a body was bodyless; it cannot enclose what follows
       while (stack.length > 0 && !stack[stack.length - 1]?.opened) stack.pop();
@@ -157,7 +164,7 @@ export function scanJvmTestSource(text: string, language: "kotlin" | "java"): Sc
       annotated = false;
     } else {
       const owner = stack[stack.length - 1]?.node;
-      const methodMatch = owner ? methodPattern.exec(code) : null;
+      const methodMatch = owner ? methodPattern.exec(declaration) : null;
       if (methodMatch && owner) {
         if (annotated) owner.methods.push({ name: methodMatch[1] ?? methodMatch[2] ?? "", line: index });
         annotated = false;
