@@ -134,14 +134,15 @@ export function kotlinAdditionalArguments(kotlin: ProjectModel["kotlin"]): strin
  * Build the Kotlin LSP workspace for one or more Elide projects living under `opts.workspaceRoot`.
  *
  * Module names are unique across projects: when two projects share a name, the module names of the later ones are
- * suffixed with the project's workspace-relative path.
+ * suffixed with the project's workspace-relative path. A dependency names its module by project, so it follows the
+ * rename even when it crosses into a sibling project of an Elide workspace.
  */
 export function emitKotlinLspWorkspace(models: readonly ProjectModel[], opts: EmitOptions): KotlinLspWorkspace {
   const modules: KotlinLspModule[] = [];
   const libraries = new Map<string, KotlinLspLibrary>();
   const sdks = new Map<string, KotlinLspSdk>();
   const kotlinSettings: KotlinLspKotlinSettings[] = [];
-  const takenModuleNames = new Set<string>();
+  const rename = moduleRenamer(models, opts);
 
   for (const model of models) {
     const sdk = model.jdk ? sdkFor(model, opts) : undefined;
@@ -155,13 +156,12 @@ export function emitKotlinLspWorkspace(models: readonly ProjectModel[], opts: Em
       libraries.set(lib.name, { name: lib.name, level: "project", type: null, roots });
     }
 
-    const rename = moduleRenamer(model, opts, takenModuleNames);
     for (const m of model.modules) {
-      const name = rename(m.name);
+      const name = rename(model.root, m.name);
       const dependencies: KotlinLspDependency[] = [
         sdk ? { type: "sdk", name: sdk.name, kind: sdk.type } : { type: "inheritedSdk" },
         { type: "moduleSource" },
-        ...m.moduleDeps.map((dep): KotlinLspDependency => ({ type: "module", name: rename(dep), scope: "compile", isExported: false, isTestJar: false })),
+        ...m.moduleDeps.map((dep): KotlinLspDependency => ({ type: "module", name: rename(dep.project, dep.module), scope: dep.scope, isExported: dep.exported, isTestJar: false })),
         ...m.libraries.map((l): KotlinLspDependency => ({ type: "library", name: l.name, scope: l.scope, isExported: false })),
       ];
       modules.push({
@@ -227,17 +227,24 @@ function sdkFor(model: ProjectModel, opts: EmitOptions): KotlinLspSdk | undefine
   };
 }
 
-/** Maps a project's module names to workspace-unique names (suffixing the project's relative path on collision). */
-function moduleRenamer(model: ProjectModel, opts: EmitOptions, taken: Set<string>): (name: string) => string {
-  const rel = normalizePath(path.relative(opts.workspaceRoot, model.root)).replace(/^\.\.?$/, "");
-  const needsSuffix = model.modules.some((m) => taken.has(m.name));
-  const mapping: Record<string, string> = {};
-  for (const m of model.modules) {
-    const unique = needsSuffix && rel ? `${m.name} (${rel})` : m.name;
-    mapping[m.name] = unique;
-    taken.add(unique);
+/**
+ * Maps every project's module names to workspace-unique names, suffixing a project's relative path onto all of its
+ * modules when any of them collides with a module of an earlier project. Looked up by project root and module name.
+ */
+function moduleRenamer(models: readonly ProjectModel[], opts: EmitOptions): (project: string, name: string) => string {
+  const taken = new Set<string>();
+  const mapping = new Map<string, string>();
+  const key = (project: string, name: string) => `${normalizePath(path.resolve(project))}\u0000${name}`;
+  for (const model of models) {
+    const rel = normalizePath(path.relative(opts.workspaceRoot, model.root)).replace(/^\.\.?$/, "");
+    const needsSuffix = model.modules.some((m) => taken.has(m.name));
+    for (const m of model.modules) {
+      const unique = needsSuffix && rel ? `${m.name} (${rel})` : m.name;
+      mapping.set(key(model.root, m.name), unique);
+      taken.add(unique);
+    }
   }
-  return (name) => mapping[name] ?? name;
+  return (project, name) => mapping.get(key(project, name)) ?? name;
 }
 
 /** Serialize with stable formatting. */
