@@ -1,4 +1,5 @@
 import path from "node:path";
+import { braceDelta, stripComment } from "./pkl.js";
 
 /** One entry of the `artifacts` block of `elide.pkl`. */
 export interface ManifestArtifact {
@@ -115,30 +116,4 @@ export interface NativeImageDebugInfo {
 export function nativeImageDebugInfo(binary: string): NativeImageDebugInfo {
   const dir = path.dirname(binary);
   return { sources: path.join(dir, NATIVE_IMAGE_SOURCES_DIR), gdbHelpers: path.join(dir, NATIVE_IMAGE_GDB_HELPERS) };
-}
-
-/** The line without its `//` comment; a `//` inside a string literal is content, not a comment. */
-function stripComment(line: string): string {
-  let quoted = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (quoted && c === "\\") i++;
-    else if (c === '"') quoted = !quoted;
-    else if (!quoted && c === "/" && line[i + 1] === "/") return line.slice(0, i);
-  }
-  return line;
-}
-
-/** Net brace nesting the line adds, ignoring braces inside string literals. */
-function braceDelta(line: string): number {
-  let delta = 0;
-  let quoted = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (quoted && c === "\\") i++;
-    else if (c === '"') quoted = !quoted;
-    else if (!quoted && c === "{") delta++;
-    else if (!quoted && c === "}") delta--;
-  }
-  return delta;
 }
