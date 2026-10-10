@@ -34,6 +34,11 @@ Elide's build, run, test, and debug commands are available from the editor.
   --inspect`), source sets and dependencies; run, debug, build and sync straight from the tree.
 - **New project wizard.** `Elide: New Project…` lists the templates of the installed CLI (`elide init --templates`),
   asks for the parameters that template declares, generates the project and opens it.
+- **Android projects.** A manifest declaring an `android` block gets an **Android** section in the sidebar: the APKs
+  and AARs it publishes, the devices and emulators `adb` reports, and the emulator, AVD and SDK-install targets.
+  `res/` and `assets/` of each artifact become resource roots of the source sets it packages, and a sibling Android
+  library's classes are resolved as a module dependency rather than an opaque jar, so navigation works across an
+  application and the libraries it consumes. Running an APK installs and launches it on a device you pick.
 - **Debugging.** Launch `elide run --debugger` and attach with breakpoints in Kotlin and Java, or build a Native
   Image artifact and debug the binary it produced under GDB.
 
@@ -44,6 +49,7 @@ Elide's build, run, test, and debug commands are available from the editor.
 | [Elide](https://elide.dev) **1.5+** | Found via `elide.home`, `$ELIDE_HOME`, the platform install locations, or `PATH`. |
 | **Kotlin by JetBrains** (`JetBrains.kotlin-server`, ≥ 0.0.11) | Installed automatically as an extension dependency. Complete its one-time region / data-sharing prompt so the server starts. |
 | A JDK | `$JAVA_HOME`, SDKMAN, `/Library/Java/JavaVirtualMachines`, `/usr/lib/jvm`, or `elide.jdk.home`. Elide's bundled JDK image cannot be used for symbol resolution: it ships without a `release` file. |
+| An Android SDK, for Android projects | `android.sdk` in the manifest, `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or where the SDK installs itself on this platform. `Elide: Install Android SDK Components` installs what a build is missing. |
 
 The extension needs a trusted workspace and a local filesystem — syncing runs the workspace's Elide CLI.
 
@@ -71,6 +77,11 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `Elide: Add Workspace Member…` | Create a project inside an existing one and declare it in `workspace.members`. |
 | `Elide: Open generated Kotlin LSP workspace` | Open the generated `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel. |
+| `Elide: Run Android App…` | Build an APK and install and launch it on a device or the emulator. |
+| `Elide: Start Android Emulator` / `Elide: Stop Android Emulators` | Boot the project's AVD, or shut running emulators down. |
+| `Elide: Create Android Virtual Device` | Create the AVD `android.device` declares, without booting it. |
+| `Elide: Install Android SDK Components` | Install the SDK components the pipeline is missing (`--install-sdk` accepts their licenses). |
+| `Elide: Create Android Signing Keystore` | Mint the keystore an APK signs with, using the Android debug conventions. |
 
 ## Settings
 
@@ -87,6 +98,8 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `elide.debug.adapter` | `"intellij"` | Attach with the JetBrains JVM debugger (`intellij`) or Debugger for Java (`java`). |
 | `elide.debug.nativeMiMode` | `"auto"` | Debugger an `elide-native` session drives: `gdb`, `lldb`, or `auto` (a GDB on `PATH`, else LLDB on macOS). |
 | `elide.debug.miDebuggerPath` | `""` | `gdb` / `lldb-mi` binary for `elide-native` sessions; empty resolves `gdb` on `PATH`. |
+| `elide.android.sdk` | `""` | SDK root the device list is read from; empty resolves the one the build would use. |
+| `elide.android.emulatorWindow` | `true` | Boot the emulator with a window; off passes `--no-window`. |
 
 The extension also maintains two Kotlin LSP settings: `intellij.buildTool` (pinned to `json` in workspace settings) and
 `intellij.jdkForSymbolResolution` (an absolute path, written to user settings only). Explicit values you set by hand
@@ -149,6 +162,27 @@ artifact's `options.flags` straight to `native-image`:
 
 GraalVM only emits that debug info on Linux; elsewhere `-g` copies the GDB helpers but produces no DWARF and no
 source cache, so breakpoints do not bind and the session warns about it. Machine-level stepping still works.
+
+### Android
+
+Elide builds Android applications and libraries without Gradle: every step is an ordinary build target, so nothing
+here is a separate launch type. The **Android** section of the sidebar lists what the manifest publishes and runs
+the targets behind it:
+
+| Row | Target |
+| --- | --- |
+| An `AndroidApk` artifact | `elide build <artifact>` to package it; **Run** installs and launches it with `elide build android-run-<artifact>`, pinned to the picked device with `--device=<serial>`. |
+| An `AndroidAar` artifact | `elide build <artifact>`, which publishes `.dev/artifacts/<artifact>.aar`. |
+| **Devices** | `adb devices` of the resolved SDK; a row in the `device` state runs the project's APK on that serial. |
+| **Start emulator** / **Stop emulators** / **Create AVD** | `android-emulator` (with `--no-window` when `elide.android.emulatorWindow` is off), `android-emulator-stop`, `android-avd`. |
+| **Install Android SDK components** | `android-sdk --install-sdk`, shown when no SDK was found. |
+
+Every other Android step — `android-resources-*`, `android-link-*`, `android-dex-*`, `android-sign-*` — is listed
+under **Build targets** like any other target of the project.
+
+An Android application debugs on the device rather than in the build, which Elide exposes no attach point for, so
+APK rows offer Run and Build but no Debug. Unit tests of an Android project are plain JVM tests and run in the Test
+Explorer as usual.
 
 ## Links
 

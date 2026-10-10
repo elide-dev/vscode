@@ -91,6 +91,10 @@ anything you set by hand stays.
 | `Elide: Run Elide Command…` | Pick `build`, `test`, `install`, or `run <entrypoint>` and run it as a task. |
 | `Elide: Open generated Kotlin LSP workspace` | Open `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel (CLI output, sync log). |
+| `Elide: Run Android App…` | Build an APK and install and launch it on a device or the emulator. |
+| `Elide: Start Android Emulator`, `Elide: Stop Android Emulators`, `Elide: Create Android Virtual Device` | Drive the project's virtual device. |
+| `Elide: Install Android SDK Components` | `elide build android-sdk --install-sdk`. |
+| `Elide: Create Android Signing Keystore` | `elide build android-keystore-<artifact>`. |
 
 ## Tasks
 
@@ -218,6 +222,45 @@ offers a Debug action on every target that declares `--debugger`.
 }
 ```
 
+## Android
+
+A manifest declaring an `android` block builds for Android. Elide drives `aapt2`, `d8`, `zipalign` and `apksigner`
+directly — no Gradle, no new subcommand — so every step is a build target of the ordinary graph and the extension
+reaches all of them through `elide build`.
+
+The sync reads two things beyond the usual manifest decoding:
+
+- The `android` block (compile and minimum API level, the declared SDK, the virtual device) and every `AndroidApk` /
+  `AndroidAar` entry of `artifacts`, which become the project model's `android` section.
+- The resource and asset directories of each artifact (declared, else `src/main/res` and `src/main/assets` when they
+  exist), added as resource roots of the source sets that artifact packages, so `res/` is part of the module the
+  Kotlin LSP imports rather than an unclaimed directory.
+
+An application consuming a workspace sibling's Android library reads that library's **staged** `classes.jar`
+(`<lib>/.dev/android/<artifact>/classes.jar`), never its published `.aar`. That path is recognized the same way a
+sibling JAR under `.dev/artifacts/` is, so the application's modules depend on the library's modules and navigation
+crosses the project boundary without building anything.
+
+The SDK is located the way a build locates it: `android.sdk` in the manifest, then `$ANDROID_HOME`, then
+`$ANDROID_SDK_ROOT`, then the platform's own install location (`~/Library/Android/sdk`, `~/Android/Sdk`,
+`%LOCALAPPDATA%\Android\Sdk`). `elide.android.sdk` overrides all of it. The SDK is needed by the extension only to
+find `adb` for the device list; a build reports a missing SDK itself, and `Elide: Install Android SDK Components`
+runs `elide build android-sdk --install-sdk`, which is how the component licenses are accepted.
+
+The sidebar's **Android** section lists the artifacts, the devices `adb devices` reports (serial, and whether it is
+an emulator or in a state that cannot take an install), and the project-wide device targets:
+
+| Action | Invocation |
+| --- | --- |
+| Run an APK | `elide build android-run-<artifact>`, plus `--device=<serial>` when a device is picked, or `android-run-emulator-<artifact>` for the project's AVD. With nothing attached the plain target runs, which boots the emulator itself. |
+| Build an APK or AAR | `elide build <artifact>` → `.dev/artifacts/<name>.apk` / `.aar` |
+| Start / stop the emulator | `elide build android-emulator` (`--no-window` when `elide.android.emulatorWindow` is off), `elide build android-emulator-stop` |
+| Create the AVD | `elide build android-avd` |
+| Create the signing keystore | `elide build android-keystore-<artifact>` |
+
+There is no Debug action on an APK: an installed application is debugged on the device, and Elide exposes no JDWP
+attach point for one. Unit tests of an Android project are plain JVM tests and run in the Test Explorer as usual.
+
 ## Settings
 
 | Setting | Default | Description |
@@ -235,6 +278,8 @@ offers a Debug action on every target that declares `--debugger`.
 | `elide.install.options` | `{}` | Default options for the `elide install` task. |
 | `elide.codeLens.enabled` | `true` | Show the Run/Debug code lenses described above. |
 | `elide.debug.adapter` | `"intellij"` | `intellij` or `java`. |
+| `elide.android.sdk` | `""` | SDK root the device list is read from; empty resolves the one a build would use. |
+| `elide.android.emulatorWindow` | `true` | Boot the emulator with a window; off passes `--no-window`. |
 
 ## Repository layout
 
