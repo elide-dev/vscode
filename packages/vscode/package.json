@@ -148,6 +148,17 @@
           "uniqueItems": true,
           "markdownDescription": "Classifier jars installed for the manifest's declared Maven packages. `sources` lets Go to Definition open library code in the Kotlin LSP; `docs` adds javadoc jars; an empty list installs classes only. Elide's own Kotlin and JUnit jars are published without classifiers."
         },
+        "elide.android.sdk": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Android SDK root used to list attached devices. Empty resolves the SDK an Elide build would use: the manifest's `android.sdk`, then `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then the location the SDK installs itself in on this platform."
+        },
+        "elide.android.emulatorWindow": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Boot the Android emulator with a window. Off passes `--no-window`, which runs it headless."
+        },
         "elide.flags": {
           "type": "array",
           "items": {
@@ -323,6 +334,42 @@
         "icon": "$(file-code)"
       },
       {
+        "command": "elide.androidRun",
+        "category": "Elide",
+        "title": "Run Android App…",
+        "icon": "$(play)"
+      },
+      {
+        "command": "elide.androidStartEmulator",
+        "category": "Elide",
+        "title": "Start Android Emulator",
+        "icon": "$(vm-running)"
+      },
+      {
+        "command": "elide.androidStopEmulator",
+        "category": "Elide",
+        "title": "Stop Android Emulators",
+        "icon": "$(vm-outline)"
+      },
+      {
+        "command": "elide.androidCreateAvd",
+        "category": "Elide",
+        "title": "Create Android Virtual Device",
+        "icon": "$(vm-connect)"
+      },
+      {
+        "command": "elide.androidInstallSdk",
+        "category": "Elide",
+        "title": "Install Android SDK Components",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "elide.androidCreateKeystore",
+        "category": "Elide",
+        "title": "Create Android Signing Keystore",
+        "icon": "$(key)"
+      },
+      {
         "command": "elide.revealLibrary",
         "category": "Elide",
         "title": "Reveal in Finder/Explorer"
@@ -357,6 +404,30 @@
         {
           "command": "elide.revealLibrary",
           "when": "false"
+        },
+        {
+          "command": "elide.androidRun",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidStartEmulator",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidStopEmulator",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidCreateAvd",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidInstallSdk",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidCreateKeystore",
+          "when": "elide.hasProjects"
         }
       ],
       "view/title": [
@@ -426,6 +497,30 @@
           "command": "elide.executeTask",
           "when": "view == elide.projects && viewItem == buildTargetRunnable",
           "group": "inline@3"
+        },
+        {
+          "command": "elide.androidRun",
+          "when": "view == elide.projects && viewItem == androidApk",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.build",
+          "when": "view == elide.projects && viewItem == androidApk",
+          "group": "inline@2"
+        },
+        {
+          "command": "elide.androidCreateKeystore",
+          "when": "view == elide.projects && viewItem == androidApk"
+        },
+        {
+          "command": "elide.build",
+          "when": "view == elide.projects && viewItem == androidAar",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.androidRun",
+          "when": "view == elide.projects && viewItem == androidDevice",
+          "group": "inline@1"
         },
         {
           "command": "elide.sync",

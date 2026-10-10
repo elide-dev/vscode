@@ -1,6 +1,7 @@
 import path from "node:path";
 import {
   MANIFEST_NAME,
+  isAndroidApk,
   isNativeImageBinary,
   isPathUnder,
   normalizePath,
@@ -81,9 +82,9 @@ function runLenses(line: number, length: number, root: string, args: string[], q
 }
 
 /**
- * Lenses of one `artifacts` entry: a Native Image binary is also runnable and debuggable, the rest only build. Run
- * and Debug are named as they are on an entrypoint — the build they need first is part of doing either, not a
- * separate decision.
+ * Lenses of one `artifacts` entry: a Native Image binary is also runnable and debuggable, an Android application
+ * package is runnable on a device, and the rest only build. Run and Debug are named as they are on an entrypoint —
+ * the build they need first is part of doing either, not a separate decision.
  */
 function artifactLenses(line: number, length: number, root: string, artifact: ManifestArtifact): vscode.CodeLens[] {
   const range = new vscode.Range(line, 0, line, length);
@@ -92,6 +93,15 @@ function artifactLenses(line: number, length: number, root: string, artifact: Ma
     command: "elide.build",
     arguments: [{ root, args: [artifact.name] }],
   });
+  if (isAndroidApk(artifact)) {
+    // An APK is installed and launched by a build target of its own; there is no JDWP attach point to debug.
+    const run = new vscode.CodeLens(range, {
+      title: "$(play) Run",
+      command: "elide.androidRun",
+      arguments: [{ root, artifact: artifact.name }],
+    });
+    return [run, build];
+  }
   if (!isNativeImageBinary(artifact)) return [build];
   const run = new vscode.CodeLens(range, {
     title: "$(play) Run",

@@ -24,6 +24,10 @@ export interface ElideConfig {
   miDebuggerPath: string | undefined;
   /** Classifier jars fetched during sync (`elide install --with …`). */
   installClassifiers: string[];
+  /** Android SDK root for the device list; empty resolves the one the build would use. */
+  androidSdk: string | undefined;
+  /** Whether `Elide: Start Android Emulator` boots the AVD with a window. */
+  androidEmulatorWindow: boolean;
   codeLens: boolean;
   /** `-f` build flags added to every Elide invocation (`elide.flags`). */
   flags: string[];
@@ -44,6 +48,8 @@ export function readConfig(scope?: vscode.ConfigurationScope): ElideConfig {
     nativeMiMode: c.get<NativeMiMode>("debug.nativeMiMode", "auto"),
     miDebuggerPath: nonEmpty(c.get<string>("debug.miDebuggerPath")),
     installClassifiers: c.get<string[]>("install.classifiers", ["sources"]),
+    androidSdk: nonEmpty(c.get<string>("android.sdk")),
+    androidEmulatorWindow: c.get<boolean>("android.emulatorWindow", true),
     codeLens: c.get<boolean>("codeLens.enabled", true),
     flags: elideStringArrayFrom(c.get("flags")),
     commandOptions: {

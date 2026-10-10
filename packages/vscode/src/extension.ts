@@ -2,6 +2,14 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { MANIFEST_NAME, WORKSPACE_JSON, isLockfileName, nativeImageBinary, type ElideCommand } from "@elide/ide-core";
 import * as vscode from "vscode";
+import {
+  createAndroidAvd,
+  createAndroidKeystore,
+  installAndroidSdk,
+  runAndroid,
+  startAndroidEmulator,
+  stopAndroidEmulator,
+} from "./android.js";
 import { ElideCodeLensProvider } from "./codelens.js";
 import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
@@ -48,6 +56,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.debugArtifact", (target: unknown) => debugArtifact(workspace, target)),
     vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, target)),
     vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
+    vscode.commands.registerCommand("elide.androidRun", (target: unknown) => runAndroid(workspace, target)),
+    vscode.commands.registerCommand("elide.androidStartEmulator", (target: unknown) => startAndroidEmulator(workspace, target)),
+    vscode.commands.registerCommand("elide.androidStopEmulator", (target: unknown) => stopAndroidEmulator(workspace, target)),
+    vscode.commands.registerCommand("elide.androidCreateAvd", (target: unknown) => createAndroidAvd(workspace, target)),
+    vscode.commands.registerCommand("elide.androidInstallSdk", (target: unknown) => installAndroidSdk(workspace, target)),
+    vscode.commands.registerCommand("elide.androidCreateKeystore", (target: unknown) => createAndroidKeystore(workspace, ui, target)),
     vscode.commands.registerCommand("elide.revealLibrary", (target: unknown) => revealLibrary(target)),
     vscode.tasks.registerTaskProvider(ELIDE_TASK_TYPE, new ElideTaskProvider(workspace)),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_DEBUG_TYPE, debugConfigurations),
