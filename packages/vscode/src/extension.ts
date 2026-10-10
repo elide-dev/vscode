@@ -5,11 +5,13 @@ import * as vscode from "vscode";
 import {
   createAndroidAvd,
   createAndroidKeystore,
+  debugAndroid,
   installAndroidSdk,
   runAndroid,
   startAndroidEmulator,
   stopAndroidEmulator,
 } from "./android.js";
+import { ELIDE_ANDROID_DEBUG_TYPE, ElideAndroidDebugConfigurationProvider } from "./androidDebug.js";
 import { ElideCodeLensProvider } from "./codelens.js";
 import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
@@ -36,6 +38,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
 
   const debugConfigurations = new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions);
   const nativeDebugConfigurations = new ElideNativeDebugConfigurationProvider(workspace, ui);
+  const androidDebugConfigurations = new ElideAndroidDebugConfigurationProvider(workspace, ui, debugConfigurations.sessions);
   const tests = new ElideTestController(workspace, ui, debugConfigurations.sessions);
   const codeLenses = new ElideCodeLensProvider(workspace);
   const explorer = new ElideProjectsView(workspace, ui);
@@ -57,6 +60,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, target)),
     vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
     vscode.commands.registerCommand("elide.androidRun", (target: unknown) => runAndroid(workspace, target)),
+    vscode.commands.registerCommand("elide.androidDebug", (target: unknown) => debugAndroid(workspace, target)),
     vscode.commands.registerCommand("elide.androidStartEmulator", (target: unknown) => startAndroidEmulator(workspace, target)),
     vscode.commands.registerCommand("elide.androidStopEmulator", (target: unknown) => stopAndroidEmulator(workspace, target)),
     vscode.commands.registerCommand("elide.androidCreateAvd", (target: unknown) => createAndroidAvd(workspace, target)),
@@ -66,6 +70,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.tasks.registerTaskProvider(ELIDE_TASK_TYPE, new ElideTaskProvider(workspace)),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_DEBUG_TYPE, debugConfigurations),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_NATIVE_DEBUG_TYPE, nativeDebugConfigurations),
+    vscode.debug.registerDebugConfigurationProvider(ELIDE_ANDROID_DEBUG_TYPE, androidDebugConfigurations),
     vscode.window.registerTreeDataProvider(PROJECTS_VIEW_ID, explorer),
     explorer,
     tests,

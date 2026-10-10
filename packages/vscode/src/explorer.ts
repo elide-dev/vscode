@@ -89,6 +89,8 @@ export type ElideNode =
       args: string[];
       description: string;
     }
+  /** The obfuscation mapping a minifying Android artifact publishes, beside the archive it belongs to. */
+  | { kind: "androidMapping"; label: string; root: string; artifact: string; path: string; description: string }
   | { kind: "androidDevice"; label: string; root: string; device: string; description: string; ready: boolean }
   /** A project-wide Android action the sidebar offers: booting the emulator, creating the AVD, installing the SDK. */
   | { kind: "androidAction"; label: string; root: string; command: string; description: string; icon: string }
@@ -174,10 +176,17 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         item.command = { command: "elide.executeTask", title: "Build", arguments: [node] };
         break;
       case "androidTarget":
-        item.iconPath = new vscode.ThemeIcon(node.targetKind === "apk" ? "device-mobile" : "package");
+        item.iconPath = new vscode.ThemeIcon(ANDROID_TARGET_ICONS[node.targetKind]);
         item.description = node.description;
         item.tooltip = `elide build ${node.artifact}`;
         item.command = { command: "elide.build", title: "Build", arguments: [node] };
+        break;
+      case "androidMapping":
+        // The mapping only exists after a build of the artifact; opening it then says so plainly.
+        item.iconPath = new vscode.ThemeIcon("references");
+        item.description = node.description;
+        item.tooltip = node.path;
+        item.command = { command: "vscode.open", title: "Open", arguments: [vscode.Uri.file(node.path)] };
         break;
       case "androidDevice":
         item.iconPath = new vscode.ThemeIcon(node.ready ? "vm-running" : "vm-outline");
@@ -373,7 +382,7 @@ function projectNode(project: ElideProject): ElideNode {
  */
 function androidGroupNodes(root: string, android: AndroidProjectModel | undefined): ElideNode[] {
   if (!android) return [];
-  const nodes: ElideNode[] = android.targets.map((target) => androidTargetNode(root, target));
+  const nodes: ElideNode[] = android.targets.flatMap((target) => androidTargetNodes(root, target));
   nodes.push({ kind: "group", label: GROUP_LABELS.androidDevices, root, group: "androidDevices" });
   nodes.push(
     { kind: "androidAction", label: "Start emulator", root, command: "elide.androidStartEmulator", description: android.avd, icon: "vm-running" },
@@ -393,8 +402,12 @@ function androidGroupNodes(root: string, android: AndroidProjectModel | undefine
   return nodes;
 }
 
-function androidTargetNode(root: string, target: AndroidTargetModel): ElideNode {
-  return {
+/**
+ * The rows of one Android artifact: the target itself, and — when it minifies — the R8 mapping it publishes, which
+ * is what a stack trace from a shrunk build is read with.
+ */
+function androidTargetNodes(root: string, target: AndroidTargetModel): ElideNode[] {
+  const node: ElideNode = {
     kind: "androidTarget",
     label: target.name,
     root,
@@ -403,20 +416,36 @@ function androidTargetNode(root: string, target: AndroidTargetModel): ElideNode 
     args: [target.name],
     description: path.basename(target.output),
   };
+  if (!target.mapping) return [node];
+  return [
+    node,
+    {
+      kind: "androidMapping",
+      label: path.basename(target.mapping),
+      root,
+      artifact: target.name,
+      path: target.mapping,
+      description: "R8 mapping",
+    },
+  ];
 }
+
+/** Row icon and context value of each Android artifact: an installable package, an upload bundle, a library. */
+const ANDROID_TARGET_ICONS: Record<AndroidArtifactKind, string> = { apk: "device-mobile", aab: "archive", aar: "package" };
+const ANDROID_TARGET_CONTEXTS: Record<AndroidArtifactKind, string> = { apk: "androidApk", aab: "androidAab", aar: "androidAar" };
 
 /**
  * `view/item/context` key. A member of a workspace takes no member of its own, so its row offers no such action; a
  * script entrypoint offers no Debug action (a script is a shell command line); a build target offers the JVM Debug
  * action only when it declares `--debugger`, and the Run/Debug pair of a Native Image only when it is a binary one.
- * Only an APK is installed and launched, and only a device in the `device` state can take an install.
+ * Only an APK is installed, launched and debugged, and only a device in the `device` state can take an install.
  */
 function contextValueOf(node: ElideNode): string {
   if (node.kind === "project") return node.member ? "projectMember" : "project";
   if (node.kind === "entrypoint") return node.script ? "script" : node.kind;
   if (node.kind === "buildTarget" && node.runnable) return "buildTargetRunnable";
   if (node.kind === "buildTarget" && node.debuggable) return "buildTargetDebuggable";
-  if (node.kind === "androidTarget") return node.targetKind === "apk" ? "androidApk" : "androidAar";
+  if (node.kind === "androidTarget") return ANDROID_TARGET_CONTEXTS[node.targetKind];
   if (node.kind === "androidDevice") return node.ready ? "androidDevice" : "androidDeviceUnavailable";
   return node.kind;
 }
@@ -473,5 +502,7 @@ function nodeId(node: ElideNode): string | undefined {
       return `d:${node.root}:${node.device}`;
     case "androidAction":
       return `x:${node.root}:${node.command}`;
+    case "androidMapping":
+      return `am:${node.root}:${node.artifact}`;
   }
 }

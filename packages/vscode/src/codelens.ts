@@ -94,13 +94,18 @@ function artifactLenses(line: number, length: number, root: string, artifact: Ma
     arguments: [{ root, args: [artifact.name] }],
   });
   if (isAndroidApk(artifact)) {
-    // An APK is installed and launched by a build target of its own; there is no JDWP attach point to debug.
+    // An APK is installed and launched by a build target of its own, and debugged on the device it was installed on.
     const run = new vscode.CodeLens(range, {
       title: "$(play) Run",
       command: "elide.androidRun",
       arguments: [{ root, artifact: artifact.name }],
     });
-    return [run, build];
+    const debug = new vscode.CodeLens(range, {
+      title: "$(debug-alt) Debug",
+      command: "elide.androidDebug",
+      arguments: [{ root, artifact: artifact.name }],
+    });
+    return [run, debug, build];
   }
   if (!isNativeImageBinary(artifact)) return [build];
   const run = new vscode.CodeLens(range, {

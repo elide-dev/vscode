@@ -59,6 +59,14 @@ export function androidRunTask(artifact: string, mode: AndroidRunMode = "auto"):
   return mode === "auto" ? `android-run-${artifact}` : `android-run-${mode}-${artifact}`;
 }
 
+/**
+ * The target that installs `artifact`, launches it waiting for a debugger, and forwards the device's JDWP socket
+ * to a local port, which it announces on its output.
+ */
+export function androidDebugTask(artifact: string): string {
+  return `android-debug-${artifact}`;
+}
+
 /** The target that mints the keystore `artifact` signs with, using the Android debug conventions. */
 export function androidKeystoreTask(artifact: string): string {
   return `android-keystore-${artifact}`;
@@ -66,10 +74,21 @@ export function androidKeystoreTask(artifact: string): string {
 
 /**
  * Archive `elide build <artifact>` publishes: `.dev/artifacts/<name>`, where the name is the artifact's own when it
- * declares one and `<key>.apk` / `<key>.aar` otherwise.
+ * declares one and `<key>.apk` / `<key>.aab` / `<key>.aar` otherwise.
  */
 export function androidArtifactFile(root: string, artifact: string, kind: AndroidArtifactKind, outputName?: string): string {
   return path.join(root, OUTPUT_DIR, ARTIFACTS_DIR, outputName || `${artifact}.${kind}`);
+}
+
+/**
+ * Obfuscation mapping a minifying artifact publishes beside its archive: `.dev/artifacts/<base>-mapping.txt`, where
+ * the base is the declared output name without its extension, and the artifact key when it declares none.
+ *
+ * It is the only way to read a stack trace from a shrunk build, which is why the sidebar surfaces it.
+ */
+export function androidMappingFile(root: string, artifact: string, outputName?: string): string {
+  const base = outputName ? outputName.replace(/\.[^.]+$/, "") : artifact;
+  return path.join(root, OUTPUT_DIR, ARTIFACTS_DIR, `${base}-mapping.txt`);
 }
 
 /**

@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   ANDROID_AVD_TASK,
   ANDROID_DEVICE_OPTION,
@@ -14,6 +15,7 @@ import {
   type AndroidTargetModel,
 } from "@elide/ide-core";
 import * as vscode from "vscode";
+import { ELIDE_ANDROID_DEBUG_TYPE } from "./androidDebug.js";
 import { readConfig } from "./config.js";
 import type { ElideUi } from "./output.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
@@ -167,6 +169,27 @@ async function pickRunChoice(project: ElideProject, artifact: string): Promise<R
   });
   const pick = await vscode.window.showQuickPick(items, { placeHolder: `Run ${artifact} on` });
   return pick?.choice;
+}
+
+/**
+ * Build, install and debug an APK. An `elide-android` configuration owns the whole sequence — build, install,
+ * launch waiting for a debugger, forward the JDWP socket, attach — so the command only names what to debug.
+ */
+export async function debugAndroid(workspace: ElideWorkspace, value: unknown): Promise<void> {
+  const invocation = await resolve(workspace, value);
+  if (!invocation) return;
+  const { project, target } = invocation;
+  const artifact = await pickApk(project, target.artifact);
+  if (!artifact) return;
+  const rel = path.relative(project.folder.uri.fsPath, project.root);
+  await vscode.debug.startDebugging(project.folder, {
+    type: ELIDE_ANDROID_DEBUG_TYPE,
+    request: "launch",
+    name: `Elide: Debug ${artifact}`,
+    artifact,
+    ...(target.device ? { device: target.device } : {}),
+    ...(rel ? { project: rel } : {}),
+  });
 }
 
 /** Boot the project's virtual device, headless when `elide.android.emulatorWindow` is off. */

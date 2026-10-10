@@ -92,6 +92,7 @@ anything you set by hand stays.
 | `Elide: Open generated Kotlin LSP workspace` | Open `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel (CLI output, sync log). |
 | `Elide: Run Android App…` | Build an APK and install and launch it on a device or the emulator. |
+| `Elide: Debug Android App…` | Build an APK, install and launch it waiting for a debugger, and attach over JDWP. |
 | `Elide: Start Android Emulator`, `Elide: Stop Android Emulators`, `Elide: Create Android Virtual Device` | Drive the project's virtual device. |
 | `Elide: Install Android SDK Components` | `elide build android-sdk --install-sdk`. |
 | `Elide: Create Android Signing Keystore` | `elide build android-keystore-<artifact>`. |
@@ -253,13 +254,14 @@ an emulator or in a state that cannot take an install), and the project-wide dev
 | Action | Invocation |
 | --- | --- |
 | Run an APK | `elide build android-run-<artifact>`, plus `--device=<serial>` when a device is picked, or `android-run-emulator-<artifact>` for the project's AVD. With nothing attached the plain target runs, which boots the emulator itself. |
-| Build an APK or AAR | `elide build <artifact>` → `.dev/artifacts/<name>.apk` / `.aar` |
+| Debug an APK | `elide build android-debug-<artifact>`, which installs it, launches it waiting for a debugger and forwards its JDWP socket; the extension attaches to the port the target announces. |
+| Build an APK, AAB or AAR | `elide build <artifact>` → `.dev/artifacts/<name>.apk` / `.aab` / `.aar` |
+| Open the R8 mapping | A `minify = true` artifact gets a mapping row beside it, which opens `.dev/artifacts/<name>-mapping.txt` — the only way to read a stack trace from a shrunk build. |
 | Start / stop the emulator | `elide build android-emulator` (`--no-window` when `elide.android.emulatorWindow` is off), `elide build android-emulator-stop` |
 | Create the AVD | `elide build android-avd` |
 | Create the signing keystore | `elide build android-keystore-<artifact>` |
 
-There is no Debug action on an APK: an installed application is debugged on the device, and Elide exposes no JDWP
-attach point for one. Unit tests of an Android project are plain JVM tests and run in the Test Explorer as usual.
+Unit tests of an Android project are plain JVM tests and run in the Test Explorer as usual.
 
 ## Settings
 

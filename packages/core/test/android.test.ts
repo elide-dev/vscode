@@ -4,10 +4,13 @@ import {
   androidArtifactFile,
   androidClassesJar,
   androidContentDirs,
+  androidDebugTask,
   androidKeystoreTask,
+  androidMappingFile,
   androidRunTask,
   androidSdkRoot,
   decodeManifest,
+  isAndroidAab,
   isAndroidAar,
   isAndroidApk,
   isAndroidArtifact,
@@ -40,19 +43,22 @@ artifacts {
     }
   }
   ["ui"] = new Android.AndroidAar {}
+  ["bundle"] = new Android.AndroidAab {}
 }
 `;
 
 describe("Android artifacts in manifest text", () => {
   const artifacts = parseManifestArtifacts(APP_MANIFEST);
 
-  test("the Pkl class of each entry tells an APK from an AAR", () => {
+  test("the Pkl class of each entry tells an APK from a bundle and an AAR", () => {
     expect(artifacts.map((a) => [a.name, a.type])).toEqual([
       ["app", "AndroidApk"],
       ["ui", "AndroidAar"],
+      ["bundle", "AndroidAab"],
     ]);
     expect(artifacts.filter(isAndroidApk).map((a) => a.name)).toEqual(["app"]);
     expect(artifacts.filter(isAndroidAar).map((a) => a.name)).toEqual(["ui"]);
+    expect(artifacts.filter(isAndroidAab).map((a) => a.name)).toEqual(["bundle"]);
     expect(artifacts.every(isAndroidArtifact)).toBe(true);
   });
 
@@ -74,7 +80,10 @@ describe("decoded Android manifest", () => {
       android: { compileSdk: 36, minSdk: 30, device: { avd: "smoke", abi: "x86_64" } },
       artifacts: {
         app: { "@type": "elide.android.AndroidApk", name: "smoke.apk", release: false },
+        minified: { "@type": "elide.android.AndroidApk", name: "smoke-minified.apk", minify: true },
+        shrunk: { "@type": "elide.android.AndroidApk", minify: true },
         ui: { "@type": "elide.android.AndroidAar", resources: ["res"] },
+        bundle: { "@type": "elide.android.AndroidAab" },
         jar: { "@type": "elide.jvm.Jar" },
       },
     }),
@@ -89,7 +98,7 @@ describe("decoded Android manifest", () => {
   });
 
   test("Android artifacts decode beside the JAR ones, each keyed by what it publishes", () => {
-    expect(Object.keys(manifest.androidTargets)).toEqual(["app", "ui"]);
+    expect(Object.keys(manifest.androidTargets)).toEqual(["app", "minified", "shrunk", "ui", "bundle"]);
     expect(manifest.androidTargets.app?.kind).toBe("apk");
     expect(manifest.androidTargets.app?.name).toBe("smoke.apk");
     expect(manifest.androidTargets.ui).toEqual({
@@ -98,8 +107,16 @@ describe("decoded Android manifest", () => {
       manifestFile: "src/main/AndroidManifest.xml",
       resources: ["res"],
       assets: [],
+      minify: false,
     });
+    expect(manifest.androidTargets.bundle?.kind).toBe("aab");
     expect(Object.keys(manifest.jars)).toEqual(["jar"]);
+  });
+
+  test("an artifact minifies only when it says so", () => {
+    expect(manifest.androidTargets.app?.minify).toBe(false);
+    expect(manifest.androidTargets.minified?.minify).toBe(true);
+    expect(manifest.androidTargets.shrunk?.minify).toBe(true);
   });
 
   test("a project declaring no android block decodes none", () => {
@@ -118,6 +135,7 @@ describe("android build targets", () => {
     expect(androidRunTask("app", "device")).toBe("android-run-device-app");
     expect(androidRunTask("app", "emulator")).toBe("android-run-emulator-app");
     expect(androidKeystoreTask("app")).toBe("android-keystore-app");
+    expect(androidDebugTask("app")).toBe("android-debug-app");
   });
 });
 
@@ -126,6 +144,12 @@ describe("android output paths", () => {
     expect(androidArtifactFile("/p", "app", "apk", "smoke.apk")).toBe(path.join("/p", ".dev", "artifacts", "smoke.apk"));
     expect(androidArtifactFile("/p", "app", "apk")).toBe(path.join("/p", ".dev", "artifacts", "app.apk"));
     expect(androidArtifactFile("/p", "ui", "aar")).toBe(path.join("/p", ".dev", "artifacts", "ui.aar"));
+    expect(androidArtifactFile("/p", "bundle", "aab")).toBe(path.join("/p", ".dev", "artifacts", "bundle.aab"));
+  });
+
+  test("a minifying artifact publishes its mapping beside the archive, under the same base name", () => {
+    expect(androidMappingFile("/p", "app", "smoke-minified.apk")).toBe(path.join("/p", ".dev", "artifacts", "smoke-minified-mapping.txt"));
+    expect(androidMappingFile("/p", "app")).toBe(path.join("/p", ".dev", "artifacts", "app-mapping.txt"));
   });
 
   test("the staged classes jar a sibling compiles against sits outside the published artifacts", () => {
@@ -134,7 +158,7 @@ describe("android output paths", () => {
 });
 
 describe("androidContentDirs", () => {
-  const target: AndroidArtifact = { kind: "apk", sources: [], manifestFile: "src/main/AndroidManifest.xml", resources: [], assets: [] };
+  const target: AndroidArtifact = { kind: "apk", sources: [], manifestFile: "src/main/AndroidManifest.xml", resources: [], assets: [], minify: false };
 
   test("a declared directory is kept whether or not it exists", () => {
     const dirs = androidContentDirs("/p", { ...target, resources: ["res", "extra-res"], assets: ["assets"] }, () => false);

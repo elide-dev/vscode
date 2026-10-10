@@ -1,5 +1,5 @@
 import path from "node:path";
-import { androidArtifactFile, androidContentDirs, androidSdkRoot } from "./android.js";
+import { androidArtifactFile, androidContentDirs, androidMappingFile, androidSdkRoot } from "./android.js";
 import { ElideCli, MANIFEST_NAME, isLockfileCurrent, type RunOptions } from "./elide.js";
 import { resolveJdk, type Jdk, type ResolveJdkOptions } from "./jdk.js";
 import { DEFAULT_LIBRARIES_ROOT, libraryFor, type LibraryModel } from "./libraries.js";
@@ -96,6 +96,8 @@ export interface AndroidTargetModel {
   output: string;
   /** `AndroidManifest.xml` the artifact is built from. */
   manifestFile: string;
+  /** Obfuscation mapping `elide build <name>` publishes; absent unless the artifact minifies. */
+  mapping?: string;
 }
 
 export interface BuildModelOptions {
@@ -346,6 +348,7 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
         kind: declared.kind,
         output: androidArtifactFile(root, key, declared.kind, declared.name),
         manifestFile: normalizePath(path.resolve(root, declared.manifestFile)),
+        ...(declared.minify ? { mapping: androidMappingFile(root, key, declared.name) } : {}),
       })),
     };
   }

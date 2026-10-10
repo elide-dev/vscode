@@ -87,13 +87,13 @@ export interface AndroidDeviceSettings {
   deviceProfile: string;
 }
 
-/** What an Android artifact publishes: an application package, or a library archive. */
-export type AndroidArtifactKind = "apk" | "aar";
+/** What an Android artifact publishes: an application package, an app bundle, or a library archive. */
+export type AndroidArtifactKind = "apk" | "aab" | "aar";
 
-/** An `Android.AndroidApk` or `Android.AndroidAar` entry of the manifest's `artifacts`. */
+/** An `Android.AndroidApk`, `Android.AndroidAab` or `Android.AndroidAar` entry of the manifest's `artifacts`. */
 export interface AndroidArtifact {
   kind: AndroidArtifactKind;
-  /** Output file name, which overrides the `<key>.apk` / `<key>.aar` Elide derives. */
+  /** Output file name, which overrides the `<key>.apk` / `<key>.aab` / `<key>.aar` Elide derives. */
   name?: string;
   /** Source sets packaged into the artifact; empty means the default one. */
   sources: string[];
@@ -103,6 +103,8 @@ export interface AndroidArtifact {
   resources: string[];
   /** Directories packaged verbatim under `assets/`; empty means `src/main/assets` when it exists. */
   assets: string[];
+  /** `minify`: the artifact is shrunk and obfuscated by R8, which also publishes an obfuscation mapping. */
+  minify: boolean;
 }
 
 export interface JvmSettings {
@@ -211,9 +213,12 @@ function decodeJars(v: unknown): Record<string, JarArtifact> {
   return jars;
 }
 
-/** `@type` of an `Android.AndroidApk` artifact, and of an `Android.AndroidAar` one. */
-const ANDROID_APK_TAG = "elide.android.AndroidApk";
-const ANDROID_AAR_TAG = "elide.android.AndroidAar";
+/** `@type` of each Android artifact entry, and the archive each publishes. */
+const ANDROID_TAGS: Record<string, AndroidArtifactKind> = {
+  "elide.android.AndroidApk": "apk",
+  "elide.android.AndroidAab": "aab",
+  "elide.android.AndroidAar": "aar",
+};
 
 /** Android manifest an artifact declaring none is built from, and the hardware profile its AVD is cut from. */
 const DEFAULT_ANDROID_MANIFEST = "src/main/AndroidManifest.xml";
@@ -226,8 +231,7 @@ function decodeAndroidTargets(v: unknown): Record<string, AndroidArtifact> {
   if (!isObject(v)) return targets;
   for (const [key, artifact] of Object.entries(v)) {
     if (!isObject(artifact)) continue;
-    const tag = typeTag(artifact);
-    const kind: AndroidArtifactKind | undefined = tag === ANDROID_APK_TAG ? "apk" : tag === ANDROID_AAR_TAG ? "aar" : undefined;
+    const kind = ANDROID_TAGS[typeTag(artifact)];
     if (!kind) continue;
     targets[key] = {
       kind,
@@ -236,6 +240,7 @@ function decodeAndroidTargets(v: unknown): Record<string, AndroidArtifact> {
       manifestFile: typeof artifact.manifestFile === "string" ? artifact.manifestFile : DEFAULT_ANDROID_MANIFEST,
       resources: strings(artifact.resources),
       assets: strings(artifact.assets),
+      minify: artifact.minify === true,
     };
   }
   return targets;

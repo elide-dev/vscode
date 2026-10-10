@@ -340,6 +340,12 @@
         "icon": "$(play)"
       },
       {
+        "command": "elide.androidDebug",
+        "category": "Elide",
+        "title": "Debug Android App…",
+        "icon": "$(debug-alt)"
+      },
+      {
         "command": "elide.androidStartEmulator",
         "category": "Elide",
         "title": "Start Android Emulator",
@@ -407,6 +413,10 @@
         },
         {
           "command": "elide.androidRun",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidDebug",
           "when": "elide.hasProjects"
         },
         {
@@ -504,13 +514,23 @@
           "group": "inline@1"
         },
         {
-          "command": "elide.build",
+          "command": "elide.androidDebug",
           "when": "view == elide.projects && viewItem == androidApk",
           "group": "inline@2"
         },
         {
+          "command": "elide.build",
+          "when": "view == elide.projects && viewItem == androidApk",
+          "group": "inline@3"
+        },
+        {
           "command": "elide.androidCreateKeystore",
           "when": "view == elide.projects && viewItem == androidApk"
+        },
+        {
+          "command": "elide.build",
+          "when": "view == elide.projects && viewItem == androidAab",
+          "group": "inline@1"
         },
         {
           "command": "elide.build",
@@ -885,6 +905,56 @@
               "name": "Elide: Debug Native Image",
               "artifact": "${1:artifact}",
               "args": []
+            }
+          }
+        ]
+      },
+      {
+        "type": "elide-android",
+        "label": "Elide Android",
+        "languages": [
+          "kotlin",
+          "java"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "artifact": {
+                "type": "string",
+                "markdownDescription": "Android application package to build, install and debug: the key of its entry in the `artifacts` block of `elide.pkl`."
+              },
+              "device": {
+                "type": "string",
+                "markdownDescription": "Device serial to pin the run to (`--device=<serial>`); empty lets the `android-debug-<artifact>` target choose, booting the emulator when nothing is attached."
+              },
+              "port": {
+                "type": "number",
+                "markdownDescription": "Local port of a JDWP socket already forwarded off a device: attach to it, building and installing nothing."
+              },
+              "project": {
+                "type": "string",
+                "description": "Project root relative to the workspace folder; in an Elide workspace, the member's directory."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "elide-android",
+            "request": "launch",
+            "name": "Elide: Debug Android App",
+            "artifact": ""
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Elide: Android app (debug)",
+            "description": "Build an APK, install and launch it waiting for a debugger, and attach over JDWP.",
+            "body": {
+              "type": "elide-android",
+              "request": "launch",
+              "name": "Elide: Debug Android App",
+              "artifact": "${1:artifact}"
             }
           }
         ]

@@ -39,8 +39,9 @@ Elide's build, run, test, and debug commands are available from the editor.
   `res/` and `assets/` of each artifact become resource roots of the source sets it packages, and a sibling Android
   library's classes are resolved as a module dependency rather than an opaque jar, so navigation works across an
   application and the libraries it consumes. Running an APK installs and launches it on a device you pick.
-- **Debugging.** Launch `elide run --debugger` and attach with breakpoints in Kotlin and Java, or build a Native
-  Image artifact and debug the binary it produced under GDB.
+- **Debugging.** Launch `elide run --debugger` and attach with breakpoints in Kotlin and Java, debug an Android
+  application on the device it was installed on, or build a Native Image artifact and debug the binary it produced
+  under GDB.
 
 ## Requirements
 
@@ -78,6 +79,7 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `Elide: Open generated Kotlin LSP workspace` | Open the generated `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel. |
 | `Elide: Run Android App…` | Build an APK and install and launch it on a device or the emulator. |
+| `Elide: Debug Android App…` | Build an APK, install and launch it waiting for a debugger, and attach over JDWP. |
 | `Elide: Start Android Emulator` / `Elide: Stop Android Emulators` | Boot the project's AVD, or shut running emulators down. |
 | `Elide: Create Android Virtual Device` | Create the AVD `android.device` declares, without booting it. |
 | `Elide: Install Android SDK Components` | Install the SDK components the pipeline is missing (`--install-sdk` accepts their licenses). |
@@ -165,14 +167,15 @@ source cache, so breakpoints do not bind and the session warns about it. Machine
 
 ### Android
 
-Elide builds Android applications and libraries without Gradle: every step is an ordinary build target, so nothing
-here is a separate launch type. The **Android** section of the sidebar lists what the manifest publishes and runs
-the targets behind it:
+Elide builds Android applications and libraries without Gradle: every step is an ordinary build target. The
+**Android** section of the sidebar lists what the manifest publishes and runs the targets behind it:
 
 | Row | Target |
 | --- | --- |
-| An `AndroidApk` artifact | `elide build <artifact>` to package it; **Run** installs and launches it with `elide build android-run-<artifact>`, pinned to the picked device with `--device=<serial>`. |
+| An `AndroidApk` artifact | `elide build <artifact>` to package it; **Run** installs and launches it with `elide build android-run-<artifact>`, pinned to the picked device with `--device=<serial>`; **Debug** does the same through `android-debug-<artifact>` and attaches over JDWP. |
+| An `AndroidAab` artifact | `elide build <artifact>`, which publishes `.dev/artifacts/<artifact>.aab`. |
 | An `AndroidAar` artifact | `elide build <artifact>`, which publishes `.dev/artifacts/<artifact>.aar`. |
+| The mapping of a minifying artifact | A row beside an artifact with `minify = true`, which opens the `.dev/artifacts/<name>-mapping.txt` R8 published: without it a stack trace from a shrunk build cannot be read. |
 | **Devices** | `adb devices` of the resolved SDK; a row in the `device` state runs the project's APK on that serial. |
 | **Start emulator** / **Stop emulators** / **Create AVD** | `android-emulator` (with `--no-window` when `elide.android.emulatorWindow` is off), `android-emulator-stop`, `android-avd`. |
 | **Install Android SDK components** | `android-sdk --install-sdk`, shown when no SDK was found. |
@@ -180,9 +183,9 @@ the targets behind it:
 Every other Android step — `android-resources-*`, `android-link-*`, `android-dex-*`, `android-sign-*` — is listed
 under **Build targets** like any other target of the project.
 
-An Android application debugs on the device rather than in the build, which Elide exposes no attach point for, so
-APK rows offer Run and Build but no Debug. Unit tests of an Android project are plain JVM tests and run in the Test
-Explorer as usual.
+An Android application is debugged on the device: an `elide-android` launch configuration builds the APK, installs
+it, launches it waiting for a debugger and attaches to the JDWP socket the target forwards. Unit tests of an
+Android project are plain JVM tests and run in the Test Explorer as usual.
 
 ## Links
 
