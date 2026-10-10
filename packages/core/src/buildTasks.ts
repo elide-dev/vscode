@@ -1,5 +1,6 @@
 /** One flag a build task declares, as `elide build --inspect` lists it. */
 export interface BuildTaskOption {
+  /** Flag name the CLI takes back, without the value or negation the listing decorates it with: `--debugger`. */
   option: string;
   description: string;
 }
@@ -23,8 +24,16 @@ const HEADER = /^\d+ tasks? (?:available|across \d+ projects?):$/;
 const GROUP = /^[^\s:]+$/;
 /** `  compile-kotlin-main   Compile main Kotlin source files to bytecode` */
 const TASK = /^ {2}(\S+)(?: {2,}(.*))?$/;
-/** `    --debugger   Attach JDWP debugger, optionally specify host:port` */
-const OPTION = /^ {4}(-\S+)(?: {2,}(.*))?$/;
+/**
+ * `    --debugger[=<value>]   Attach JDWP debugger, optionally specify host:port`
+ *
+ * The flag column carries how the option is taken as well as its name — `=<value>` when it requires one,
+ * `[=<value>]` when it takes one optionally, `(or --no-window)` for a negatable flag, `[default: true]`,
+ * `(repeatable)` — and the description follows after two spaces or more.
+ */
+const OPTION = /^ {4}(-\S.*?)(?: {2,}(.*))?$/;
+/** Everything after the name in an option's flag column: its value form, its negation, its default. */
+const OPTION_DECORATION = /[\s=[].*$/;
 /** Separator between the project a workspace task belongs to and the task's own name. */
 const SCOPE_SEPARATOR = ":";
 
@@ -59,7 +68,7 @@ export function parseBuildInspect(text: string): BuildTaskInfo[] {
     const option = OPTION.exec(line);
     const last = tasks[tasks.length - 1];
     if (option && last) {
-      last.options.push({ option: option[1] ?? "", description: option[2]?.trim() ?? "" });
+      last.options.push({ option: (option[1] ?? "").replace(OPTION_DECORATION, ""), description: option[2]?.trim() ?? "" });
       continue;
     }
     const task = TASK.exec(line);

@@ -32,8 +32,8 @@ const IMAGE_TYPE = /^\s*type\s*=\s*"([^"]*)"/;
 /**
  * Artifacts declared in the text of an `elide.pkl`, in source order.
  *
- * The manifest is read as text rather than through `elide manifest`, whose JSON carries no artifacts and no source
- * positions; the caller needs both the line of each entry and the settings that decide the output path.
+ * The manifest is read as text rather than from the exported project model, whose JSON carries no artifacts and no
+ * source positions; the caller needs both the line of each entry and the settings that decide the output path.
  */
 export function parseManifestArtifacts(text: string): ManifestArtifact[] {
   const artifacts: ManifestArtifact[] = [];

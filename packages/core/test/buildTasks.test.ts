@@ -36,6 +36,30 @@ describe("parseBuildInspect", () => {
     ]);
   });
 
+  /** Verbatim rows of an Android project's listing (Elide 1.6.1), where the flag column carries how a flag is taken. */
+  const DECORATED = `2 tasks available:
+
+  android-debug-app   Install and debug 'app' on a device
+    --debug[=<value>]   Local port forwarded to the application debugger; any free port when absent
+    --device=<value>   Serial number of the device to install on
+    --window (or --no-window) [default: true]   Show the emulator window; --no-window boots it headless
+    --install-sdk   Install missing Android SDK components with sdkmanager
+
+  maven-dependencies   Resolve and download Maven dependencies
+    --use-pkgst[=<value>] (or --no-use-pkgst)   Route Maven resolution through the pkg.st edge proxy
+`;
+
+  test("an option is named as the CLI takes it, without the value form or negation the listing shows", () => {
+    const [debug, maven] = parseBuildInspect(DECORATED);
+    expect(debug!.options).toEqual([
+      { option: "--debug", description: "Local port forwarded to the application debugger; any free port when absent" },
+      { option: "--device", description: "Serial number of the device to install on" },
+      { option: "--window", description: "Show the emulator window; --no-window boots it headless" },
+      { option: "--install-sdk", description: "Install missing Android SDK components with sdkmanager" },
+    ]);
+    expect(maven!.options.map((o) => o.option)).toEqual(["--use-pkgst"]);
+  });
+
   test("the table ends at the global options, which are not tasks", () => {
     expect(parseBuildInspect(INSPECT).map((t) => t.name)).not.toContain("--no-cache");
   });

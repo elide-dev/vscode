@@ -1,7 +1,7 @@
 import { ManifestParseError } from "./errors.js";
 
 /**
- * Decoded `elide manifest` output.
+ * Decoded `elide project export` output (`elide manifest` before 1.6).
  *
  * The CLI serializes its Pkl-derived project model with kotlinx.serialization (`encodeDefaults=false`,
  * `explicitNulls=false`, discriminator `"@type"`), so absent keys mean schema defaults and unions arrive as objects
@@ -103,6 +103,8 @@ export interface AndroidArtifact {
   resources: string[];
   /** Directories packaged verbatim under `assets/`; empty means `src/main/assets` when it exists. */
   assets: string[];
+  /** Native-library roots laid out as `<abi>/lib<name>.so`; empty means `src/main/jniLibs` when it exists. */
+  jniLibs: string[];
   /** `minify`: the artifact is shrunk and obfuscated by R8, which also publishes an obfuscation mapping. */
   minify: boolean;
 }
@@ -240,6 +242,7 @@ function decodeAndroidTargets(v: unknown): Record<string, AndroidArtifact> {
       manifestFile: typeof artifact.manifestFile === "string" ? artifact.manifestFile : DEFAULT_ANDROID_MANIFEST,
       resources: strings(artifact.resources),
       assets: strings(artifact.assets),
+      jniLibs: strings(artifact.jniLibs),
       minify: artifact.minify === true,
     };
   }
@@ -321,7 +324,7 @@ function decodeEngine(v: unknown): string | undefined {
   return undefined;
 }
 
-/** Decode the JSON printed by `elide manifest`. Throws {@link ManifestParseError} on malformed input. */
+/** Decode the JSON the CLI exports for a project. Throws {@link ManifestParseError} on malformed input. */
 export function decodeManifest(text: string): Manifest {
   let raw: unknown;
   try {

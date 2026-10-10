@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { OUTPUT_DIR } from "./elide.js";
 import type { AndroidArtifact, AndroidArtifactKind } from "./manifest.js";
 import { normalizePath } from "./sourceRoots.js";
-import { ANDROID_STAGE_DIR, ARTIFACTS_DIR } from "./workspace.js";
+import { ANDROID_LIBRARIES_DIR, ANDROID_STAGE_DIR, ARTIFACTS_DIR } from "./workspace.js";
 
 /**
  * The Android side of an Elide build: the targets it registers, where it publishes, and how the SDK it needs is
@@ -29,6 +29,14 @@ export const ANDROID_EMULATOR_TASK = "android-emulator";
 /** Shut down every running emulator, through `adb emu kill`. */
 export const ANDROID_EMULATOR_STOP_TASK = "android-emulator-stop";
 
+/**
+ * Explode every published `.aar` the project resolved into `.dev/android/libraries/<group>/<artifact>/<version>/`.
+ *
+ * One target per project rather than per artifact, and a default one: an archive's content does not depend on who
+ * consumes it. Nothing else produces those directories, and a classpath names the `classes.jar` inside them.
+ */
+export const ANDROID_LIBRARIES_TASK = "android-libraries";
+
 /** `--device=<serial>`: pin an Android target to one attached device or emulator. */
 export const ANDROID_DEVICE_OPTION = "device";
 
@@ -38,9 +46,13 @@ export const ANDROID_INSTALL_SDK_OPTION = "install-sdk";
 /** `--no-window`: boot the emulator headless. */
 export const ANDROID_NO_WINDOW_OPTION = "no-window";
 
-/** Conventional resource and asset directories of an artifact that declares none. */
+/** Conventional resource, asset and native-library directories of an artifact that declares none. */
 export const ANDROID_DEFAULT_RESOURCES = "src/main/res";
 export const ANDROID_DEFAULT_ASSETS = "src/main/assets";
+export const ANDROID_DEFAULT_JNI_LIBS = "src/main/jniLibs";
+
+/** AVD the build creates and boots for a project that declares neither an AVD name nor a project name. */
+export const DEFAULT_AVD_NAME = "elide-android";
 
 /** Serial prefix `adb` gives every emulator; a physical device carries its own. */
 const EMULATOR_SERIAL_PREFIX = "emulator-";
@@ -92,6 +104,16 @@ export function androidMappingFile(root: string, artifact: string, outputName?: 
 }
 
 /**
+ * The target that publishes an artifact's obfuscation mapping.
+ *
+ * Separate from the target that publishes the archive: building `<artifact>` alone leaves no mapping behind, since
+ * a shrink served from the cache still has to hand one over, so it is a target of its own.
+ */
+export function androidMappingTask(artifact: string): string {
+  return `android-mapping-${artifact}`;
+}
+
+/**
  * The `classes.jar` an Android artifact stages.
  *
  * A sibling project consumes a library through this file, never through its `.aar`: the archive is what the library
@@ -103,7 +125,49 @@ export function androidClassesJar(root: string, artifact: string): string {
 }
 
 /**
- * Resource and asset directories `artifact` carries, absolute and normalized.
+ * The target that links an artifact's resources and compiles the `R` class its code is written against.
+ *
+ * Run while a model is resolved, because `R` is generated: nothing on disk declares those identifiers, so an editor
+ * that never ran it reports every `R.layout.main` as unresolved.
+ */
+export function androidRTask(artifact: string): string {
+  return `android-r-${artifact}`;
+}
+
+/** Directory name the Android pipeline compiles each artifact's `R` classes into, under its stage directory. */
+const R_CLASSES_DIR = "r-classes";
+
+/** Compiled `R` classes of an Android artifact, which the build puts on the compile classpath as provided. */
+export function androidRClasses(root: string, artifact: string): string {
+  return path.join(root, OUTPUT_DIR, ANDROID_STAGE_DIR, artifact, R_CLASSES_DIR);
+}
+
+/**
+ * The artifact whose `R` classes `entry` holds, when it is one of those directories.
+ *
+ * Named apart from a jar because the directory is per artifact and per project: a workspace with two Android
+ * projects has two of them, and `r-classes` alone says nothing about which.
+ */
+export function androidRClassesArtifact(entry: string): string | undefined {
+  const parts = normalizePath(path.resolve(entry)).split("/");
+  if (parts.pop() !== R_CLASSES_DIR) return undefined;
+  const artifact = parts.pop();
+  return parts.pop() === ANDROID_STAGE_DIR && artifact ? artifact : undefined;
+}
+
+/**
+ * The API level of the Android platform jar `entry` names, when it is one: `<sdk>/platforms/android-36/android.jar`.
+ *
+ * The jar is the framework every Android source compiles against, and it carries no Maven coordinate, so it is
+ * named from the platform it belongs to rather than from its file name, which is `android.jar` in every SDK.
+ */
+export function androidPlatformApiLevel(entry: string): string | undefined {
+  const match = /\/platforms\/android-([^/]+)\/android\.jar$/.exec(normalizePath(path.resolve(entry)));
+  return match?.[1];
+}
+
+/**
+ * Resource, asset and native-library directories `artifact` carries, absolute and normalized.
  *
  * A declared directory is kept whether or not it exists — the build reports it rather than silently compiling
  * nothing — while a conventional one is taken only when it is there, since an app without resources is valid.
@@ -117,6 +181,7 @@ export function androidContentDirs(
   for (const [declared, conventional] of [
     [artifact.resources, ANDROID_DEFAULT_RESOURCES],
     [artifact.assets, ANDROID_DEFAULT_ASSETS],
+    [artifact.jniLibs, ANDROID_DEFAULT_JNI_LIBS],
   ] as const) {
     if (declared.length > 0) dirs.push(...declared.map((dir) => normalizePath(path.resolve(root, dir))));
     else {
@@ -125,6 +190,42 @@ export function androidContentDirs(
     }
   }
   return [...new Set(dirs)];
+}
+
+/** A published `.aar` the build resolved and exploded, as the `classes.jar` inside it names the archive. */
+export interface ExplodedAndroidLibrary {
+  /** Project root whose build exploded the archive. */
+  root: string;
+  /** Maven coordinate the archive resolved from, `group:artifact:version`; a classifier folds into the artifact. */
+  coordinate: string;
+  /** Group, artifact and version separately, which is also the archive's layout in the Maven repository. */
+  group: string;
+  artifact: string;
+  version: string;
+}
+
+/** `/.dev/android/libraries/`: the only directory a published archive is exploded into. */
+const EXPLODED_LIBRARIES_MARKER = `/${OUTPUT_DIR}/${ANDROID_STAGE_DIR}/${ANDROID_LIBRARIES_DIR}/`;
+
+/**
+ * The archive `entry` was exploded from, when it is a path below a project's exploded-library directory.
+ *
+ * A published `.aar` is not a classpath entry — no compiler reads one — so the build substitutes the `classes.jar`
+ * of the directory it unpacked the archive into. That path carries the coordinate, which is what names the library
+ * and where its sources are, and nothing else does: every such entry is otherwise just a `classes.jar`.
+ */
+export function explodedAndroidLibrary(entry: string): ExplodedAndroidLibrary | undefined {
+  const normalized = normalizePath(path.resolve(entry));
+  const marker = normalized.lastIndexOf(EXPLODED_LIBRARIES_MARKER);
+  if (marker < 0) return undefined;
+  const parts = normalized.slice(marker + EXPLODED_LIBRARIES_MARKER.length).split("/");
+  // `<group…>/<artifact>/<version>/<file>`: the group is every segment the other three leave over.
+  if (parts.length < 4) return undefined;
+  const version = parts[parts.length - 2] ?? "";
+  const artifact = parts[parts.length - 3] ?? "";
+  const group = parts.slice(0, -3).join(".");
+  if (!group || !artifact || !version) return undefined;
+  return { root: normalized.slice(0, marker), coordinate: `${group}:${artifact}:${version}`, group, artifact, version };
 }
 
 /** Where to look for an installed Android SDK, in the order the build looks. */

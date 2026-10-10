@@ -182,11 +182,11 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         item.command = { command: "elide.build", title: "Build", arguments: [node] };
         break;
       case "androidMapping":
-        // The mapping only exists after a build of the artifact; opening it then says so plainly.
+        // Publishing the mapping is a target of its own, so the row opens it and builds it first when it is absent.
         item.iconPath = new vscode.ThemeIcon("references");
         item.description = node.description;
         item.tooltip = node.path;
-        item.command = { command: "vscode.open", title: "Open", arguments: [vscode.Uri.file(node.path)] };
+        item.command = { command: "elide.androidOpenMapping", title: "Open", arguments: [node] };
         break;
       case "androidDevice":
         item.iconPath = new vscode.ThemeIcon(node.ready ? "vm-running" : "vm-outline");

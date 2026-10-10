@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   ANDROID_AVD_TASK,
@@ -8,6 +9,7 @@ import {
   ANDROID_NO_WINDOW_OPTION,
   ANDROID_SDK_TASK,
   androidKeystoreTask,
+  androidMappingTask,
   androidRunTask,
   androidSdkRoot,
   listAndroidDevices,
@@ -19,7 +21,7 @@ import { ELIDE_ANDROID_DEBUG_TYPE } from "./androidDebug.js";
 import { readConfig } from "./config.js";
 import type { ElideUi } from "./output.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
-import { executeElideTask } from "./tasks.js";
+import { executeElideTask, taskExitCode } from "./tasks.js";
 
 /**
  * The Android side of the extension.
@@ -246,4 +248,27 @@ export async function createAndroidKeystore(workspace: ElideWorkspace, ui: Elide
   if (!artifact) return;
   ui.log(`creating the signing keystore of ${artifact}`);
   await executeElideTask(workspace, project, "build", { args: [androidKeystoreTask(artifact)] });
+}
+
+/**
+ * Open an artifact's obfuscation mapping, publishing it first when it is not on disk.
+ *
+ * `elide build <artifact>` does not write it: the mapping is handed over by a target of its own, so a row that only
+ * opened the file would be a dead end on every project whose minified APK was built by name.
+ */
+export async function openAndroidMapping(workspace: ElideWorkspace, value: unknown): Promise<void> {
+  const invocation = await resolve(workspace, value);
+  if (!invocation) return;
+  const { project, target } = invocation;
+  const artifact = target.artifact;
+  const mapping = project.model?.android?.targets.find((t) => t.name === artifact)?.mapping;
+  if (!artifact || !mapping) {
+    void vscode.window.showWarningMessage("Elide: this artifact publishes no obfuscation mapping; it does not minify.");
+    return;
+  }
+  if (!existsSync(mapping)) {
+    const execution = await executeElideTask(workspace, project, "build", { args: [androidMappingTask(artifact)] });
+    if (!execution || (await taskExitCode(execution)) !== 0) return;
+  }
+  await vscode.window.showTextDocument(vscode.Uri.file(mapping));
 }

@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   ArtifactIndex,
   ElideCli,
+  artifactProjectRoot,
   buildProjectModels,
   decodeManifest,
   distributionAt,
@@ -54,6 +55,12 @@ describe("ArtifactIndex", () => {
   test("an Android library reaches a sibling as the classes.jar it stages, keyed by the artifact's own name", () => {
     expect(index.resolve("/ws/app/../model/.dev/android/ui/classes.jar")).toEqual({ project: "model", name: "ui", staged: true });
     expect(index.resolve("/private/ws/model/.dev/android/ui/classes.jar")).toEqual({ project: "model", name: "ui", staged: true });
+  });
+
+  test("a published .aar exploded into the same directory is a dependency, not an artifact the project builds", () => {
+    expect(index.resolve("/ws/model/.dev/android/libraries/androidx/core/core/1.13.0/classes.jar")).toBeUndefined();
+    expect(artifactProjectRoot("/ws/model/.dev/android/libraries/androidx/core/core/1.13.0/classes.jar")).toBeUndefined();
+    expect(artifactProjectRoot("/ws/model/.dev/android/ui/classes.jar")).toBe("/ws/model");
   });
 });
 
@@ -173,14 +180,22 @@ describe("findEnclosingWorkspace", () => {
 
 /**
  * A stand-in for the CLI: answers `manifest` and `classpath` from files in the directory it is invoked in, the way
- * the real one answers for the project it is focused on, and records every `install` in the workspace root.
+ * the real one answers for the project it is focused on, and records every `install` in the workspace root and
+ * every `build` with the targets it was given.
+ *
+ * A classpath is read from the file named after the source set and the usage, falling back to the set alone, so a
+ * fixture declares a `provided` classpath only when the usage matters to it.
  */
 const FAKE_ELIDE = `#!/bin/sh
 case "$1" in
   --version) echo "1.5.4+test" ;;
   manifest) cat .fake/manifest.json ;;
-  classpath) cat ".fake/classpath-\${2%%:*}.txt" ;;
+  classpath)
+    f=".fake/classpath-\${2%%:*}-\${2##*:}.txt"
+    [ -f "$f" ] || f=".fake/classpath-\${2%%:*}.txt"
+    [ -f "$f" ] && cat "$f" ;;
   install) echo "$PWD" >> "$FAKE_INSTALL_LOG" ;;
+  build) shift; echo "$PWD $*" >> "$FAKE_BUILD_LOG" ;;
 esac
 `;
 
@@ -328,5 +343,96 @@ describe("buildProjectModels", () => {
     expect(model!.warnings).toContain(
       `Classpath names an artifact built by ${ws}/model, which is not part of this project's workspace; its sources cannot be resolved.`,
     );
+  });
+});
+
+describe("buildProjectModels: published Android libraries", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * An Android project whose compile classpath names a published `.aar`, as the build substitutes it: exploded.
+   * Its `provided` classpath names what only an Android build contributes — the platform jar and the compiled `R`.
+   */
+  const androidProject = () => {
+    const home = realpathSync(mkdtempSync(path.join(tmpdir(), "elide-home-")));
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "elide-android-")));
+    dirs.push(home, root);
+    mkdirSync(path.join(home, "bin"));
+    writeFileSync(path.join(home, "bin", "elide"), FAKE_ELIDE);
+    chmodSync(path.join(home, "bin", "elide"), 0o755);
+
+    mkdirSync(path.join(root, ".fake"));
+    writeFileSync(path.join(root, "elide.pkl"), "");
+    writeFileSync(
+      path.join(root, ".fake", "manifest.json"),
+      JSON.stringify({
+        name: "app",
+        sources: { main: { "@type": "elide.sources.SourceSetSpec", paths: ["src/main/kotlin/**/*.kt"] } },
+        android: { compileSdk: 36 },
+        artifacts: { app: { "@type": "elide.android.AndroidApk" } },
+      }),
+    );
+    const stdlib = `${root}/.dev/dependencies/m2/org/jetbrains/kotlin/kotlin-stdlib/2.4.20/kotlin-stdlib-2.4.20.jar`;
+    const exploded = `${root}/.dev/android/libraries/androidx/core/core/1.13.0/classes.jar`;
+    const sources = `${root}/.dev/dependencies/m2/androidx/core/core/1.13.0/core-1.13.0-sources.jar`;
+    const platform = "/opt/android-sdk/platforms/android-36/android.jar";
+    const rClasses = `${root}/.dev/android/app/r-classes`;
+    writeFileSync(path.join(root, ".fake", "classpath-main.txt"), [stdlib, exploded].join(path.delimiter));
+    writeFileSync(path.join(root, ".fake", "classpath-main-provided.txt"), [platform, rClasses].join(path.delimiter));
+
+    const builds = path.join(root, "builds.log");
+    process.env.FAKE_BUILD_LOG = builds;
+    const cli = new ElideCli(distributionAt(home), root);
+    const built = (): string[] => {
+      try {
+        return readFileSync(builds, "utf8").trim().split("\n").filter(Boolean);
+      } catch {
+        return [];
+      }
+    };
+    const model = (exists: (p: string) => boolean) =>
+      buildProjectModels(cli, decodeManifest(readFileSync(path.join(root, ".fake", "manifest.json"), "utf8")), {
+        jdk: { override: "/nonexistent" },
+        skipInstall: true,
+        exists,
+      });
+    return { root, exploded, sources, platform, rClasses, built, model };
+  };
+
+  test("a published .aar is one library, named by the coordinate its exploded path spells out", async () => {
+    const { exploded, sources, model } = androidProject();
+    const [app] = await model((p) => p === exploded || p === sources);
+    expect(app!.libraries.find((l) => l.classes === exploded)).toEqual({
+      name: "Elide: androidx.core:core:1.13.0",
+      classes: exploded,
+      coordinate: "androidx.core:core:1.13.0",
+      sources,
+    });
+    // It is a dependency of the module, never an artifact of the project whose build directory holds it.
+    expect(app!.modules[0]!.libraries.map((l) => l.name)).toContain("Elide: androidx.core:core:1.13.0");
+    expect(app!.modules[0]!.moduleDeps).toEqual([]);
+    expect(app!.warnings.some((w) => w.includes("not part of this project's workspace"))).toBe(false);
+  });
+
+  test("the framework and the compiled R reach the model as libraries of the module", async () => {
+    const { platform, rClasses, model } = androidProject();
+    const [app] = await model((p) => p === rClasses);
+    expect(app!.libraries.find((l) => l.classes === platform)).toEqual({ name: "Elide: Android API 36 platform", classes: platform });
+    expect(app!.libraries.find((l) => l.classes === rClasses)).toEqual({ name: "Elide: Android resources of app", classes: rClasses });
+    expect(app!.modules[0]!.libraries.map((l) => l.name)).toEqual(
+      expect.arrayContaining(["Elide: Android API 36 platform", "Elide: Android resources of app"]),
+    );
+  });
+
+  test("the archive is unpacked and R is generated when either is missing, and neither runs when both are there", async () => {
+    const { root, exploded, rClasses, built, model } = androidProject();
+    await model(() => false);
+    expect(built()).toEqual([`${root} android-libraries`, `${root} android-r-app`]);
+
+    await model((p) => p === exploded || p === rClasses);
+    expect(built()).toEqual([`${root} android-libraries`, `${root} android-r-app`]);
   });
 });

@@ -11,6 +11,15 @@ export const ARTIFACTS_DIR = "artifacts";
 /** Directory under {@link OUTPUT_DIR} that the Android pipeline stages each artifact's work in. */
 export const ANDROID_STAGE_DIR = "android";
 
+/**
+ * Directory under {@link ANDROID_STAGE_DIR} holding every published `.aar` the project resolved, exploded under its
+ * coordinate (`<group>/<artifact>/<version>/`).
+ *
+ * It sits beside the per-artifact staging directories without being one: nothing there is a build output of this
+ * project, and its `classes.jar` entries are libraries, named by the coordinate they were resolved from.
+ */
+export const ANDROID_LIBRARIES_DIR = "libraries";
+
 /** Source set Elide packages into a JAR that names none. */
 export const DEFAULT_SOURCE_SET = "main";
 
@@ -22,14 +31,18 @@ export function projectName(manifest: Manifest, root: string): string {
 /**
  * The project root whose build wrote `entry`, when that path is an Elide build output — a published artifact under
  * `<root>/.dev/artifacts/…`, or an Android artifact's staged output under `<root>/.dev/android/…`, which is how a
- * sibling consumes an Android library. `undefined` for anything else. The innermost output directory wins: a
+ * sibling consumes an Android library. `undefined` for anything else, an exploded published `.aar` included: that
+ * is a dependency the project resolved, not something its build produced. The innermost output directory wins: a
  * workspace root holding a member's checkout has its own `.dev` above the member's.
  */
 export function artifactProjectRoot(entry: string): string | undefined {
   const normalized = normalizePath(path.resolve(entry));
   let deepest = -1;
   for (const dir of [ARTIFACTS_DIR, ANDROID_STAGE_DIR]) {
-    deepest = Math.max(deepest, normalized.lastIndexOf(`/${OUTPUT_DIR}/${dir}/`));
+    const prefix = `/${OUTPUT_DIR}/${dir}/`;
+    const at = normalized.lastIndexOf(prefix);
+    const exploded = dir === ANDROID_STAGE_DIR && normalized.startsWith(`${prefix}${ANDROID_LIBRARIES_DIR}/`, at);
+    if (at > deepest && !exploded) deepest = at;
   }
   return deepest < 0 ? undefined : normalized.slice(0, deepest);
 }
@@ -38,7 +51,7 @@ export function artifactProjectRoot(entry: string): string | undefined {
  * The members a manifest declares, read from its text: `workspace { members { "model" "cli" } }`.
  *
  * Reading the text answers for a directory no project has been loaded from — the workspace above the folder an
- * editor was pointed at — which `elide manifest` cannot be asked about without loading that project first.
+ * editor was pointed at — which the CLI cannot be asked about without loading that project first.
  */
 export function parseWorkspaceMembers(text: string): string[] {
   const workspace = pklBlock(text, "workspace");
@@ -145,7 +158,8 @@ export interface ArtifactOutput {
  * `/private/tmp` on macOS) while the IDE holds the path the folder was opened with.
  *
  * An Android library reaches a sibling as the `classes.jar` it stages (`…/.dev/android/<artifact>/classes.jar`)
- * rather than as its published `.aar`, so that staging directory is indexed as well.
+ * rather than as its published `.aar`, so that staging directory is indexed as well. A published `.aar` the project
+ * resolved is exploded below the same directory, under {@link ANDROID_LIBRARIES_DIR}, and is a library instead.
  */
 export class ArtifactIndex {
   private readonly dirs: { dir: string; project: string; staged: boolean }[];
@@ -170,6 +184,8 @@ export class ArtifactIndex {
     const match = this.dirs.find(({ dir }) => isPathUnder(normalized, dir));
     if (!match) return undefined;
     const parts = normalized.slice(match.dir.length + 1).split("/");
+    // An exploded published `.aar` is a dependency, not an artifact of the project whose directory holds it.
+    if (match.staged && parts[0] === ANDROID_LIBRARIES_DIR) return undefined;
     const name = match.staged ? parts[0] : parts[1];
     return { project: match.project, ...(name ? { name } : {}), ...(match.staged ? { staged: true } : {}) };
   }

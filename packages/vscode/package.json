@@ -43,7 +43,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
-      "description": "Syncing a project runs the workspace's Elide CLI (`elide manifest`, `elide install`, `elide classpath`), so an untrusted workspace could execute arbitrary code."
+      "description": "Syncing a project runs the workspace's Elide CLI (`elide project export`, `elide install`, `elide classpath`), so an untrusted workspace could execute arbitrary code."
     },
     "virtualWorkspaces": {
       "supported": false,
@@ -376,6 +376,12 @@
         "icon": "$(key)"
       },
       {
+        "command": "elide.androidOpenMapping",
+        "category": "Elide",
+        "title": "Open Android Obfuscation Mapping",
+        "icon": "$(references)"
+      },
+      {
         "command": "elide.revealLibrary",
         "category": "Elide",
         "title": "Reveal in Finder/Explorer"
@@ -438,6 +444,10 @@
         {
           "command": "elide.androidCreateKeystore",
           "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidOpenMapping",
+          "when": "false"
         }
       ],
       "view/title": [

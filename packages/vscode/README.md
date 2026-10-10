@@ -175,17 +175,28 @@ Elide builds Android applications and libraries without Gradle: every step is an
 | An `AndroidApk` artifact | `elide build <artifact>` to package it; **Run** installs and launches it with `elide build android-run-<artifact>`, pinned to the picked device with `--device=<serial>`; **Debug** does the same through `android-debug-<artifact>` and attaches over JDWP. |
 | An `AndroidAab` artifact | `elide build <artifact>`, which publishes `.dev/artifacts/<artifact>.aab`. |
 | An `AndroidAar` artifact | `elide build <artifact>`, which publishes `.dev/artifacts/<artifact>.aar`. |
-| The mapping of a minifying artifact | A row beside an artifact with `minify = true`, which opens the `.dev/artifacts/<name>-mapping.txt` R8 published: without it a stack trace from a shrunk build cannot be read. |
+| The mapping of a minifying artifact | A row beside an artifact with `minify = true`, which opens the `.dev/artifacts/<name>-mapping.txt` R8 published, publishing it with `android-mapping-<artifact>` first when it is not there: without it a stack trace from a shrunk build cannot be read. |
 | **Devices** | `adb devices` of the resolved SDK; a row in the `device` state runs the project's APK on that serial. |
 | **Start emulator** / **Stop emulators** / **Create AVD** | `android-emulator` (with `--no-window` when `elide.android.emulatorWindow` is off), `android-emulator-stop`, `android-avd`. |
 | **Install Android SDK components** | `android-sdk --install-sdk`, shown when no SDK was found. |
 
-Every other Android step — `android-resources-*`, `android-link-*`, `android-dex-*`, `android-sign-*` — is listed
-under **Build targets** like any other target of the project.
+Every other Android step — `android-resources-*`, `android-link-*`, `android-dex-*`, `android-r8-*`,
+`android-sign-*`, `android-bundle-*` — is listed under **Build targets** like any other target of the project.
+
+A published `.aar` dependency appears under **Dependencies** named by its coordinate, with the sources of the
+archive attached: Elide unpacks each one into `.dev/android/libraries/<group>/<artifact>/<version>/` and compiles
+against the `classes.jar` inside it, and a sync unpacks what is missing so symbols resolve before the first build.
+
+Two more entries appear there for an Android project: the **Android API `<level>` platform** (the `android.jar`
+every Android source compiles against) and the **Android resources of `<artifact>`** (the generated `R`). Neither
+is on the compile classpath — the device carries the framework and the APK's dex carries `R` — so a sync reads
+them from the provided classpath, and generates the `R` classes it does not find with `android-r-<artifact>`.
 
 An Android application is debugged on the device: an `elide-android` launch configuration builds the APK, installs
-it, launches it waiting for a debugger and attaches to the JDWP socket the target forwards. Unit tests of an
-Android project are plain JVM tests and run in the Test Explorer as usual.
+it, launches it waiting for a debugger and attaches to the JDWP socket the target forwards. The APK has to be
+debuggable — `android:debuggable="true"` on `<application>`, which nothing in the build injects — and the target
+says so and stops when it is not. Unit tests of an Android project are plain JVM tests and run in the Test Explorer
+as usual.
 
 ## Links
 

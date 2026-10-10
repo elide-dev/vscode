@@ -7,9 +7,13 @@ import {
   androidDebugTask,
   androidKeystoreTask,
   androidMappingFile,
+  androidPlatformApiLevel,
+  androidRClasses,
+  androidRClassesArtifact,
   androidRunTask,
   androidSdkRoot,
   decodeManifest,
+  explodedAndroidLibrary,
   isAndroidAab,
   isAndroidAar,
   isAndroidApk,
@@ -83,6 +87,7 @@ describe("decoded Android manifest", () => {
         minified: { "@type": "elide.android.AndroidApk", name: "smoke-minified.apk", minify: true },
         shrunk: { "@type": "elide.android.AndroidApk", minify: true },
         ui: { "@type": "elide.android.AndroidAar", resources: ["res"] },
+        native: { "@type": "elide.android.AndroidApk", jniLibs: ["libs/arm64"] },
         bundle: { "@type": "elide.android.AndroidAab" },
         jar: { "@type": "elide.jvm.Jar" },
       },
@@ -98,7 +103,7 @@ describe("decoded Android manifest", () => {
   });
 
   test("Android artifacts decode beside the JAR ones, each keyed by what it publishes", () => {
-    expect(Object.keys(manifest.androidTargets)).toEqual(["app", "minified", "shrunk", "ui", "bundle"]);
+    expect(Object.keys(manifest.androidTargets)).toEqual(["app", "minified", "shrunk", "ui", "native", "bundle"]);
     expect(manifest.androidTargets.app?.kind).toBe("apk");
     expect(manifest.androidTargets.app?.name).toBe("smoke.apk");
     expect(manifest.androidTargets.ui).toEqual({
@@ -107,8 +112,10 @@ describe("decoded Android manifest", () => {
       manifestFile: "src/main/AndroidManifest.xml",
       resources: ["res"],
       assets: [],
+      jniLibs: [],
       minify: false,
     });
+    expect(manifest.androidTargets.native?.jniLibs).toEqual(["libs/arm64"]);
     expect(manifest.androidTargets.bundle?.kind).toBe("aab");
     expect(Object.keys(manifest.jars)).toEqual(["jar"]);
   });
@@ -158,17 +165,59 @@ describe("android output paths", () => {
 });
 
 describe("androidContentDirs", () => {
-  const target: AndroidArtifact = { kind: "apk", sources: [], manifestFile: "src/main/AndroidManifest.xml", resources: [], assets: [], minify: false };
+  const target: AndroidArtifact = {
+    kind: "apk",
+    sources: [],
+    manifestFile: "src/main/AndroidManifest.xml",
+    resources: [],
+    assets: [],
+    jniLibs: [],
+    minify: false,
+  };
 
   test("a declared directory is kept whether or not it exists", () => {
-    const dirs = androidContentDirs("/p", { ...target, resources: ["res", "extra-res"], assets: ["assets"] }, () => false);
-    expect(dirs).toEqual(["/p/res", "/p/extra-res", "/p/assets"]);
+    const dirs = androidContentDirs("/p", { ...target, resources: ["res", "extra-res"], assets: ["assets"], jniLibs: ["jni"] }, () => false);
+    expect(dirs).toEqual(["/p/res", "/p/extra-res", "/p/assets", "/p/jni"]);
   });
 
   test("a conventional directory is taken only when it is there", () => {
-    expect(androidContentDirs("/p", target, () => true)).toEqual(["/p/src/main/res", "/p/src/main/assets"]);
+    expect(androidContentDirs("/p", target, () => true)).toEqual(["/p/src/main/res", "/p/src/main/assets", "/p/src/main/jniLibs"]);
     expect(androidContentDirs("/p", target, (dir) => dir.endsWith("/res"))).toEqual(["/p/src/main/res"]);
     expect(androidContentDirs("/p", target, () => false)).toEqual([]);
+  });
+});
+
+describe("explodedAndroidLibrary", () => {
+  test("a classpath entry below the exploded-library directory carries the coordinate it resolved from", () => {
+    expect(explodedAndroidLibrary("/p/.dev/android/libraries/androidx/core/core/1.13.0/classes.jar")).toEqual({
+      root: "/p",
+      coordinate: "androidx.core:core:1.13.0",
+      group: "androidx.core",
+      artifact: "core",
+      version: "1.13.0",
+    });
+  });
+
+  test("an artifact's own staging directory is not an exploded library", () => {
+    expect(explodedAndroidLibrary("/p/.dev/android/ui/classes.jar")).toBeUndefined();
+    expect(explodedAndroidLibrary("/p/.dev/artifacts/ui.aar")).toBeUndefined();
+    expect(explodedAndroidLibrary("/p/.dev/android/libraries/core/classes.jar")).toBeUndefined();
+  });
+});
+
+describe("provided classpath entries", () => {
+  test("the R classes of an artifact are told apart from anything else under its staging directory", () => {
+    expect(androidRClassesArtifact("/p/.dev/android/app/r-classes")).toBe("app");
+    expect(androidRClassesArtifact(androidRClasses("/p", "bundle"))).toBe("bundle");
+    expect(androidRClassesArtifact("/p/.dev/android/app/generated")).toBeUndefined();
+    expect(androidRClassesArtifact("/p/.dev/android/libraries/androidx.core/core/1.13.0/r-classes")).toBeUndefined();
+  });
+
+  test("the platform jar names the API level it belongs to, which its file name never does", () => {
+    expect(androidPlatformApiLevel("/opt/android-sdk/platforms/android-36/android.jar")).toBe("36");
+    expect(androidPlatformApiLevel("/opt/android-sdk/platforms/android-TiramisuPrivacySandbox/android.jar")).toBe("TiramisuPrivacySandbox");
+    expect(androidPlatformApiLevel("/opt/android-sdk/platforms/android-36/uiautomator.jar")).toBeUndefined();
+    expect(androidPlatformApiLevel("/p/.dev/dependencies/m2/com/example/android/1.0/android.jar")).toBeUndefined();
   });
 });
 

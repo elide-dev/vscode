@@ -10,6 +10,12 @@ import { decodeInitTemplates, initArgs, type InitTemplate } from "./init.js";
 import { elideFlagArgs } from "./invocation.js";
 import { decodeManifest, type Manifest } from "./manifest.js";
 import { isPathUnder, normalizePath } from "./sourceRoots.js";
+import { compareElideVersions, parseElideVersion, type ElideVersion } from "./version.js";
+
+/** First release where `elide manifest` became `elide project export`; both print the same document. */
+const PROJECT_EXPORT_VERSION: ElideVersion = { major: 1, minor: 6, patch: 0 };
+const PROJECT_EXPORT_COMMAND = ["project", "export"] as const;
+const MANIFEST_COMMAND = ["manifest"] as const;
 
 export interface ElideDistribution {
   /** Distribution root, e.g. `~/.local/share/elide`. */
@@ -250,26 +256,59 @@ export class ElideCli {
     return promise;
   }
 
-  /** `elide --version` → first line, e.g. `1.5.1+db2bc827b`. */
+  /** `elide --version` → first line, e.g. `1.5.1+db2bc827b`; asked once per instance, since it cannot change. */
   async version(opts: RunOptions = {}): Promise<string> {
-    const { stdout } = await this.run(["--version"], opts);
-    return stdout.trim().split("\n")[0]?.trim() ?? "";
+    this.reportedVersion ??= this.run(["--version"], opts).then(({ stdout }) => stdout.trim().split("\n")[0]?.trim() ?? "");
+    return this.reportedVersion;
   }
 
-  /** `elide manifest` → decoded manifest JSON. */
+  private reportedVersion?: Promise<string>;
+
+  /**
+   * The project manifest, decoded: `elide project export`, or `elide manifest` on a release that still carries it.
+   *
+   * Elide 1.6.0 retired `manifest` in favour of `project export`, which prints the same document; the retired name
+   * exits with a usage error there, and the new one does not exist on 1.5.x. The reported version picks which to
+   * run, and a refusal is answered by running the other — a distribution whose `--version` does not match its
+   * binary (a wrapper, a stub) is a real thing, and both commands answer the same question. Whichever worked is
+   * kept for the rest of this instance's life.
+   */
   async manifest(opts: RunOptions = {}): Promise<Manifest> {
-    let json = "";
-    await this.run(["manifest", ...elideFlagArgs(this.flags)], {
-      ...opts,
-      onLine: (line, stderr) => {
-        if (!stderr) json += `${line}\n`;
-        opts.onLine?.(line, stderr);
-      },
-    });
-    const trimmed = json.trim();
-    if (!trimmed) throw new ManifestParseError("empty output");
-    return decodeManifest(trimmed);
+    const version = parseElideVersion(await this.version(opts));
+    const retired = version !== undefined && compareElideVersions(version, PROJECT_EXPORT_VERSION) < 0;
+    const candidates = this.manifestCommand
+      ? [this.manifestCommand]
+      : retired
+        ? [MANIFEST_COMMAND, PROJECT_EXPORT_COMMAND]
+        : [PROJECT_EXPORT_COMMAND, MANIFEST_COMMAND];
+
+    let refusal: unknown;
+    for (const command of candidates) {
+      let json = "";
+      try {
+        await this.run([...command, ...elideFlagArgs(this.flags)], {
+          ...opts,
+          onLine: (line, stderr) => {
+            if (!stderr) json += `${line}\n`;
+            opts.onLine?.(line, stderr);
+          },
+        });
+      } catch (e) {
+        // The command the version pointed at is the one whose failure describes the project, so it is the error
+        // reported when neither answers.
+        refusal ??= e;
+        continue;
+      }
+      const trimmed = json.trim();
+      if (!trimmed) throw new ManifestParseError("empty output");
+      this.manifestCommand = command;
+      return decodeManifest(trimmed);
+    }
+    throw refusal;
   }
+
+  /** The command that answered for this project, once one has. */
+  private manifestCommand?: readonly string[];
 
   /** `elide classpath <sourceSet>:<usage>` → absolute jar/dir entries (stdout split on the platform path delimiter). */
   async classpath(sourceSet: string, usage: ClasspathUsage, opts: RunOptions = {}): Promise<string[]> {
@@ -293,6 +332,17 @@ export class ElideCli {
   async install(opts: RunOptions & { with?: readonly string[] } = {}): Promise<void> {
     const flags = opts.with ? ["--slim", ...opts.with.flatMap((classifier) => ["--with", classifier])] : [];
     await this.run(["install", ...elideFlagArgs(this.flags), ...flags], opts);
+  }
+
+  /**
+   * `elide build <target…>`: run build targets by name, with the build flags this instance carries.
+   *
+   * Used for what the project model needs on disk and nothing else produces — a published `.aar` has to be unpacked
+   * before its classes are on a classpath the editor can read. A build the user asked for runs as a task instead,
+   * so its output reaches the terminal.
+   */
+  async build(targets: readonly string[], opts: RunOptions = {}): Promise<void> {
+    await this.run(["build", ...targets, ...elideFlagArgs(this.flags)], opts);
   }
 
   /** `elide build --inspect` → the build targets of the project and the options they accept. */

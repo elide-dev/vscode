@@ -1,5 +1,16 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
-import { androidArtifactFile, androidContentDirs, androidMappingFile, androidSdkRoot } from "./android.js";
+import {
+  ANDROID_LIBRARIES_TASK,
+  DEFAULT_AVD_NAME,
+  androidArtifactFile,
+  androidContentDirs,
+  androidMappingFile,
+  androidRClasses,
+  androidRTask,
+  androidSdkRoot,
+  explodedAndroidLibrary,
+} from "./android.js";
 import { ElideCli, MANIFEST_NAME, isLockfileCurrent, type RunOptions } from "./elide.js";
 import { resolveJdk, type Jdk, type ResolveJdkOptions } from "./jdk.js";
 import { DEFAULT_LIBRARIES_ROOT, libraryFor, type LibraryModel } from "./libraries.js";
@@ -152,8 +163,8 @@ export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts
   opts.onProgress?.("Querying Elide version");
   const elideVersion = await cli.version(run);
 
-  // `elide manifest` has already validated the member list at the root: every entry is a directory below it holding
-  // a manifest, and no two members share a name.
+  // The exported project model has already validated the member list at the root: every entry is a directory below
+  // it holding a manifest, and no two members share a name.
   const projects: ProjectSpec[] = [{ name: projectName(manifest, root), root, cli, manifest }];
   for (const entry of manifest.workspaceMembers) {
     const memberRoot = normalizePath(path.resolve(root, entry));
@@ -169,12 +180,15 @@ export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts
     await cli.install({ ...run, with: opts.installWith });
   }
 
-  // Members resolve into the root's repository, so the layout library names are read against is the root's.
   const ctx: BuildContext = {
     opts,
     run,
     elideVersion,
-    libraries: new LibraryRegistry(manifest.dependencies.maven?.localRepository ?? DEFAULT_LIBRARIES_ROOT, opts.exists),
+    // Members resolve into the root's repository, so the layout library names are read against is the root's.
+    libraries: new LibraryRegistry(
+      normalizePath(path.resolve(root, manifest.dependencies.maven?.localRepository ?? DEFAULT_LIBRARIES_ROOT)),
+      opts.exists,
+    ),
     artifacts: new ArtifactIndex(projects),
   };
   const resolved: ResolvedProject[] = [];
@@ -217,13 +231,70 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
     }
   }
 
+  // Resolved before anything reads them: a published `.aar` reaches a classpath as the `classes.jar` of the
+  // directory `android-libraries` explodes it into, and `elide classpath` resolves dependencies without running
+  // that target. Listing those paths before the first build would hand the language server jars that are not
+  // there, so the target is run — once, and only when an entry actually names a directory that is missing.
+  const classpaths = new Map<string, string[]>();
+  for (const { setName } of sets) {
+    opts.onProgress?.(`Resolving classpath: ${name}.${setName}`);
+    classpaths.set(setName, await cli.classpath(setName, "compile", run));
+  }
+  const fileExists = opts.exists ?? existsSync;
+  const missing = [...classpaths.values()].flat().some((entry) => explodedAndroidLibrary(entry) && !fileExists(entry));
+  if (missing) {
+    opts.onProgress?.(`Unpacking Android libraries: ${name}`);
+    try {
+      await cli.build([ANDROID_LIBRARIES_TASK], run);
+    } catch (e) {
+      warnings.push(
+        `Could not unpack the project's published Android libraries (elide build ${ANDROID_LIBRARIES_TASK}): ${e instanceof Error ? e.message : String(e)}. Their classes resolve once the project is built.`,
+      );
+    }
+  }
+
+  // The Android framework and the generated `R` classes reach a compile only as *provided* entries: the device
+  // carries the framework and the APK's own dex carries `R`, so neither is on the compile or runtime classpath the
+  // model is otherwise built from. Without them an editor resolves no `android.*` import and no resource
+  // identifier, which is most of an Android source file.
+  const provided = new Map<string, string[]>();
+  if (manifest.android) {
+    // `R` is listed only once the target that compiles it has run, since the classpath is read from its recorded
+    // output. Running it is cheap (it links resources that a build links anyway) and is the difference between a
+    // freshly opened project resolving `R` and reporting it as unknown.
+    const rTasks = Object.keys(manifest.androidTargets)
+      .filter((artifact) => !fileExists(androidRClasses(root, artifact)))
+      .map(androidRTask);
+    if (rTasks.length > 0) {
+      opts.onProgress?.(`Generating Android resource identifiers: ${name}`);
+      try {
+        await cli.build(rTasks, run);
+      } catch (e) {
+        warnings.push(
+          `Could not generate the project's Android resource identifiers (elide build ${rTasks.join(" ")}): ${e instanceof Error ? e.message : String(e)}. \`R\` resolves once the project is built.`,
+        );
+      }
+    }
+    for (const { setName } of sets) {
+      opts.onProgress?.(`Resolving Android platform: ${name}.${setName}`);
+      try {
+        provided.set(setName, await cli.classpath(setName, "provided", run));
+      } catch (e) {
+        // An unresolvable platform is a reason to resolve less, never to fail the sync: the rest of the model —
+        // sources, siblings, Maven libraries — is what it was before the Android pipeline had anything to say.
+        warnings.push(
+          `Could not resolve the Android platform classpath of ${setName} (elide classpath ${setName}:provided): ${e instanceof Error ? e.message : String(e)}. \`android.*\` imports and \`R\` will not resolve.`,
+        );
+      }
+    }
+  }
+
   const modules: ModuleModel[] = [];
   const compileLibs = new Map<string, string[]>();
   const artifacts = new Map<string, ArtifactOutput[]>();
   const used = new Set<string>();
   for (const { setName, set, kind } of sets) {
-    opts.onProgress?.(`Resolving classpath: ${name}.${setName}`);
-    const entries = await cli.classpath(setName, "compile", run);
+    const entries = classpaths.get(setName) ?? [];
     const outputs: ArtifactOutput[] = [];
     const names: string[] = [];
     for (const entry of entries) {
@@ -242,6 +313,13 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
         if (!warnings.includes(warning)) warnings.push(warning);
         continue;
       }
+      const libName = ctx.libraries.nameFor(path.resolve(cli.projectRoot, entry));
+      if (!names.includes(libName)) names.push(libName);
+      used.add(libName);
+    }
+    // A provided entry is a library and nothing else: the framework and `R` are built by no project of the
+    // workspace, so neither can name an artifact the sibling wiring would resolve.
+    for (const entry of provided.get(setName) ?? []) {
       const libName = ctx.libraries.nameFor(path.resolve(cli.projectRoot, entry));
       if (!names.includes(libName)) names.push(libName);
       used.add(libName);
@@ -342,7 +420,9 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
       compileSdk: settings.compileSdk,
       minSdk: settings.minSdk ?? settings.compileSdk,
       ...(sdkRoot ? { sdkRoot } : {}),
-      avd: settings.device.avd ?? name,
+      // The build names the AVD after the manifest's declared name, not the directory's: a project that declares
+      // neither a name nor an AVD boots `elide-android`, and a row offering to boot something else would lie.
+      avd: settings.device.avd ?? manifest.name ?? DEFAULT_AVD_NAME,
       targets: Object.entries(manifest.androidTargets).map(([key, declared]) => ({
         name: key,
         kind: declared.kind,
@@ -423,12 +503,18 @@ function wireProjectDependencies(projects: readonly ResolvedProject[]): void {
 /**
  * The libraries of every project of a workspace, named once: two projects resolving the same JAR name the same
  * library, and two different JARs never share a name.
+ *
+ * A coordinate is the identity when the entry's path carries one. A published `.aar` is exploded into the build
+ * directory of each project that consumes it, so one archive reaches a workspace as several paths; naming them
+ * apart would list the same dependency twice and give the language server two copies of it.
  */
 class LibraryRegistry {
   private readonly byPath = new Map<string, LibraryModel>();
   private readonly byName = new Map<string, LibraryModel>();
+  private readonly byCoordinate = new Map<string, LibraryModel>();
 
   constructor(
+    /** Maven repository the entries resolve from, absolute: where the sources of an exploded `.aar` are. */
     private readonly librariesRoot: string,
     private readonly exists?: (p: string) => boolean,
   ) {}
@@ -439,11 +525,17 @@ class LibraryRegistry {
     const existing = this.byPath.get(abs);
     if (existing) return existing.name;
     const lib = libraryFor(abs, this.librariesRoot, this.exists);
+    const sameCoordinate = lib.coordinate !== undefined ? this.byCoordinate.get(lib.coordinate) : undefined;
+    if (sameCoordinate) {
+      this.byPath.set(abs, sameCoordinate);
+      return sameCoordinate.name;
+    }
     let candidate = lib.name;
     for (let i = 2; this.byName.has(candidate); i++) candidate = `${lib.name} (${i})`;
     lib.name = candidate;
     this.byPath.set(abs, lib);
     this.byName.set(candidate, lib);
+    if (lib.coordinate !== undefined) this.byCoordinate.set(lib.coordinate, lib);
     return candidate;
   }
 

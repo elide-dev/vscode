@@ -63,15 +63,25 @@ function optionArgs(name: string, value: ElideOptionValue): string[] {
 }
 
 /**
+ * `elide build` takes its targets and its options in one `trailing_var_arg` positional (`[TARGET|OPTION]…`), so an
+ * option only reaches the build once a target has been typed: clap sees a leading `--device` as an argument it does
+ * not know and refuses the invocation. The subcommand's own flags (`--inspect`, `--no-cache`) are scanned out of
+ * that same list, so trailing them is safe, and the one order that works for every option is targets first.
+ */
+const OPTIONS_AFTER_ARGS = "build";
+
+/**
  * Complete argument vector for `elide <command>`.
  *
- * Flags and options come before the positional arguments, which is the order `elide run` documents
- * (`elide run [FLAGS] [FILE] [-- SCRIPT_ARGS]`) and which `build` and `test` accept in any order.
+ * Flags come first, which is the order `elide run` documents (`elide run [FLAGS] [FILE] [-- SCRIPT_ARGS]`).
+ * Options follow the positional arguments for `build` ({@link OPTIONS_AFTER_ARGS}) and precede them otherwise,
+ * since `run`, `test` and `install` declare theirs as flags of their own.
  */
 export function elideInvocationArgs(command: string, options: ElideInvocationOptions = {}): string[] {
   const argv = [command, ...elideFlagArgs(options.flags)];
-  for (const [name, value] of Object.entries(options.options ?? {})) argv.push(...optionArgs(name, value));
-  argv.push(...(options.args ?? []));
+  const optionArgv = Object.entries(options.options ?? {}).flatMap(([name, value]) => optionArgs(name, value));
+  if (command === OPTIONS_AFTER_ARGS) argv.push(...(options.args ?? []), ...optionArgv);
+  else argv.push(...optionArgv, ...(options.args ?? []));
   if (options.programArgs && options.programArgs.length > 0) argv.push("--", ...options.programArgs);
   return argv;
 }

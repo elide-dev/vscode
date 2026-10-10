@@ -33,7 +33,9 @@ and a pinned (`&version=`) link.
 
 Opening a folder that contains `elide.pkl` runs a **sync**:
 
-1. `elide manifest` — the resolved project manifest as JSON (source sets, Kotlin compiler options, entrypoints).
+1. `elide project export` — the resolved project manifest as JSON (source sets, Kotlin compiler options,
+   entrypoints). Elide 1.5 answers the same document to `elide manifest`, which 1.6 retired; the reported version
+   decides which is run.
 2. `elide install` — only when the lockfile (`.dev/elide.lock*.bin`) is older than the manifest.
 3. `elide classpath <source set>:compile` for every compilable source set.
 4. `workspace.json` is written at the workspace folder root in the Kotlin LSP's JSON workspace format (one module per
@@ -229,18 +231,30 @@ A manifest declaring an `android` block builds for Android. Elide drives `aapt2`
 directly — no Gradle, no new subcommand — so every step is a build target of the ordinary graph and the extension
 reaches all of them through `elide build`.
 
-The sync reads two things beyond the usual manifest decoding:
+The sync reads three things beyond the usual manifest decoding:
 
 - The `android` block (compile and minimum API level, the declared SDK, the virtual device) and every `AndroidApk` /
-  `AndroidAar` entry of `artifacts`, which become the project model's `android` section.
-- The resource and asset directories of each artifact (declared, else `src/main/res` and `src/main/assets` when they
-  exist), added as resource roots of the source sets that artifact packages, so `res/` is part of the module the
-  Kotlin LSP imports rather than an unclaimed directory.
+  `AndroidAab` / `AndroidAar` entry of `artifacts`, which become the project model's `android` section.
+- The resource, asset and native-library directories of each artifact (declared, else `src/main/res`,
+  `src/main/assets` and `src/main/jniLibs` when they exist), added as resource roots of the source sets that
+  artifact packages, so `res/` is part of the module the Kotlin LSP imports rather than an unclaimed directory.
+- The **provided** classpath of each source set, which is where an Android build puts the platform `android.jar`
+  and the generated `R` classes: the device carries the framework and the APK's own dex carries `R`, so neither is
+  on the compile or runtime classpath the rest of the model is built from, and without them nothing `android.*`
+  and no resource identifier resolves. `R` is listed only once the target that compiles it has run, so a sync that
+  does not find it runs `elide build android-r-<artifact>` first.
 
 An application consuming a workspace sibling's Android library reads that library's **staged** `classes.jar`
 (`<lib>/.dev/android/<artifact>/classes.jar`), never its published `.aar`. That path is recognized the same way a
 sibling JAR under `.dev/artifacts/` is, so the application's modules depend on the library's modules and navigation
 crosses the project boundary without building anything.
+
+A **published** `.aar` is a dependency rather than a sibling's output. Elide unpacks each one into
+`.dev/android/libraries/<group>/<artifact>/<version>/` and puts the `classes.jar` inside it on the classpath, so
+the extension names the library by the coordinate that path spells out and attaches the `-sources.jar` of the
+archive from the Maven repository — the same library the jar of a non-Android dependency would be. Resolving a
+classpath does not unpack anything, so a sync that finds a directory missing runs `elide build android-libraries`
+once before building the model; without it the language server would be handed jars that are not there.
 
 The SDK is located the way a build locates it: `android.sdk` in the manifest, then `$ANDROID_HOME`, then
 `$ANDROID_SDK_ROOT`, then the platform's own install location (`~/Library/Android/sdk`, `~/Android/Sdk`,
@@ -254,9 +268,9 @@ an emulator or in a state that cannot take an install), and the project-wide dev
 | Action | Invocation |
 | --- | --- |
 | Run an APK | `elide build android-run-<artifact>`, plus `--device=<serial>` when a device is picked, or `android-run-emulator-<artifact>` for the project's AVD. With nothing attached the plain target runs, which boots the emulator itself. |
-| Debug an APK | `elide build android-debug-<artifact>`, which installs it, launches it waiting for a debugger and forwards its JDWP socket; the extension attaches to the port the target announces. |
+| Debug an APK | `elide build android-debug-<artifact>`, which installs it, launches it waiting for a debugger and forwards its JDWP socket; the extension attaches to the port the target announces. The APK must carry `android:debuggable="true"` — nothing injects it, and the target reports an APK that does not. |
 | Build an APK, AAB or AAR | `elide build <artifact>` → `.dev/artifacts/<name>.apk` / `.aab` / `.aar` |
-| Open the R8 mapping | A `minify = true` artifact gets a mapping row beside it, which opens `.dev/artifacts/<name>-mapping.txt` — the only way to read a stack trace from a shrunk build. |
+| Open the R8 mapping | A `minify = true` artifact gets a mapping row beside it, which opens `.dev/artifacts/<name>-mapping.txt` — publishing it with `elide build android-mapping-<artifact>` when it is not there, since building the artifact alone does not — the only way to read a stack trace from a shrunk build. |
 | Start / stop the emulator | `elide build android-emulator` (`--no-window` when `elide.android.emulatorWindow` is off), `elide build android-emulator-stop` |
 | Create the AVD | `elide build android-avd` |
 | Create the signing keystore | `elide build android-keystore-<artifact>` |

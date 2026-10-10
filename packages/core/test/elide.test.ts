@@ -1,10 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  ElideCli,
   ElideNotFoundError,
   InvalidElideHomeError,
+  distributionAt,
   lockfileDigest,
   lockfilesIn,
   outermostManifests,
@@ -113,5 +115,72 @@ describe("lockfileDigest", () => {
   test("a project without lockfiles digests to a constant", async () => {
     expect(await lockfileDigest(path.dirname(projectDev()))).toBe(await lockfileDigest(path.dirname(projectDev())));
     expect(await lockfilesIn(path.dirname(projectDev()))).toEqual([]);
+  });
+});
+
+describe("ElideCli.manifest", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * A CLI reporting `version` that records every argv it is given and answers `answers`, refusing the other
+   * manifest command the way a release that no longer carries it does.
+   */
+  const cliReporting = (version: string, answers: "manifest" | "project" | "both" | "none" = "both") => {
+    const home = mkdtempSync(path.join(tmpdir(), "elide-home-"));
+    const root = mkdtempSync(path.join(tmpdir(), "elide-proj-"));
+    dirs.push(home, root);
+    const log = path.join(root, "argv.log");
+    const answered = answers === "both" ? "manifest|project" : answers === "none" ? "--nothing" : answers;
+    mkdirSync(path.join(home, "bin"));
+    writeFileSync(
+      path.join(home, "bin", "elide"),
+      `#!/bin/sh
+echo "$*" >> "${log}"
+case "$1" in
+  --version) echo "${version}" ;;
+  ${answered}) echo '{"name":"app"}' ;;
+  *) echo "elide $1: removed" >&2; exit 2 ;;
+esac
+`,
+    );
+    chmodSync(path.join(home, "bin", "elide"), 0o755);
+    return {
+      cli: new ElideCli(distributionAt(home), root),
+      argv: (): string[] => readFileSync(log, "utf8").trim().split("\n"),
+    };
+  };
+
+  test("1.6 and newer export the project; an older release keeps the command it retired", async () => {
+    const recent = cliReporting("1.6.1+abc1234");
+    expect((await recent.cli.manifest()).name).toBe("app");
+    expect(recent.argv()).toEqual(["--version", "project export"]);
+
+    const older = cliReporting("1.5.4+abc1234");
+    expect((await older.cli.manifest()).name).toBe("app");
+    expect(older.argv()).toEqual(["--version", "manifest"]);
+  });
+
+  test("the version is asked once, however often the CLI is driven", async () => {
+    const { cli, argv } = cliReporting("1.6.1+abc1234");
+    await cli.manifest();
+    await cli.manifest();
+    expect(argv()).toEqual(["--version", "project export", "project export"]);
+  });
+
+  test("a version that does not match the binary is answered by the other command, once", async () => {
+    // A wrapper reporting an old version in front of a release that retired `manifest`, which is what a stub does.
+    const { cli, argv } = cliReporting("1.4.0+stub", "project");
+    expect((await cli.manifest()).name).toBe("app");
+    await cli.manifest();
+    expect(argv()).toEqual(["--version", "manifest", "project export", "project export"]);
+  });
+
+  test("a project neither command can describe fails with the error of the one its version named", async () => {
+    const { cli, argv } = cliReporting("1.6.1+abc1234", "none");
+    await expect(cli.manifest()).rejects.toThrow(/project export/);
+    expect(argv()).toEqual(["--version", "project export", "manifest"]);
   });
 });
