@@ -14,6 +14,8 @@ export interface Manifest {
   scripts: Record<string, string>;
   jvm?: JvmSettings;
   kotlin?: KotlinSettings;
+  /** The `android` block, when the project declares one; its presence is what makes a project an Android one. */
+  android?: AndroidSettings;
   sources: Record<string, SourceSet>;
   dependencies: { maven?: { localRepository?: string } };
   toolchain: { engines: Record<string, string> };
@@ -27,6 +29,8 @@ export interface Manifest {
   projectReferences: ProjectReference[];
   /** JAR artifacts, keyed by the name they are declared under. */
   jars: Record<string, JarArtifact>;
+  /** `Android.AndroidApk` and `Android.AndroidAar` artifacts, keyed by the name they are declared under. */
+  androidTargets: Record<string, AndroidArtifact>;
 }
 
 /**
@@ -48,6 +52,57 @@ export interface JarArtifact {
   name?: string;
   /** Source sets packaged into the JAR; empty means the default one. */
   sources: string[];
+}
+
+/**
+ * The `android` block: which SDK the project builds against, and the virtual device its run targets boot.
+ *
+ * A manifest declaring this block builds for Android — the pipeline is keyed off its presence, not off the artifact
+ * kinds — so a project may declare it and no Android artifact at all, which compiles against the platform.
+ */
+export interface AndroidSettings {
+  /** Declared SDK root, read against the project root; absent falls back to the environment and the conventional location. */
+  sdk?: string;
+  /** API level the project compiles, links and dexes against. */
+  compileSdk: number;
+  /** Oldest API level the dex output runs on; absent dexes for {@link compileSdk}. */
+  minSdk?: number;
+  /** Build-tools release supplying `aapt2`, `d8`, `zipalign` and `apksigner`; absent resolves one from the installation. */
+  buildTools?: string;
+  device: AndroidDeviceSettings;
+}
+
+/** An ABI an emulator system image is built for. */
+export type AndroidAbi = "arm64-v8a" | "x86_64" | "armeabi-v7a" | "x86";
+
+/** The `android.device` block: the virtual device `android-avd`, `android-emulator` and `android-run-*` drive. */
+export interface AndroidDeviceSettings {
+  /** AVD name; absent takes the project's own name. */
+  avd?: string;
+  /** System image in `sdkmanager` package form; absent derives one from the compile SDK and the host ABI. */
+  systemImage?: string;
+  /** ABI of the derived system image; ignored when {@link systemImage} is declared. */
+  abi?: AndroidAbi;
+  /** Hardware profile the AVD is cut from, as `avdmanager list device` names it. */
+  deviceProfile: string;
+}
+
+/** What an Android artifact publishes: an application package, or a library archive. */
+export type AndroidArtifactKind = "apk" | "aar";
+
+/** An `Android.AndroidApk` or `Android.AndroidAar` entry of the manifest's `artifacts`. */
+export interface AndroidArtifact {
+  kind: AndroidArtifactKind;
+  /** Output file name, which overrides the `<key>.apk` / `<key>.aar` Elide derives. */
+  name?: string;
+  /** Source sets packaged into the artifact; empty means the default one. */
+  sources: string[];
+  /** Android manifest of the artifact, relative to the project root. */
+  manifestFile: string;
+  /** Resource directories `aapt2` compiles; empty means `src/main/res` when it exists. */
+  resources: string[];
+  /** Directories packaged verbatim under `assets/`; empty means `src/main/assets` when it exists. */
+  assets: string[];
 }
 
 export interface JvmSettings {
@@ -154,6 +209,58 @@ function decodeJars(v: unknown): Record<string, JarArtifact> {
     jars[key] = { ...(typeof artifact.name === "string" ? { name: artifact.name } : {}), sources: strings(artifact.sources) };
   }
   return jars;
+}
+
+/** `@type` of an `Android.AndroidApk` artifact, and of an `Android.AndroidAar` one. */
+const ANDROID_APK_TAG = "elide.android.AndroidApk";
+const ANDROID_AAR_TAG = "elide.android.AndroidAar";
+
+/** Android manifest an artifact declaring none is built from, and the hardware profile its AVD is cut from. */
+const DEFAULT_ANDROID_MANIFEST = "src/main/AndroidManifest.xml";
+const DEFAULT_DEVICE_PROFILE = "pixel_6";
+
+const ANDROID_ABIS: readonly AndroidAbi[] = ["arm64-v8a", "x86_64", "armeabi-v7a", "x86"];
+
+function decodeAndroidTargets(v: unknown): Record<string, AndroidArtifact> {
+  const targets: Record<string, AndroidArtifact> = {};
+  if (!isObject(v)) return targets;
+  for (const [key, artifact] of Object.entries(v)) {
+    if (!isObject(artifact)) continue;
+    const tag = typeTag(artifact);
+    const kind: AndroidArtifactKind | undefined = tag === ANDROID_APK_TAG ? "apk" : tag === ANDROID_AAR_TAG ? "aar" : undefined;
+    if (!kind) continue;
+    targets[key] = {
+      kind,
+      ...(typeof artifact.name === "string" ? { name: artifact.name } : {}),
+      sources: strings(artifact.sources),
+      manifestFile: typeof artifact.manifestFile === "string" ? artifact.manifestFile : DEFAULT_ANDROID_MANIFEST,
+      resources: strings(artifact.resources),
+      assets: strings(artifact.assets),
+    };
+  }
+  return targets;
+}
+
+/**
+ * The `android` block. `compileSdk` is the one field the schema requires, so a block without it is not one the CLI
+ * would have accepted and is read as no block at all.
+ */
+function decodeAndroid(v: unknown): AndroidSettings | undefined {
+  if (!isObject(v) || typeof v.compileSdk !== "number") return undefined;
+  const device = isObject(v.device) ? v.device : {};
+  const abi = typeof device.abi === "string" ? ANDROID_ABIS.find((a) => a === device.abi) : undefined;
+  return {
+    ...(typeof v.sdk === "string" ? { sdk: v.sdk } : {}),
+    compileSdk: v.compileSdk,
+    ...(typeof v.minSdk === "number" ? { minSdk: v.minSdk } : {}),
+    ...(typeof v.buildTools === "string" ? { buildTools: v.buildTools } : {}),
+    device: {
+      ...(typeof device.avd === "string" ? { avd: device.avd } : {}),
+      ...(typeof device.systemImage === "string" ? { systemImage: device.systemImage } : {}),
+      ...(abi ? { abi } : {}),
+      deviceProfile: typeof device.deviceProfile === "string" ? device.deviceProfile : DEFAULT_DEVICE_PROFILE,
+    },
+  };
 }
 
 function decodeSourceSet(v: unknown): SourceSet | undefined {
@@ -278,6 +385,7 @@ export function decodeManifest(text: string): Manifest {
     scripts: stringMap(raw.scripts),
     jvm,
     kotlin,
+    android: decodeAndroid(raw.android),
     sources,
     dependencies: {
       maven: maven ? { localRepository: typeof maven.localRepository === "string" ? maven.localRepository : undefined } : undefined,
@@ -286,5 +394,6 @@ export function decodeManifest(text: string): Manifest {
     workspaceMembers: isObject(raw.workspace) ? strings(raw.workspace.members) : [],
     projectReferences: decodeProjectReferences(maven),
     jars: decodeJars(raw.artifacts),
+    androidTargets: decodeAndroidTargets(raw.artifacts),
   };
 }

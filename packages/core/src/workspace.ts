@@ -1,12 +1,15 @@
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { MANIFEST_NAME, OUTPUT_DIR } from "./elide.js";
-import type { JarArtifact, Manifest } from "./manifest.js";
+import type { AndroidArtifact, JarArtifact, Manifest } from "./manifest.js";
 import { pklBlock, pklStrings } from "./pkl.js";
 import { isPathUnder, normalizePath } from "./sourceRoots.js";
 
 /** Directory under {@link OUTPUT_DIR} that `elide build` writes a project's artifacts to. */
 export const ARTIFACTS_DIR = "artifacts";
+
+/** Directory under {@link OUTPUT_DIR} that the Android pipeline stages each artifact's work in. */
+export const ANDROID_STAGE_DIR = "android";
 
 /** Source set Elide packages into a JAR that names none. */
 export const DEFAULT_SOURCE_SET = "main";
@@ -17,15 +20,18 @@ export function projectName(manifest: Manifest, root: string): string {
 }
 
 /**
- * The project root whose build wrote `entry`, when that path is an Elide build output (`<root>/.dev/artifacts/…`),
- * and `undefined` for anything else. The innermost output directory wins: a workspace root holding a member's
- * checkout has its own `.dev` above the member's.
+ * The project root whose build wrote `entry`, when that path is an Elide build output — a published artifact under
+ * `<root>/.dev/artifacts/…`, or an Android artifact's staged output under `<root>/.dev/android/…`, which is how a
+ * sibling consumes an Android library. `undefined` for anything else. The innermost output directory wins: a
+ * workspace root holding a member's checkout has its own `.dev` above the member's.
  */
 export function artifactProjectRoot(entry: string): string | undefined {
   const normalized = normalizePath(path.resolve(entry));
-  const marker = `/${OUTPUT_DIR}/${ARTIFACTS_DIR}/`;
-  const at = normalized.lastIndexOf(marker);
-  return at < 0 ? undefined : normalized.slice(0, at);
+  let deepest = -1;
+  for (const dir of [ARTIFACTS_DIR, ANDROID_STAGE_DIR]) {
+    deepest = Math.max(deepest, normalized.lastIndexOf(`/${OUTPUT_DIR}/${dir}/`));
+  }
+  return deepest < 0 ? undefined : normalized.slice(0, deepest);
 }
 
 /**
@@ -122,6 +128,11 @@ export interface ArtifactOutput {
   project: string;
   /** Name the artifact is written under; absent when the entry names no artifact directory of its own. */
   name?: string;
+  /**
+   * Whether the entry named an Android artifact's staged output rather than a published one. The two are keyed
+   * differently: a published JAR carries its declared output name, a staged Android artifact its manifest key.
+   */
+  staged?: boolean;
 }
 
 /**
@@ -132,55 +143,78 @@ export interface ArtifactOutput {
  * than a library — it may not even exist yet — and the IDE can only act on the sources behind it. Both the lexical
  * and the real form of every project root are indexed, because the CLI resolves symlinks on its way (`/tmp` is
  * `/private/tmp` on macOS) while the IDE holds the path the folder was opened with.
+ *
+ * An Android library reaches a sibling as the `classes.jar` it stages (`…/.dev/android/<artifact>/classes.jar`)
+ * rather than as its published `.aar`, so that staging directory is indexed as well.
  */
 export class ArtifactIndex {
-  private readonly dirs: { dir: string; project: string }[];
+  private readonly dirs: { dir: string; project: string; staged: boolean }[];
 
   constructor(projects: readonly { name: string; root: string }[], realpath: (p: string) => string = realpathOrSelf) {
     this.dirs = projects.flatMap(({ name, root }) => {
       const lexical = normalizePath(path.resolve(root));
-      return [...new Set([lexical, normalizePath(realpath(lexical))])].map((r) => ({ dir: `${r}/${OUTPUT_DIR}/${ARTIFACTS_DIR}`, project: name }));
+      return [...new Set([lexical, normalizePath(realpath(lexical))])].flatMap((r) => [
+        { dir: `${r}/${OUTPUT_DIR}/${ARTIFACTS_DIR}`, project: name, staged: false },
+        { dir: `${r}/${OUTPUT_DIR}/${ANDROID_STAGE_DIR}`, project: name, staged: true },
+      ]);
     });
   }
 
   /**
-   * The artifact `entry` names, or `undefined` when it names a library. Elide writes an artifact to
-   * `<kind>/<name>/` below the project's artifact directory, which is all the entry carries about it.
+   * The artifact `entry` names, or `undefined` when it names a library. Elide publishes an artifact to
+   * `<kind>/<name>/` below the project's artifact directory and stages an Android one directly under its own key,
+   * which is all either entry carries about it.
    */
   resolve(entry: string): ArtifactOutput | undefined {
     const normalized = normalizePath(path.resolve(entry));
     const match = this.dirs.find(({ dir }) => isPathUnder(normalized, dir));
     if (!match) return undefined;
-    const name = normalized.slice(match.dir.length + 1).split("/")[1];
-    return { project: match.project, ...(name ? { name } : {}) };
+    const parts = normalized.slice(match.dir.length + 1).split("/");
+    const name = match.staged ? parts[0] : parts[1];
+    return { project: match.project, ...(name ? { name } : {}), ...(match.staged ? { staged: true } : {}) };
   }
 }
 
 /**
- * The source sets of `manifest` backing the JAR a `project(…)` reference names, or `[]` when it resolves to no JAR
- * the manifest declares. A reference naming no artifact resolves against a project declaring exactly one JAR, the
- * way the CLI resolves it; one declaring several is a manifest error the CLI reports.
+ * Artifacts of `manifest` a dependency block can consume, keyed as they are declared: a JAR, or an Android library
+ * archive, whose classes reach a classpath the same way. An APK is not one — nothing compiles against it.
  */
-export function referencedSourceSets(manifest: Manifest, artifact: string | undefined): string[] {
-  const jars = Object.values(manifest.jars);
-  const jar = artifact === undefined ? (jars.length === 1 ? jars[0] : undefined) : manifest.jars[artifact];
-  return jar ? packagedSourceSets(manifest, jar) : [];
+function consumableArtifacts(manifest: Manifest): Record<string, JarArtifact | AndroidArtifact> {
+  const consumable: Record<string, JarArtifact | AndroidArtifact> = { ...manifest.jars };
+  for (const [key, target] of Object.entries(manifest.androidTargets)) if (target.kind === "aar") consumable[key] = target;
+  return consumable;
 }
 
 /**
- * The source sets of `manifest` backing the JAR the build writes under the output name `output`, or `[]` when the
- * manifest declares no such JAR. An artifact is written under its declared `name`, falling back to its key; an
- * entry that carries no name resolves the way an unnamed reference does.
+ * The source sets of `manifest` backing the artifact a `project(…)` reference names, or `[]` when it resolves to
+ * none the manifest declares. A reference naming no artifact resolves against a project declaring exactly one
+ * consumable artifact, the way the CLI resolves it; one declaring several is a manifest error the CLI reports.
  */
-export function sourceSetsForArtifactOutput(manifest: Manifest, output: string | undefined): string[] {
-  if (output === undefined) return referencedSourceSets(manifest, undefined);
-  const jar = Object.entries(manifest.jars).find(([key, j]) => (j.name ?? key) === output)?.[1];
+export function referencedSourceSets(manifest: Manifest, artifact: string | undefined): string[] {
+  const consumable = consumableArtifacts(manifest);
+  const declared = Object.values(consumable);
+  const target = artifact === undefined ? (declared.length === 1 ? declared[0] : undefined) : consumable[artifact];
+  return target ? packagedSourceSets(manifest, target) : [];
+}
+
+/**
+ * The source sets of `manifest` backing the artifact a classpath entry named, or `[]` when the manifest declares no
+ * such artifact. A JAR is published under its declared `name`, falling back to its key; an Android artifact stages
+ * under its key outright. An entry that carries no name resolves the way an unnamed reference does.
+ */
+export function sourceSetsForArtifactOutput(manifest: Manifest, output: ArtifactOutput | undefined): string[] {
+  if (output?.name === undefined) return referencedSourceSets(manifest, undefined);
+  if (output.staged) {
+    const target = manifest.androidTargets[output.name];
+    return target ? packagedSourceSets(manifest, target) : [];
+  }
+  const jar = Object.entries(manifest.jars).find(([key, j]) => (j.name ?? key) === output.name)?.[1];
   return jar ? packagedSourceSets(manifest, jar) : [];
 }
 
-/** The source sets `jar` packages: those it names which the manifest declares, else the default one. */
-function packagedSourceSets(manifest: Manifest, jar: JarArtifact): string[] {
-  const declared = jar.sources.filter((s) => s in manifest.sources);
+/** The source sets `artifact` packages: those it names which the manifest declares, else the default one. */
+export function packagedSourceSets(manifest: Manifest, artifact: JarArtifact | AndroidArtifact): string[] {
+  const declared = artifact.sources.filter((s) => s in manifest.sources);
   return declared.length > 0 ? declared : [DEFAULT_SOURCE_SET];
 }
 

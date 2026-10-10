@@ -1,10 +1,19 @@
 import path from "node:path";
+import { androidArtifactFile, androidContentDirs, androidSdkRoot } from "./android.js";
 import { ElideCli, MANIFEST_NAME, isLockfileCurrent, type RunOptions } from "./elide.js";
 import { resolveJdk, type Jdk, type ResolveJdkOptions } from "./jdk.js";
 import { DEFAULT_LIBRARIES_ROOT, libraryFor, type LibraryModel } from "./libraries.js";
-import { effectiveType, type Manifest, type SourceSetType } from "./manifest.js";
+import { effectiveType, type AndroidArtifactKind, type Manifest, type SourceSetType } from "./manifest.js";
 import { collectContentRoots, isPathUnder, normalizePath } from "./sourceRoots.js";
-import { ArtifactIndex, artifactProjectRoot, projectName, referencedSourceSets, sourceSetsForArtifactOutput, type ArtifactOutput } from "./workspace.js";
+import {
+  ArtifactIndex,
+  artifactProjectRoot,
+  packagedSourceSets,
+  projectName,
+  referencedSourceSets,
+  sourceSetsForArtifactOutput,
+  type ArtifactOutput,
+} from "./workspace.js";
 
 export type { LibraryModel } from "./libraries.js";
 
@@ -58,6 +67,35 @@ export interface ProjectModel {
   members: string[];
   /** Root of the workspace this project is a member of; absent for a workspace root or a standalone project. */
   workspaceRoot?: string;
+  /** What this project builds for Android; absent unless its manifest declares an `android` block. */
+  android?: AndroidProjectModel;
+}
+
+/**
+ * The Android side of a project: the platform it builds against, the SDK a build would use, and the artifacts the
+ * Android pipeline publishes for it.
+ */
+export interface AndroidProjectModel {
+  /** API level the project compiles, links and dexes against. */
+  compileSdk: number;
+  /** Oldest API level the dex output runs on; the compile level when the manifest declares none. */
+  minSdk: number;
+  /** Installed SDK the build would resolve, absent when none was found on this machine. */
+  sdkRoot?: string;
+  /** Virtual device `android-avd`, `android-emulator` and the emulator run targets drive. */
+  avd: string;
+  targets: AndroidTargetModel[];
+}
+
+/** One Android artifact of a project. */
+export interface AndroidTargetModel {
+  /** Manifest key: the build target `elide build` takes, and what the `android-run-*` targets are suffixed with. */
+  name: string;
+  kind: AndroidArtifactKind;
+  /** Archive `elide build <name>` publishes. */
+  output: string;
+  /** `AndroidManifest.xml` the artifact is built from. */
+  manifestFile: string;
 }
 
 export interface BuildModelOptions {
@@ -166,6 +204,17 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
     .map(([setName, set]) => ({ setName, set, kind: effectiveType(setName, set) }))
     .filter((s): s is typeof s & { kind: Exclude<SourceSetType, "other"> } => s.kind !== "other");
 
+  // `res/` and `assets/` are the artifact's, not a source set's: the manifest declares them per Android artifact,
+  // so each one contributes its directories to the source sets it packages, as resource roots of those modules.
+  const androidContent = new Map<string, string[]>();
+  for (const target of Object.values(manifest.androidTargets)) {
+    const dirs = androidContentDirs(root, target, opts.exists);
+    if (dirs.length === 0) continue;
+    for (const setName of packagedSourceSets(manifest, target)) {
+      androidContent.set(setName, [...(androidContent.get(setName) ?? []), ...dirs]);
+    }
+  }
+
   const modules: ModuleModel[] = [];
   const compileLibs = new Map<string, string[]>();
   const artifacts = new Map<string, ArtifactOutput[]>();
@@ -178,7 +227,8 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
     for (const entry of entries) {
       const output = ctx.artifacts.resolve(entry);
       if (output) {
-        if (!outputs.some((o) => o.project === output.project && o.name === output.name)) outputs.push(output);
+        const same = (o: ArtifactOutput) => o.project === output.project && o.name === output.name && o.staged === output.staged;
+        if (!outputs.some(same)) outputs.push(output);
         continue;
       }
       // An entry below some project's `.dev/artifacts` is a build output, not a library: one of a project this
@@ -207,7 +257,8 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
         excludedPatterns: crPath === root ? [...EXCLUDED_AT_ROOT] : [],
       });
     }
-    for (const [resRoot, folders] of collectContentRoots(cli.projectRoot, Object.values(set.resources))) {
+    const resourcePaths = [...Object.values(set.resources), ...(androidContent.get(setName) ?? [])];
+    for (const [resRoot, folders] of collectContentRoots(cli.projectRoot, resourcePaths)) {
       // resources may live outside every source content root, in which case they get one of their own
       let owner: ContentRootModel | undefined;
       for (const cr of contentRoots) {
@@ -276,9 +327,44 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
   const jdk = await resolveJdk(manifest, cli.dist, opts.jdk);
   if (!jdk) warnings.push("No JDK found for symbol resolution; set `elide.jdk.home` or `JAVA_HOME`.");
 
+  let android: AndroidProjectModel | undefined;
+  if (manifest.android) {
+    const settings = manifest.android;
+    const sdkRoot = androidSdkRoot({ declared: settings.sdk, projectRoot: root });
+    if (!sdkRoot) {
+      warnings.push(
+        "No Android SDK found; set `android.sdk` in elide.pkl, or `ANDROID_HOME`. Build targets still run and report what is missing.",
+      );
+    }
+    android = {
+      compileSdk: settings.compileSdk,
+      minSdk: settings.minSdk ?? settings.compileSdk,
+      ...(sdkRoot ? { sdkRoot } : {}),
+      avd: settings.device.avd ?? name,
+      targets: Object.entries(manifest.androidTargets).map(([key, declared]) => ({
+        name: key,
+        kind: declared.kind,
+        output: androidArtifactFile(root, key, declared.kind, declared.name),
+        manifestFile: normalizePath(path.resolve(root, declared.manifestFile)),
+      })),
+    };
+  }
+
   return {
     spec: project,
-    model: { root, name, elideVersion: ctx.elideVersion, jdk, kotlin, modules, libraries, entrypoints, warnings, members: [] },
+    model: {
+      root,
+      name,
+      elideVersion: ctx.elideVersion,
+      jdk,
+      kotlin,
+      modules,
+      libraries,
+      entrypoints,
+      warnings,
+      members: [],
+      ...(android ? { android } : {}),
+    },
     artifacts,
   };
 }
@@ -309,7 +395,7 @@ function wireProjectDependencies(projects: readonly ResolvedProject[]): void {
         // a project's own artifacts stand for its own source sets, which are already related by type
         if (output.project === project.spec.name) continue;
         const target = byName.get(output.project);
-        if (target) wire(consumer, target, sourceSetsForArtifactOutput(target.spec.manifest, output.name), scope);
+        if (target) wire(consumer, target, sourceSetsForArtifactOutput(target.spec.manifest, output), scope);
       }
     }
   }

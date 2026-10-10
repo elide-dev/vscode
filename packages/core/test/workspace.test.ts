@@ -50,6 +50,11 @@ describe("ArtifactIndex", () => {
     expect(index.resolve("/ws/model/.dev/artifacts/jar")).toEqual({ project: "model" });
     expect(index.resolve("/elsewhere/model/.dev/artifacts/jar/model/model.jar")).toBeUndefined();
   });
+
+  test("an Android library reaches a sibling as the classes.jar it stages, keyed by the artifact's own name", () => {
+    expect(index.resolve("/ws/app/../model/.dev/android/ui/classes.jar")).toEqual({ project: "model", name: "ui", staged: true });
+    expect(index.resolve("/private/ws/model/.dev/android/ui/classes.jar")).toEqual({ project: "model", name: "ui", staged: true });
+  });
 });
 
 describe("source sets behind an artifact", () => {
@@ -74,10 +79,28 @@ describe("source sets behind an artifact", () => {
   });
 
   test("a classpath entry resolves by the output name the JAR is written under", () => {
-    expect(sourceSetsForArtifactOutput(fat, "app-all")).toEqual(["main", "extra"]);
-    expect(sourceSetsForArtifactOutput(fat, "slim")).toEqual(["main"]);
-    expect(sourceSetsForArtifactOutput(fat, "fat")).toEqual([]);
-    expect(sourceSetsForArtifactOutput(model, undefined)).toEqual(["main"]);
+    expect(sourceSetsForArtifactOutput(fat, { project: "app", name: "app-all" })).toEqual(["main", "extra"]);
+    expect(sourceSetsForArtifactOutput(fat, { project: "app", name: "slim" })).toEqual(["main"]);
+    expect(sourceSetsForArtifactOutput(fat, { project: "app", name: "fat" })).toEqual([]);
+    expect(sourceSetsForArtifactOutput(model, { project: "model" })).toEqual(["main"]);
+  });
+
+  const androidLib = manifestWith({
+    sources: { main: { paths: ["src/main/kotlin/**"] }, test: { paths: ["src/test/kotlin/**"] } },
+    android: { compileSdk: 36 },
+    artifacts: { ui: { "@type": "elide.android.AndroidAar" }, app: { "@type": "elide.android.AndroidApk" } },
+  });
+
+  test("an AAR is consumable through a project reference; the APK beside it is not", () => {
+    expect(referencedSourceSets(androidLib, "ui")).toEqual(["main"]);
+    expect(referencedSourceSets(androidLib, "app")).toEqual([]);
+    // One consumable artifact, so a reference naming none resolves against it even though two are declared.
+    expect(referencedSourceSets(androidLib, undefined)).toEqual(["main"]);
+  });
+
+  test("a staged Android entry resolves by the artifact's key, not by a published output name", () => {
+    expect(sourceSetsForArtifactOutput(androidLib, { project: "lib", name: "ui", staged: true })).toEqual(["main"]);
+    expect(sourceSetsForArtifactOutput(androidLib, { project: "lib", name: "ui" })).toEqual([]);
   });
 });
 
