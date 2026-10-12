@@ -7,11 +7,13 @@ import {
   elideInvocationArgs,
   isPathUnder,
   jvmTestNamePattern,
+  loadCoverage,
   mergeElideInvocationOptions,
   normalizePath,
   parseTapLabel,
   resolveElideDistribution,
   scanJvmTestSource,
+  type FileCoverageData,
   type ScannedTestClass,
   type TapDiagnostics,
   type TapEvent,
@@ -33,12 +35,15 @@ const STDERR_TAIL_LINES = 20;
 
 type Outcome = "passed" | "failed" | "skipped" | "errored";
 
-/** Item ids grouped by outcome, filled while a run reports results. */
-export type TestRunSummary = Record<Outcome, string[]>;
+/**
+ * Item ids grouped by outcome, filled while a run reports results; a coverage run adds the covered and total
+ * statements of every file it published.
+ */
+export type TestRunSummary = Record<Outcome, string[]> & { coverage?: Record<string, { covered: number; total: number }> };
 
 /** What `activate` exposes for the extension-host integration test. */
 export interface ElideTestApi {
-  runAll(): Promise<TestRunSummary>;
+  runAll(options?: { coverage?: boolean }): Promise<TestRunSummary>;
 }
 
 /** Item ids: `p:<root>` project, `c:<root>:<binaryName>` class, `m:<root>:<binaryName>#<method>` test method. */
@@ -65,7 +70,8 @@ interface RunGroup {
  *
  * Discovery is static: the test source roots of the project model are scanned for JUnit declarations, so the tree is
  * populated without compiling or running anything. A run shells out to `elide test --reporter=tap` and maps the TAP
- * stream back onto those items; the Debug profile runs the same command under a JDWP agent and attaches.
+ * stream back onto those items; the Debug profile runs the same command under a JDWP agent and attaches, and the
+ * Coverage profile adds `--coverage` and publishes the reports the run leaves under `.dev`.
  */
 export class ElideTestController implements vscode.Disposable {
   private readonly controller = vscode.tests.createTestController("elide", "Elide");
@@ -73,6 +79,9 @@ export class ElideTestController implements vscode.Disposable {
   private readonly rescans = new Map<string, NodeJS.Timeout>();
   /** Discovery is serialized: a refresh triggered while one runs waits for it instead of racing its item updates. */
   private queue: Promise<void> = Promise.resolve();
+  /** Statement details of each published file, read back when the editor asks for them. */
+  private readonly coverageDetails = new WeakMap<vscode.FileCoverage, vscode.StatementCoverage[]>();
+  private readonly coverageProfile: vscode.TestRunProfile;
 
   constructor(
     private readonly workspace: ElideWorkspace,
@@ -84,6 +93,8 @@ export class ElideTestController implements vscode.Disposable {
     const handler = (request: vscode.TestRunRequest, token: vscode.CancellationToken) => void this.run(request, token);
     this.controller.createRunProfile("Run", vscode.TestRunProfileKind.Run, handler, true);
     this.controller.createRunProfile("Debug", vscode.TestRunProfileKind.Debug, handler, true);
+    this.coverageProfile = this.controller.createRunProfile("Run with Coverage", vscode.TestRunProfileKind.Coverage, handler, true);
+    this.coverageProfile.loadDetailedCoverage = async (_run, file) => this.coverageDetails.get(file) ?? [];
 
     const watcher = vscode.workspace.createFileSystemWatcher(SOURCE_GLOB);
     this.subscriptions.push(
@@ -108,14 +119,14 @@ export class ElideTestController implements vscode.Disposable {
   }
 
   /** Run every discovered test of every project, reporting the outcome per item id (used by the integration test). */
-  async runAll(): Promise<TestRunSummary> {
+  async runAll(options: { coverage?: boolean } = {}): Promise<TestRunSummary> {
     await this.refreshAll();
     const include = [...this.controller.items].map(([, item]) => item);
-    const summary: TestRunSummary = { passed: [], failed: [], skipped: [], errored: [] };
+    const summary: TestRunSummary = { passed: [], failed: [], skipped: [], errored: [], ...(options.coverage ? { coverage: {} } : {}) };
     if (include.length === 0) return summary;
     const cancellation = new vscode.CancellationTokenSource();
     try {
-      await this.run(new vscode.TestRunRequest(include), cancellation.token, summary);
+      await this.run(new vscode.TestRunRequest(include, undefined, options.coverage ? this.coverageProfile : undefined), cancellation.token, summary);
     } finally {
       cancellation.dispose();
     }
@@ -320,9 +331,10 @@ export class ElideTestController implements vscode.Disposable {
     }
 
     const pattern = group.wholeProject ? undefined : jvmTestNamePattern(group.targets);
+    const coverage = request.profile?.kind === vscode.TestRunProfileKind.Coverage;
     // `elide.flags` and `elide.test.options` apply here too, except for the reporter: this run parses TAP.
     const invocation = mergeElideInvocationOptions(configuredInvocation(settings, "test"), {
-      options: { ...(pattern ? { "test-name-pattern": pattern } : {}), reporter: "tap" },
+      options: { ...(pattern ? { "test-name-pattern": pattern } : {}), reporter: "tap", ...(coverage ? { coverage: true } : {}) },
     });
     const argv = elideInvocationArgs("test", invocation);
     this.ui.log(`test: ${dist.bin} ${argv.join(" ")} (cwd ${project.root})`);
@@ -396,6 +408,8 @@ export class ElideTestController implements vscode.Disposable {
     };
 
     const debug = request.profile?.kind === vscode.TestRunProfileKind.Debug;
+    // Report mtimes can be truncated to the second; anything older than the run belongs to an earlier one.
+    const startedAt = Math.floor(Date.now() / 1000) * 1000;
     let failure: string | undefined;
     if (debug) {
       const attachType = await resolveAttachType(settings);
@@ -444,6 +458,7 @@ export class ElideTestController implements vscode.Disposable {
     }
 
     parser.end();
+    if (coverage && !token.isCancellationRequested) await this.publishCoverage(run, group, startedAt, summary);
     if (token.isCancellationRequested || failure === undefined) return;
     // A failing test already exits non-zero: only a run that reported nothing at all is an error of its own.
     if (sawResult) {
@@ -452,6 +467,47 @@ export class ElideTestController implements vscode.Disposable {
     }
     const message = new vscode.TestMessage(failure);
     for (const leaf of leaves) this.settle(run, summary, "errored", leaf, message);
+  }
+
+  /**
+   * Publish the coverage the run left in each project it covered: guest LCOV, and JVM coverage when the manifest asks
+   * for a JaCoCo XML report. JaCoCo execution data alone cannot be read without the JaCoCo analyzer, so its presence
+   * only earns a hint.
+   */
+  private async publishCoverage(run: vscode.TestRun, group: RunGroup, startedAt: number, summary?: TestRunSummary): Promise<void> {
+    let published = 0;
+    let reports = 0;
+    for (const item of group.coveredItems) {
+      const project = this.workspace.projectAt(item.id.slice(2));
+      if (!project) continue;
+      let loaded;
+      try {
+        loaded = await loadCoverage(project.root, sourceDirs(project), startedAt);
+      } catch (e) {
+        this.ui.log(`coverage: failed to read the reports of ${project.root}: ${describe(e)}`);
+        continue;
+      }
+      reports += loaded.reports.lcov.length + loaded.reports.jacocoXml.length + loaded.reports.jacocoExec.length;
+      for (const file of loaded.files) {
+        const details = statementsOf(file);
+        const coverage = vscode.FileCoverage.fromDetails(vscode.Uri.file(file.path), details);
+        this.coverageDetails.set(coverage, details);
+        run.addCoverage(coverage);
+        if (summary?.coverage) summary.coverage[file.path] = { covered: coverage.statementCoverage.covered, total: coverage.statementCoverage.total };
+        published++;
+      }
+      if (loaded.reports.jacocoExec.length > 0 && loaded.reports.jacocoXml.length === 0) {
+        run.appendOutput(
+          terminalText(
+            `JVM coverage of ${project.model?.name ?? project.root} was recorded as JaCoCo execution data only; add ` +
+              "`Coverage.xmlReport()` to `coverage.jvm.reports` in elide.pkl (`Jvm.xmlReport()` to `testing.coverage.jvm.reports` " +
+              "before Elide 1.6) to show it in the editor.",
+          ),
+        );
+      }
+    }
+    this.ui.log(`coverage: ${published} file(s) published`);
+    if (reports === 0) run.appendOutput(terminalText("No coverage report was found under .dev/reports/coverage."));
   }
 
   private settle(run: vscode.TestRun, summary: TestRunSummary | undefined, outcome: Outcome, item: vscode.TestItem, message?: vscode.TestMessage): void {
@@ -522,6 +578,24 @@ function testDirs(project: ElideProject): string[] {
     }
   }
   return [...dirs];
+}
+
+/** Absolute source and test source roots of a synced project, where JaCoCo's package-relative sources are looked up. */
+function sourceDirs(project: ElideProject): string[] {
+  const dirs = new Set<string>();
+  for (const module of project.model?.modules ?? []) {
+    for (const contentRoot of module.contentRoots) {
+      for (const sourceRoot of contentRoot.sourceRoots) if (sourceRoot.kind === "source" || sourceRoot.kind === "test") dirs.add(sourceRoot.path);
+    }
+  }
+  return [...dirs];
+}
+
+/** One statement per covered line, with its branches; the reports number lines from 1. */
+function statementsOf(file: FileCoverageData): vscode.StatementCoverage[] {
+  return file.lines.map(
+    (l) => new vscode.StatementCoverage(l.hits, new vscode.Position(l.line - 1, 0), l.branches.map((b) => new vscode.BranchCoverage(b.hits))),
+  );
 }
 
 /** Text of a file, preferring the editor's buffer so unsaved declarations are discovered too. */

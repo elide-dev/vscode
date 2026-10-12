@@ -29,7 +29,8 @@ Elide's build, run, test, and debug commands are available from the editor.
   `workspace.json`; each editor uses its own.
 - **Tasks.** `elide build`, `elide test`, `elide install`, and one run task per manifest entrypoint.
 - **Test Explorer.** JUnit tests of the project's test source roots in the **Testing** view, run and debugged through
-  `elide test --reporter=tap` with live results, failure messages and stack-trace locations.
+  `elide test --reporter=tap` with live results, failure messages and stack-trace locations. **Run with Coverage**
+  shows the run's LCOV and JaCoCo XML reports in the editor's coverage gutter and Test Coverage view.
 - **Elide sidebar.** An activity-bar view with each project's entrypoints, tasks, build targets (`elide build
   --inspect`), source sets and dependencies; run, debug, build and sync straight from the tree.
 - **New project wizard.** `Elide: New Project…` lists the templates of the installed CLI (`elide init --templates`),
