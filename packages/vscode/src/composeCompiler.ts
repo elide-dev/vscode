@@ -124,6 +124,10 @@ function portableKotlinArguments(args: readonly string[]): boolean {
       if (option.value === undefined && args[++index] === undefined) return false;
       continue;
     }
+    if (option.flag === "-P" && (option.value ?? args[index + 1]) === "plugin:androidx.compose.compiler.plugins.kotlin:sourceInformation=true") {
+      if (option.value === undefined) index++;
+      continue;
+    }
     if (option.flag === "-Xplugin") {
       const value = option.value ?? args[++index];
       // Custom plugins may read implicit cwd-relative configuration, even with an absolute jar.
@@ -206,6 +210,17 @@ export class ComposeCompiler {
       if (args.some((arg) => arg.startsWith("@"))) throw new Error(`Compose preview requires expanded compiler arguments in ${record}; nested @argfiles are not supported.`);
       if (args.includes("plugin:org.jetbrains.kotlin.kapt3:aptMode=stubsAndApt")) {
         throw new Error(`The compiler record at ${record} contains only the annotation-processing pass. Complete an Elide build to record the final compilation.`);
+      }
+      if (tool === "kotlinc" && args.some((arg) => /(?:compose-compiler|compiler-hosted).*\.jar/.test(arg))) {
+        const sourceInformation = "plugin:androidx.compose.compiler.plugins.kotlin:sourceInformation=";
+        // Preview-only instrumentation: do not alter the project's build arguments or outputs.
+        let configured = false;
+        args = args.map((arg) => {
+          if (!arg.startsWith(sourceInformation) && !arg.startsWith(`-P=${sourceInformation}`)) return arg;
+          configured = true;
+          return `${arg.startsWith("-P=") ? "-P=" : ""}${sourceInformation}true`;
+        });
+        if (!configured) args.push("-P", `${sourceInformation}true`);
       }
       const project = path.dirname(dev);
       const explicit = new Set(args.filter((arg) => !arg.startsWith("-") && sourceExtension.test(arg)).map((arg) => path.resolve(project, arg)));

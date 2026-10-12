@@ -234,12 +234,13 @@ error rather than falling back to a device.
 Discovery reads compiled annotations, so constant annotation values, repeated `@Preview`, member functions,
 multi-preview meta-annotations and `@PreviewParameter` providers reach the renderer. The gallery displays each
 configuration/provider value, respecting options such as dimensions, background, locale, font scale and UI mode.
-Rendering errors appear with the affected preview rather than leaving an old image on screen.
+Rendering errors expose diagnostics on the affected card while retaining its last successful image.
 
 Kotlin/Java changes refresh live, including unsaved editor buffers. Persistent compiler workers incrementally
 compile private source snapshots; persistent layoutlib workers render the new classes. The gallery keeps its
 previous images while updating, publishes only the latest edit, and reports elapsed time from change detection
-through webview paint. Compiler failures clear the stale gallery and show diagnostics.
+through webview paint. Compiler failures retain the gallery, scroll position and selection, with diagnostics in
+**Details** rather than replacing the images. Fresh PNGs decode before publication; unchanged pixels are reused.
 Preview compilation does not overwrite workspace sources or build outputs.
 Large galleries use up to six renderer JVMs, limited to half the host's available CPUs.
 Source ownership follows the synced manifest's source selections. Adding the first Java source
@@ -255,18 +256,32 @@ Opening a preview builds JVM classes and linked resources, but does not wait for
   `elide.android.composePreview.keepAliveMinutes` (default 10; `0` stops them with the panel). Reopening reuses them.
   The backend holds several GB of memory while warm; at most one unused backend is kept.
 - **Build outputs as the first generation.** When the last build's classes match the current sources, they are
-  displayed directly instead of a cold compile; the incremental compiler warms in the background afterwards.
+  displayed directly instead of a cold compile; the incremental compiler warms in the background afterwards,
+  adding source information for layout inspection without delaying the first image.
 - **Stored galleries.** Each gallery is stored under its exact inputs (build fingerprint, source text, renderer and
   JDK), so reopening an unchanged file, even after restarting VS Code, or undoing an edit paints immediately.
 
 Until the build finishes, the status reads *verifying build…*; if the build changes resources, dependencies or
 compiler settings, the gallery re-renders. Saving `.xml` or `.pkl` files, changing the project model, or pressing
-**Rebuild preview** performs that build again. Projects using generated annotation-processor sources require a save
-and full rebuild; unsaved changes display a save prompt rather than stale generated code. A first preview of a
+**Rebuild** performs that build again. Projects using generated annotation-processor sources require a save
+and full rebuild; unsaved changes show a save prompt and retain the last successful preview. A first preview of a
 project that was never built, or whose sources changed since its last build without a prewarmed backend, waits
 for the build and a cold renderer.
 
-**Fit previews** constrains large images to the panel. Builds do not steal editor focus.
+The gallery follows VS Code's light, dark and high-contrast themes. **Fit** constrains images to their cards;
+toggle it for actual pixel size. Builds do not steal editor focus.
+
+**Inspect** overlays Compose's measured layout bounds. Click a component to select it, then choose **Open source**,
+double-click, or press Enter to navigate to its call site, including calls in workspace libraries. The component
+picker and **Parent** control select enclosing components. With a preview focused, arrow keys cycle components,
+Home/End select the first/last, and Alt+Up selects an enclosing component.
+
+Inspection uses real tooling bounds and compiler UTF-16 source ranges, not image recognition or guessed source
+matches. Only locations uniquely resolved in the preview's compiler inputs are selectable; dependency internals
+and ambiguous source files are omitted. Bounds are rectangular measured layouts, not arbitrary painted contours.
+Private preview compilation enables Compose source information without changing the application's build.
+When displaying last-build classes, outlines may arrive after the background compiler warms.
+Source navigation pauses during edits or failed builds so retained images cannot open stale source ranges.
 
 These are design-time snapshots, not interactive animation/click simulation or in-process Live Edit. Each render
 loads fresh project classes into the retained rendering runtime. Components requiring device services, application initialization or unsupported native libraries

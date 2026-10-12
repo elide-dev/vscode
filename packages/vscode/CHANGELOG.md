@@ -18,6 +18,11 @@ All notable changes to the Elide extension are documented here. The format follo
   focusing a preview file prewarms the renderer and compilers (`elide.android.composePreview.prewarm`), closed
   panels keep them warm (`elide.android.composePreview.keepAliveMinutes`), the last build's classes stand in for the
   cold first compile, and galleries are stored by their exact inputs for instant reopen.
+- Compose layout inspection with real measured component outlines, source navigation across workspace modules,
+  keyboard selection and enclosing-component controls. A theme-aware preview toolbar, responsive cards,
+  fit/actual-size controls and a diagnostics drawer replace the plain gallery controls. Compilation and rendering
+  failures retain last-good images; decoded updates preserve unchanged image elements and scroll position,
+  and stale source locations cannot navigate.
 - Android app bundles and dynamic-feature modules in the project model and sidebar, including delivery mode,
   base/feature relationships, module build targets and isolated feature source/resource roots.
 - Dagger/Hilt editor support: run available annotation-processing compile targets during sync and import

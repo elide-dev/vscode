@@ -1,9 +1,10 @@
-import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { composePreviewBuildTargets, resolveElideDistribution, type AndroidTargetModel, type ProjectModel } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { ComposeBackends, type ComposeBackend, type PreviewBuild, type PreviewRequest } from "./composeBackend.js";
 import type { PreviewImage } from "./composeRender.js";
+import { previewHtml } from "./composePreviewHtml.js";
+import { resolvePreviewSource, type PreviewSourceTarget } from "./composeSource.js";
 import { readConfig } from "./config.js";
 import { ensureComposeRuntime, installedComposeRuntime } from "./composeRuntime.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
@@ -76,7 +77,10 @@ class PreviewSession implements vscode.Disposable {
   private pending = false;
   private closed = false;
   private lastStatus = "Starting preview…";
+  private statusState: "working" | "ready" | "error" = "working";
   private images: PreviewImage[] = [];
+  private sourceTargets = new Map<string, PreviewSourceTarget>();
+  private failedRevision = -1;
   private model: ProjectModel | undefined;
   private rebuild = true;
   private revision = 0;
@@ -106,13 +110,22 @@ class PreviewSession implements vscode.Disposable {
       this.panel.onDidDispose(() => this.dispose()),
       this.panel.webview.onDidReceiveMessage((message: unknown) => {
         if (!message || typeof message !== "object" || !("type" in message)) return;
-        if (message.type === "ready") { this.status(this.lastStatus); this.publishImages(); }
+        if (message.type === "ready") {
+          this.status(this.lastStatus, this.statusState);
+          this.publishImages(true);
+          void this.panel.webview.postMessage({ type: "invalidate", revision: this.revision });
+        }
         if (message.type === "refresh") this.schedule(true);
+        if (message.type === "navigate" && "revision" in message && message.revision === this.revision
+          && this.imageRevision === this.revision && "imageId" in message && "nodeId" in message
+          && typeof message.imageId === "string" && typeof message.nodeId === "string") {
+          void this.navigate(message.imageId, message.nodeId, this.revision);
+        }
         if (message.type === "painted" && "revision" in message && message.revision === this.revision
-          && this.imageRevision === this.revision && this.images.length) {
+          && this.imageRevision === this.revision && this.failedRevision !== this.revision && this.images.length) {
           const errors = this.images.filter((image) => image.error).length;
           const elapsed = Math.round(performance.now() - this.detectedAt);
-          this.summary = `${this.images.length - errors} rendered${errors ? ` · ${errors} failed (see diagnostics below)` : ""} · ${elapsed} ms · host layoutlib`;
+          this.summary = `${this.images.length - errors} rendered${errors ? ` · ${errors} failed (open Details)` : ""} · ${elapsed} ms · host layoutlib`;
           this.renderedStatus();
           this.paints.fire({ source: this.source.fsPath, images: this.images.length, failed: errors, elapsedMs: elapsed, verifying: this.verifying });
         }
@@ -178,25 +191,46 @@ class PreviewSession implements vscode.Disposable {
     this.timer = setTimeout(() => void this.refresh(), 0);
   }
 
-  private status(text: string): void {
+  private status(text: string, state: "working" | "ready" | "error" = "working"): void {
     this.lastStatus = text;
-    if (!this.closed) void this.panel.webview.postMessage({ type: "status", text });
+    this.statusState = state;
+    if (!this.closed) void this.panel.webview.postMessage({ type: "status", text, state,
+      retained: state !== "ready" && this.images.some((image) => image.data) });
   }
 
   private renderedStatus(): void {
-    if (this.summary) this.status(`${this.summary} · ${this.verifying ? "verifying build…" : "live edits"}`);
+    if (this.summary) this.status(`${this.summary} · ${this.verifying ? "verifying build…" : "live edits"}`,
+      this.verifying ? "working" : this.images.some((image) => image.error) ? "error" : "ready");
   }
 
-  private publishImages(): void {
-    if (!this.closed) void this.panel.webview.postMessage({ type: "images", images: this.images, revision: this.imageRevision });
+  private publishImages(replay = false): void {
+    if (!this.closed) void this.panel.webview.postMessage({ type: "images", images: this.images, revision: this.imageRevision,
+      ...(replay ? { currentRevision: this.revision } : {}) });
   }
 
   /** Publish images for `revision` unless a newer change superseded them. */
-  private show(images: PreviewImage[], revision: number, verifying: boolean): boolean {
-    if (this.closed || revision !== this.revision) return false;
+  private async show(images: PreviewImage[], revision: number, verifying: boolean, request: PreviewRequest): Promise<boolean> {
+    if (this.closed || revision !== this.revision || revision === this.failedRevision) return false;
     if (!images.length) throw new Error("No compiled @Preview functions found in this file.");
+    const sources = await this.backend.compiler?.sources(request.documents);
+    if (this.closed || revision !== this.revision || revision === this.failedRevision) return false;
+    const targets = new Map<string, PreviewSourceTarget>();
     this.verifying = verifying;
-    this.images = images;
+    // A failing component keeps its own last good pixels; other successful cards can still update.
+    const previous = new Map(this.images.map((image) => [image.id, image]));
+    this.images = images.map((image) => {
+      const retained = image.error ? previous.get(image.id) : undefined;
+      if (retained?.data) return { ...image, data: retained.data, width: retained.width, height: retained.height, nodes: [] };
+      // Keep inspectable call sites in project sources, not Compose's implementation internals.
+      const nodes = image.nodes?.filter((node) => {
+        const target = node.source && sources && resolvePreviewSource(node.source, sources.files);
+        if (!target) return false;
+        targets.set(`${image.id}\0${node.id}`, target);
+        return true;
+      });
+      return { ...image, nodes };
+    });
+    this.sourceTargets = targets;
     this.imageRevision = revision;
     this.publishImages();
     return true;
@@ -217,7 +251,14 @@ class PreviewSession implements vscode.Disposable {
   private warm(request: PreviewRequest): void {
     if (!this.warmPending) return;
     this.warmPending = false;
-    this.backend.warm(request).catch(() => {});
+    const revision = this.revision;
+    const enrich = this.backend.compiler?.seeded;
+    this.backend.warm(request).then(async () => {
+      // Last-build classes paint immediately; their private compile adds source locations afterwards.
+      if (enrich && !this.closed && revision === this.revision) {
+        await this.show(await this.backend.preview(request), revision, false, request);
+      }
+    }).catch(() => {});
   }
 
   private async refresh(): Promise<void> {
@@ -240,14 +281,18 @@ class PreviewSession implements vscode.Disposable {
         const renderer = backend.startRenderer(runtime, javaFor(model));
         renderer.catch(() => {});
         this.status(`Preparing ${artifact.name} preview classes and resources…`);
-        const built = this.build(model, artifact, build.models);
+        let buildFailed = false;
+        const built = this.build(model, artifact, build.models).catch((error: unknown) => {
+          buildFailed = true;
+          throw error;
+        });
         built.catch(() => {});
         // While Elide confirms the build, paint a stored gallery of these exact inputs, or render
         // from a warm compiler or the last build's classes.
         const provisional = (async () => {
           if (!backend.compiler) await backend.configure(build, request.documents, false);
           const images = await backend.preview(request, false);
-          return images ? this.show(images, revision, true) : false;
+          return images && !buildFailed ? this.show(images, revision, true, request) : false;
         })().catch(() => false);
         await built;
         this.warmPending = true;
@@ -268,21 +313,33 @@ class PreviewSession implements vscode.Disposable {
         }
         await renderer;
       }
-      if (!this.show(await backend.preview(request), revision, false)) return;
+      if (!await this.show(await backend.preview(request), revision, false, request)) return;
       this.warm(request);
     } catch (error) {
       if (!this.closed && revision === this.revision) {
-        this.images = [];
-        this.imageRevision = revision;
+        this.failedRevision = revision;
         this.verifying = false;
         this.summary = undefined;
-        this.publishImages();
-        this.status(`Preview failed: ${error instanceof Error ? error.message : String(error)}`);
+        this.status(`Preview failed: ${error instanceof Error ? error.message : String(error)}`, "error");
       }
     } finally {
       this.task = undefined;
       this.building = false;
       if (!this.closed && this.pending) { clearTimeout(this.timer); void this.refresh(); }
+    }
+  }
+
+  private async navigate(imageId: string, nodeId: string, revision: number): Promise<void> {
+    const target = this.sourceTargets.get(`${imageId}\0${nodeId}`);
+    if (!target || this.closed || revision !== this.revision || revision === this.failedRevision) return;
+    try {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(target.file));
+      if (this.closed || revision !== this.revision || document.getText() !== target.content) return;
+      const selection = new vscode.Range(document.positionAt(target.offset), document.positionAt(target.offset + target.length));
+      const editor = await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, selection, preview: true });
+      editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    } catch (error) {
+      if (!this.closed) void vscode.window.showWarningMessage(`Cannot open Compose source: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -380,49 +437,3 @@ export function registerComposePreview(workspace: ElideWorkspace, context: vscod
   return { disposable, api: { onDidPaint: paints.event, onDidPrewarm: prewarmed.event } };
 }
 
-function previewHtml(): string {
-  const nonce = randomBytes(18).toString("base64");
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'"><style nonce="${nonce}">
-body { color: var(--vscode-foreground); font-family: var(--vscode-font-family); padding: 12px; }
-button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: none; padding: 6px 12px; cursor: pointer; }
-#status, pre { white-space: pre-wrap; overflow-wrap: anywhere; } #previews { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
-article { max-width: 100%; border: 1px solid var(--vscode-panel-border); padding: 12px; box-sizing: border-box; }
-h2 { font-size: 14px; margin: 0 0 8px; } small { display: block; margin-bottom: 12px; overflow-wrap: anywhere; }
-img { display: block; max-width: 100%; height: auto; } .fit img { max-height: 70vh; object-fit: contain; object-position: left top; }
-pre { color: var(--vscode-errorForeground); }
-</style></head><body><button id="refresh">Rebuild preview</button> <button id="fit">Fit previews</button><p id="status" role="status">Starting preview…</p><main id="previews"></main><script nonce="${nonce}">
-const api = acquireVsCodeApi(); const gallery = document.getElementById('previews'); const fit = document.getElementById('fit');
-let fitted = api.getState()?.fitted === true;
-function applyFit() { document.body.classList.toggle('fit', fitted); fit.textContent = fitted ? 'Actual size' : 'Fit previews'; }
-applyFit(); fit.onclick = () => { fitted = !fitted; api.setState({fitted}); applyFit(); };
-document.getElementById('refresh').onclick = () => api.postMessage({type:'refresh'});
-let revision = -1;
-window.addEventListener('message', async ({data}) => {
-  if(data.type === 'status') document.getElementById('status').textContent = data.text;
-  if(data.type === 'invalidate') { revision = data.revision; gallery.setAttribute('aria-busy', 'true'); }
-  if(data.type === 'images' && data.revision >= revision) {
-    revision = data.revision;
-    const cards = []; const decoded = [];
-    for (const preview of data.images) {
-      const card = document.createElement('article'); const title = document.createElement('h2'); title.textContent = preview.name; card.append(title);
-      const detail = document.createElement('small'); detail.textContent = preview.detail; card.append(detail);
-      if (preview.data) {
-        const image = document.createElement('img'); image.alt = preview.name;
-        image.src = 'data:image/png;base64,' + preview.data; card.append(image);
-        decoded.push(image.decode().catch(() => { image.alt = 'Could not decode preview image'; }));
-      }
-      if (preview.error) { const error = document.createElement('pre'); error.textContent = preview.error; card.append(error); }
-      cards.push(card);
-    }
-    await Promise.all(decoded);
-    if (revision !== data.revision) return;
-    gallery.replaceChildren(...cards);
-    gallery.setAttribute('aria-busy', 'false');
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (revision === data.revision) api.postMessage({type:'painted', revision});
-    }));
-  }
-});
-api.postMessage({type:'ready'});
-</script></body></html>`;
-}

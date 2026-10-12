@@ -26,11 +26,31 @@ interface CompiledPreview {
   methodParams: Record<string, string>[];
 }
 
+export interface PreviewLayoutNode {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  source?: {
+    fileName: string;
+    packageHash: number;
+    lineNumber: number;
+    offset: number;
+    length: number;
+  };
+}
+
 export interface PreviewImage {
+  id: string;
   name: string;
   detail: string;
   data?: string;
   error?: string;
+  width?: number;
+  height?: number;
+  nodes?: PreviewLayoutNode[];
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -48,14 +68,66 @@ function compiledPreview(value: unknown): value is CompiledPreview {
 }
 
 interface ScreenshotResult {
+  id: string;
   previewId: string;
   imagePath?: string;
   error?: unknown;
+  nodes?: unknown;
 }
 
 function screenshotResult(value: unknown): value is ScreenshotResult {
-  return object(value) && typeof value.previewId === "string"
+  return object(value) && typeof value.id === "string" && value.id.length > 0 && value.id.length <= 1024
+    && typeof value.previewId === "string"
     && (value.imagePath === undefined || typeof value.imagePath === "string");
+}
+
+function integer(value: unknown, minimum = 0): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= minimum && value <= 0x7fff_ffff;
+}
+
+/** Never forward unchecked renderer metadata to the webview or source resolver. */
+function layoutNodes(value: unknown, width: number, height: number): PreviewLayoutNode[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 2048) throw new Error("Invalid Compose layout metadata.");
+  const ids = new Set<string>();
+  for (const node of value) {
+    if (!object(node) || typeof node.id !== "string" || !node.id || node.id.length > 128 || ids.has(node.id)
+      || typeof node.name !== "string" || !node.name || node.name.length > 512
+      || !integer(node.x) || !integer(node.y) || !integer(node.width, 1) || !integer(node.height, 1)
+      || node.x + node.width > width || node.y + node.height > height) {
+      throw new Error("Invalid Compose layout bounds.");
+    }
+    ids.add(node.id);
+    const source = node.source;
+    if (source !== undefined && (!object(source)
+      || typeof source.fileName !== "string" || !source.fileName || source.fileName.length > 1024
+      || /[/\\\0]/.test(source.fileName)
+      || !integer(source.packageHash, -0x8000_0000) || !integer(source.lineNumber, -1)
+      || !integer(source.offset, -1) || !integer(source.length, -1)
+      || (source.offset >= 0 && source.length >= 0 && source.offset + source.length > 0x7fff_ffff))) {
+      throw new Error("Invalid Compose layout source location.");
+    }
+  }
+  return value as PreviewLayoutNode[];
+}
+
+/** Shared boundary for persisted gallery images and renderer messages. */
+export function isPreviewImage(value: unknown): value is PreviewImage {
+  if (!object(value) || typeof value.id !== "string" || !value.id || value.id.length > 1024
+    || typeof value.name !== "string" || typeof value.detail !== "string"
+    || (value.data !== undefined && typeof value.data !== "string")
+    || (value.error !== undefined && typeof value.error !== "string")) return false;
+  const hasDimensions = value.width !== undefined || value.height !== undefined;
+  if (hasDimensions && (!integer(value.width, 1) || !integer(value.height, 1))) return false;
+  if (value.nodes !== undefined) {
+    if (!integer(value.width, 1) || !integer(value.height, 1)) return false;
+    try {
+      layoutNodes(value.nodes, value.width, value.height);
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 interface PendingResponse {
@@ -187,11 +259,16 @@ class RenderWorker {
       }
       const previews = new Map(results.previews.map((preview) => [preview.previewId, preview]));
       const images: WorkerResult["images"] = [];
+      const imageIds = new Set<string>();
       const root = await realpath(outputFolder);
       for (const result of results.screenshotResults) {
         const preview = previews.get(result.previewId);
         if (!preview) throw new Error("Renderer returned an unknown preview identifier.");
-        const image: PreviewImage = { name: preview.name, detail: preview.methodFQN };
+        if (!result.id.startsWith(`${result.previewId}:`) || imageIds.has(result.id)) {
+          throw new Error("Renderer returned an invalid or duplicate image identifier.");
+        }
+        imageIds.add(result.id);
+        const image: PreviewImage = { id: result.id, name: preview.name, detail: preview.methodFQN };
         let weight = 1;
         if (result.error) image.error = JSON.stringify(result.error, null, 2);
         else if (result.imagePath) {
@@ -201,8 +278,15 @@ class RenderWorker {
             throw new Error("Renderer returned an image outside its output directory.");
           }
           const png = await readFile(file);
-          if (png.length < 24 || !png.subarray(0, 8).equals(pngSignature)) throw new Error("Renderer output is not a PNG image.");
-          weight += png.readUInt32BE(16) * png.readUInt32BE(20) / 1_000_000;
+          if (png.length < 24 || !png.subarray(0, 8).equals(pngSignature)
+            || png.toString("ascii", 12, 16) !== "IHDR") throw new Error("Renderer output is not a PNG image.");
+          const width = png.readUInt32BE(16);
+          const height = png.readUInt32BE(20);
+          if (!integer(width, 1) || !integer(height, 1)) throw new Error("Renderer output has invalid PNG dimensions.");
+          image.width = width;
+          image.height = height;
+          image.nodes = layoutNodes(result.nodes, width, height);
+          weight += width * height / 1_000_000;
           image.data = png.toString("base64");
         } else image.error = "Renderer returned neither an image nor a diagnostic.";
         images.push({ previewId: result.previewId, image, weight });

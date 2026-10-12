@@ -18,6 +18,7 @@ import com.intellij.openapi.util.Disposer;
 import java.io.*;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.awt.image.BufferedImage;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -67,6 +68,121 @@ class RenderServer {
     record Request(long id, List<String> classPath, List<String> projectClassPath, String namespace,
                    String resourceApkPath, String sourceFile, String packageName, String outputFolder,
                    int shardIndex, int shardCount, Map<String, Double> weights) {}
+
+    record LayoutSource(String fileName, int packageHash, int lineNumber, int offset, int length) {}
+    record LayoutNode(String id, String name, int x, int y, int width, int height, LayoutSource source) {}
+    record Screenshot(String id, String previewId, String methodFQN, String imagePath,
+                      ScreenshotError error, List<LayoutNode> nodes) {}
+
+    private static final int MAX_LAYOUT_NODES = 2048;
+    // ClassValue does not retain a discarded generation's class loader. All methods must come
+    // from the preview loader: Compose tooling/runtime types cannot cross that loader boundary.
+    private static final ClassValue<LayoutTooling> LAYOUT_TOOLING = new ClassValue<>() {
+        @Override protected LayoutTooling computeValue(Class<?> adapter) {
+            try {
+                return new LayoutTooling(adapter);
+            } catch (ReflectiveOperationException failure) {
+                throw new IllegalStateException("Compose layout inspection API is unavailable.", failure);
+            }
+        }
+    };
+
+    private static final class LayoutTooling {
+        final Field record;
+        final Method store, mapTree, name, bounds, location, left, top, right, bottom;
+        final Method sourceFile, packageHash, lineNumber, offset, length;
+        final Class<?> factoryType;
+        final java.lang.reflect.Constructor<?> cacheConstructor;
+
+        LayoutTooling(Class<?> adapter) throws ReflectiveOperationException {
+            var loader = adapter.getClassLoader();
+            record = adapter.getDeclaredField("slotTableRecord");
+            record.setAccessible(true);
+            store = loader.loadClass("androidx.compose.ui.tooling.CompositionDataRecord").getMethod("getStore");
+            factoryType = loader.loadClass("kotlin.jvm.functions.Function3");
+            var cache = loader.loadClass("androidx.compose.ui.tooling.data.ContextCache");
+            cacheConstructor = cache.getConstructor();
+            mapTree = loader.loadClass("androidx.compose.ui.tooling.data.SlotTreeKt").getMethod("mapTree",
+                    loader.loadClass("androidx.compose.runtime.tooling.CompositionData"), factoryType, cache);
+            var context = loader.loadClass("androidx.compose.ui.tooling.data.SourceContext");
+            name = context.getMethod("getName");
+            bounds = context.getMethod("getBounds");
+            location = context.getMethod("getLocation");
+            var rectangle = bounds.getReturnType();
+            left = rectangle.getMethod("getLeft");
+            top = rectangle.getMethod("getTop");
+            right = rectangle.getMethod("getRight");
+            bottom = rectangle.getMethod("getBottom");
+            var source = location.getReturnType();
+            sourceFile = source.getMethod("getSourceFile");
+            packageHash = source.getMethod("getPackageHash");
+            lineNumber = source.getMethod("getLineNumber");
+            offset = source.getMethod("getOffset");
+            length = source.getMethod("getLength");
+        }
+
+        void collect(Object adapter, int width, int height, List<LayoutNode> nodes) throws ReflectiveOperationException {
+            // Inspectable records all tables, including SubcomposeLayout/LazyColumn children.
+            // mapTree supplies real measured window-pixel bounds and compiler call locations,
+            // without materializing parameter values or enabling paintBounds/debug logging.
+            Object factory = Proxy.newProxyInstance(factoryType.getClassLoader(), new Class<?>[] { factoryType },
+                    (proxy, method, arguments) -> {
+                        if (!method.getName().equals("invoke")) {
+                            return switch (method.getName()) {
+                                case "hashCode" -> System.identityHashCode(proxy);
+                                case "equals" -> proxy == arguments[0];
+                                case "toString" -> "Compose layout collector";
+                                default -> throw new UnsupportedOperationException(method.getName());
+                            };
+                        }
+                        if (nodes.size() >= MAX_LAYOUT_NODES) return null;
+                        Object context = arguments[1];
+                        String label = (String) name.invoke(context);
+                        if (label == null || label.isBlank() || label.length() > 512) return null;
+                        Object box = bounds.invoke(context);
+                        int x = Math.max(0, (int) left.invoke(box));
+                        int y = Math.max(0, (int) top.invoke(box));
+                        int endX = Math.min(width, (int) right.invoke(box));
+                        int endY = Math.min(height, (int) bottom.invoke(box));
+                        if (endX <= x || endY <= y) return null;
+                        LayoutSource source = null;
+                        Object position = location.invoke(context);
+                        if (position != null) {
+                            String file = (String) sourceFile.invoke(position);
+                            if (file != null && !file.isBlank() && file.length() <= 1024) {
+                                // Keep -1 sentinels. Locations are UTF-16 offsets; the tooling
+                                // parser returns 1-based line numbers, despite its older KDoc.
+                                source = new LayoutSource(file, (int) packageHash.invoke(position),
+                                        (int) lineNumber.invoke(position), (int) offset.invoke(position),
+                                        (int) length.invoke(position));
+                            }
+                        }
+                        nodes.add(new LayoutNode("n" + nodes.size(), label, x, y, endX - x, endY - y, source));
+                        // Traversal is post-order and side-effect-only; no second tree allocation.
+                        return null;
+                    });
+            Object cache = cacheConstructor.newInstance();
+            for (Object table : (Iterable<?>) store.invoke(record.get(adapter))) {
+                if (nodes.size() >= MAX_LAYOUT_NODES) break;
+                mapTree.invoke(null, table, factory, cache);
+            }
+        }
+    }
+
+    private static void collectLayouts(List<com.android.ide.common.rendering.api.ViewInfo> views,
+                                       int width, int height, List<LayoutNode> nodes) {
+        for (var info : views) {
+            Object view = info.getViewObject();
+            if (view != null && view.getClass().getName().equals("androidx.compose.ui.tooling.ComposeViewAdapter")) {
+                try {
+                    LAYOUT_TOOLING.get(view.getClass()).collect(view, width, height, nodes);
+                } catch (ReflectiveOperationException failure) {
+                    throw new IllegalStateException("Unable to inspect Compose layout.", failure);
+                }
+            }
+            if (info.getChildren() != null) collectLayouts(info.getChildren(), width, height, nodes);
+        }
+    }
 
     RenderServer(String layoutlibPath) throws ReflectiveOperationException {
         this.layoutlibPath = layoutlibPath;
@@ -186,16 +302,17 @@ class RenderServer {
         }
     }
 
-    private List<PreviewScreenshotResult> renderPreview(ComposeScreenshot screenshot, String outputFolder) throws Exception {
+    private List<Screenshot> renderPreview(ComposeScreenshot screenshot, String outputFolder) throws Exception {
         var source = renderer.getModule();
         var element = screenshot.toPreviewElement(source);
         var layouts = element.resolveXmlLayouts().iterator();
-        var results = new ArrayList<PreviewScreenshotResult>();
+        var results = new ArrayList<Screenshot>();
         var service = (RenderService) renderServiceField.get(renderer);
         var base = (Configuration) baseConfigurationField.get(renderer);
         int index = 0;
         while (layouts.hasNext()) {
             String xml = layouts.next();
+            String imageId = screenshot.getPreviewId() + ":" + index;
             String relative = screenshot.getPreviewId().replace('.', '/') + "_" + index++ + ".png";
             // A task owns its module disposable. Share resource repositories, not disposable state.
             var module = new StandaloneRenderModelModule(source.getResourceRepositoryManager(), source.getInfo(),
@@ -217,7 +334,14 @@ class RenderServer {
                 }
                 var image = (BufferedImage) postProcessImage.invoke(renderer, configuration, result);
                 var error = (ScreenshotError) extractError.invoke(renderer, result, image);
+                var nodes = new ArrayList<LayoutNode>();
                 if (image != null && error == null) {
+                    var rendered = result;
+                    // Window coordinates already include density and system-UI insets. The
+                    // pinned renderer only masks device shape; it never scales/crops the PNG.
+                    task.runAsyncRenderActionWithSession(
+                            () -> collectLayouts(rendered.getRootViews(), image.getWidth(), image.getHeight(), nodes),
+                            5, TimeUnit.SECONDS).get(10, TimeUnit.SECONDS);
                     Path output = Path.of(outputFolder).resolve(relative);
                     Files.createDirectories(output.getParent());
                     try (var outputStream = new FileImageOutputStream(output.toFile())) {
@@ -229,10 +353,10 @@ class RenderServer {
                         }
                     }
                 }
-                results.add(new PreviewScreenshotResult(screenshot.getPreviewId(), screenshot.getMethodFQN(), relative, error));
+                results.add(new Screenshot(imageId, screenshot.getPreviewId(), screenshot.getMethodFQN(), relative, error, nodes));
             } catch (Exception failure) {
-                results.add(new PreviewScreenshotResult(screenshot.getPreviewId(), screenshot.getMethodFQN(), relative,
-                        new ScreenshotError(failure)));
+                results.add(new Screenshot(imageId, screenshot.getPreviewId(), screenshot.getMethodFQN(), relative,
+                        new ScreenshotError(failure), List.of()));
             } finally {
                 try {
                     if (task != null && result != null) {
@@ -260,7 +384,7 @@ class RenderServer {
             throw new IllegalArgumentException("Invalid renderer shard.");
         var previews = DiscoverPreviews.discover(new DiscoverPreviews.Settings(request.classPath(),
                 request.projectClassPath(), request.sourceFile(), request.packageName()));
-        var results = new ArrayList<PreviewScreenshotResult>();
+        var results = new ArrayList<Screenshot>();
         // Small files need only one layoutlib. Balance larger galleries by the previous images'
         // provider expansion counts and pixel area; adding a preview never changes gallery order.
         int shards = previews.size() < 6 ? 1 : request.shardCount();
@@ -293,9 +417,8 @@ class RenderServer {
                 generationLoader = null;
             }
         }
-        var serialized = new StringWriter();
-        JsonSerializationKt.writePreviewRenderingResult(serialized, new PreviewRenderingResult(null, results));
-        var response = JsonParser.parseString(serialized.toString()).getAsJsonObject();
+        var response = new JsonObject();
+        response.add("screenshotResults", JSON.toJsonTree(results));
         response.addProperty("id", request.id());
         response.add("previews", JSON.toJsonTree(previews));
         return response;

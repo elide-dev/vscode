@@ -293,6 +293,10 @@ configuration, member functions, multi-preview annotations and `@PreviewParamete
 including unsaved changes, use persistent incremental compilers and renderers. Resource/configuration saves
 rebuild the resource context; library previews use a consuming workspace application.
 
+The themed gallery retains its last good images through compilation errors and swaps decoded updates without
+blanking the canvas. Enable **Inspect** for measured layout outlines; select a component and open its source,
+including workspace-library call sites. Source navigation pauses while the displayed preview is out of date.
+
 The first preview downloads a pinned, SHA-256-verified renderer/runtime from Google Maven into extension storage.
 Subsequent previews reuse it offline. A matching-architecture JDK 17+ is required; supported extension hosts are
 macOS arm64/x64, Linux x64 and Windows x64. These are rendered snapshots, not interactive device mirroring or

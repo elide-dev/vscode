@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { composePreviewInputs, type AndroidTargetModel, type ProjectModel } from "@elide/ide-core";
 import { ComposeCompiler } from "./composeCompiler.js";
-import { ComposeRenderer, helperDigest, type PreviewImage } from "./composeRender.js";
+import { ComposeRenderer, helperDigest, isPreviewImage, type PreviewImage } from "./composeRender.js";
 import type { ComposeRuntime } from "./composeRuntime.js";
 import type { ComposeWorker } from "./composeWorker.js";
 
@@ -20,9 +20,7 @@ class Queue {
 }
 
 function previewImages(value: unknown): value is PreviewImage[] {
-  return Array.isArray(value) && value.every((image: unknown) => typeof image === "object" && image !== null
-    && typeof (image as PreviewImage).name === "string" && typeof (image as PreviewImage).detail === "string"
-    && ["string", "undefined"].includes(typeof (image as PreviewImage).data) && ["string", "undefined"].includes(typeof (image as PreviewImage).error));
+  return Array.isArray(value) && value.every(isPreviewImage) && new Set(value.map((image) => image.id)).size === value.length;
 }
 
 const STORED_GALLERIES = 48;
@@ -257,7 +255,8 @@ export class ComposeBackend {
   private async galleryKey(compiler: ComposeCompiler, sources: string, request: PreviewRequest): Promise<string | undefined> {
     const renderer = await this.rendererIdentity?.catch(() => undefined);
     if (!renderer) return undefined;
-    return createHash("sha256").update([compiler.fingerprint, sources, renderer, request.sourceFile, request.packageName].join("\0")).digest("hex");
+    return createHash("sha256").update([compiler.fingerprint, sources, renderer, request.sourceFile, request.packageName,
+      compiler.seeded ? "build-classes" : "preview-source-information"].join("\0")).digest("hex");
   }
 
   private async stored(compiler: ComposeCompiler, sources: string, request: PreviewRequest): Promise<PreviewImage[] | undefined> {
