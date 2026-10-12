@@ -136,6 +136,31 @@ describe("decoded Android manifest", () => {
   });
 });
 
+test("dynamic features retain their bundle relationship and stage modules rather than installable APKs", () => {
+  const manifest = decodeManifest(JSON.stringify({
+    android: { compileSdk: 36 },
+    artifacts: {
+      app: { "@type": "elide.android.AndroidAab", features: ["search"] },
+      search: {
+        "@type": "elide.android.AndroidFeature",
+        base: "app",
+        delivery: "on-demand",
+        sources: ["search"],
+        featureDependencies: ["shared"],
+      },
+    },
+  }));
+  expect(manifest.androidTargets.app?.features).toEqual(["search"]);
+  expect(manifest.androidTargets.search).toMatchObject({
+    kind: "feature", base: "app", delivery: "on-demand", sources: ["search"], featureDependencies: ["shared"],
+  });
+  expect(androidArtifactFile("/project", "search", "feature")).toBe(path.join("/project", ".dev", "android", "search", "search.zip"));
+  const feature = manifest.androidTargets.search!;
+  expect(androidContentDirs("/project", feature, () => true)).toEqual([]);
+  expect(androidContentDirs("/project", { ...feature, resources: ["features/search/res"] }, () => true))
+    .toEqual(["/project/features/search/res"]);
+});
+
 describe("android build targets", () => {
   test("each run mode names a target of its own", () => {
     expect(androidRunTask("app")).toBe("android-run-app");

@@ -11,6 +11,7 @@ import {
   androidSdkRoot,
   explodedAndroidLibrary,
 } from "./android.js";
+import { buildTasksOf, unqualifiedTaskName, type BuildTaskInfo } from "./buildTasks.js";
 import { ElideCli, MANIFEST_NAME, isLockfileCurrent, type RunOptions } from "./elide.js";
 import { resolveJdk, type Jdk, type ResolveJdkOptions } from "./jdk.js";
 import { DEFAULT_LIBRARIES_ROOT, libraryFor, type LibraryModel } from "./libraries.js";
@@ -42,10 +43,18 @@ export interface ModuleModel {
   /** `${projectName}.${sourceSet}`. */
   name: string;
   sourceSet: string;
+  /** Authoritative manifest selectors, relative to the owning project; never inferred content roots. */
+  sourcePaths?: string[];
   kind: Exclude<SourceSetType, "other">;
   contentRoots: ContentRootModel[];
   libraries: { name: string; scope: DependencyScope }[];
   moduleDeps: ModuleDependency[];
+  /** Exact declared JVM compilation targets, retained for host preview builds. */
+  compilationTargets?: string[];
+  /** Runtime entries from the CLI, excluding workspace artifacts represented by runtimeModuleDeps. */
+  runtimeClassPath?: string[];
+  /** Source-set and workspace dependencies actually present at runtime, never provided-only references. */
+  runtimeModuleDeps?: ModuleDependency[];
 }
 
 /** A dependency of one module on another, possibly one of a sibling project of the same workspace. */
@@ -69,7 +78,7 @@ export interface ProjectModel {
   name: string;
   elideVersion: string;
   jdk?: Jdk;
-  kotlin: { languageVersion?: string; apiVersion?: string; freeCompilerArgs: string[]; jvmTarget?: string };
+  kotlin: { languageVersion?: string; apiVersion?: string; freeCompilerArgs: string[]; jvmTarget?: string; compose?: boolean };
   modules: ModuleModel[];
   libraries: LibraryModel[];
   entrypoints: Entrypoint[];
@@ -100,15 +109,21 @@ export interface AndroidProjectModel {
 
 /** One Android artifact of a project. */
 export interface AndroidTargetModel {
-  /** Manifest key: the build target `elide build` takes, and what the `android-run-*` targets are suffixed with. */
+  /** Manifest artifact key; features build through `android-module-<name>` rather than a bare target. */
   name: string;
   kind: AndroidArtifactKind;
-  /** Archive `elide build <name>` publishes. */
+  /** Published archive, or the staged module ZIP for a dynamic feature. */
   output: string;
   /** `AndroidManifest.xml` the artifact is built from. */
   manifestFile: string;
+  /** Source sets selected by the artifact, before following their dependsOn edges. */
+  sourceSets?: string[];
   /** Obfuscation mapping `elide build <name>` publishes; absent unless the artifact minifies. */
   mapping?: string;
+  features?: string[];
+  base?: string;
+  delivery?: "install-time" | "on-demand";
+  featureDependencies?: string[];
 }
 
 export interface BuildModelOptions {
@@ -145,6 +160,7 @@ interface BuildContext {
   elideVersion: string;
   libraries: LibraryRegistry;
   artifacts: ArtifactIndex;
+  previewTasks?: BuildTaskInfo[];
 }
 
 /**
@@ -190,6 +206,9 @@ export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts
       opts.exists,
     ),
     artifacts: new ArtifactIndex(projects),
+    ...(projects.some((p) => p.manifest.android)
+      ? { previewTasks: await cli.buildInspect(run) }
+      : {}),
   };
   const resolved: ResolvedProject[] = [];
   for (const project of projects) resolved.push(await resolveProject(project, ctx));
@@ -198,8 +217,8 @@ export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts
   if (members.length > 0) {
     resolved[0]!.model.members = members;
     for (const r of resolved.slice(1)) r.model.workspaceRoot = root;
-    wireProjectDependencies(resolved);
   }
+  wireProjectDependencies(resolved);
   return resolved.map((r) => r.model);
 }
 
@@ -209,6 +228,7 @@ interface ResolvedProject {
   model: ProjectModel;
   /** Sibling artifacts each source set's classpath resolved, keyed by source set. */
   artifacts: Map<string, ArtifactOutput[]>;
+  runtimeArtifacts: Map<string, ArtifactOutput[]>;
 }
 
 async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<ResolvedProject> {
@@ -236,12 +256,16 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
   // that target. Listing those paths before the first build would hand the language server jars that are not
   // there, so the target is run — once, and only when an entry actually names a directory that is missing.
   const classpaths = new Map<string, string[]>();
-  for (const { setName } of sets) {
+  const runtimeClasspaths = new Map<string, string[]>();
+  for (const { setName, kind } of sets) {
     opts.onProgress?.(`Resolving classpath: ${name}.${setName}`);
     classpaths.set(setName, await cli.classpath(setName, "compile", run));
+    if (ctx.previewTasks && kind !== "test") {
+      runtimeClasspaths.set(setName, await cli.classpath(setName, "runtime", run));
+    }
   }
   const fileExists = opts.exists ?? existsSync;
-  const missing = [...classpaths.values()].flat().some((entry) => explodedAndroidLibrary(entry) && !fileExists(entry));
+  const missing = [...classpaths.values(), ...runtimeClasspaths.values()].flat().some((entry) => explodedAndroidLibrary(entry) && !fileExists(entry));
   if (missing) {
     opts.onProgress?.(`Unpacking Android libraries: ${name}`);
     try {
@@ -289,9 +313,24 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
     }
   }
 
+  if (manifest.hasAnnotationProcessors || manifest.android?.hilt) {
+    opts.onProgress?.(`Generating annotation processor sources: ${name}`);
+    try {
+      // Empty source sets have no compile task; requesting one prevents every target in the build from running.
+      const wanted = new Set(sets.map(({ setName }) => `compile-java-${setName}`));
+      const targets = buildTasksOf(await cli.buildInspect(run), name)
+        .filter((task) => wanted.has(unqualifiedTaskName(task)))
+        .map((task) => task.name);
+      if (targets.length > 0) await cli.build(targets, run);
+    } catch (e) {
+      warnings.push(`Could not generate annotation processor sources: ${e instanceof Error ? e.message : String(e)}. Build the project and sync again to resolve generated Dagger/Hilt declarations.`);
+    }
+  }
+
   const modules: ModuleModel[] = [];
   const compileLibs = new Map<string, string[]>();
   const artifacts = new Map<string, ArtifactOutput[]>();
+  const runtimeArtifacts = new Map<string, ArtifactOutput[]>();
   const used = new Set<string>();
   for (const { setName, set, kind } of sets) {
     const entries = classpaths.get(setName) ?? [];
@@ -326,6 +365,15 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
     }
     compileLibs.set(setName, names);
     artifacts.set(setName, outputs);
+    const runtimeEntries: string[] = [];
+    const runtimeOutputs: ArtifactOutput[] = [];
+    for (const entry of runtimeClasspaths.get(setName) ?? []) {
+      const absolute = path.resolve(root, entry);
+      const output = ctx.artifacts.resolve(absolute);
+      if (output) runtimeOutputs.push(output);
+      else runtimeEntries.push(absolute);
+    }
+    runtimeArtifacts.set(setName, runtimeOutputs);
 
     const sourceKind: SourceRootKind = kind === "test" ? "test" : "source";
     const resourceKind: SourceRootKind = kind === "test" ? "test-resource" : "resource";
@@ -335,6 +383,15 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
         path: crPath,
         sourceRoots: folders.map((f) => ({ path: f, kind: sourceKind })),
         excludedPatterns: crPath === root ? [...EXCLUDED_AT_ROOT] : [],
+      });
+    }
+    // Processor outputs are source roots, but kapt stubs are not: importing stubs duplicates user declarations.
+    for (const generator of ["java", "kapt"]) {
+      const generated = normalizePath(path.join(root, ".dev", "jvm", "generated-sources", setName, generator));
+      if (fileExists(generated)) contentRoots.push({
+        path: generated,
+        sourceRoots: [{ path: generated, kind: sourceKind }],
+        excludedPatterns: [],
       });
     }
     const resourcePaths = [...Object.values(set.resources), ...(androidContent.get(setName) ?? [])];
@@ -354,10 +411,18 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
     modules.push({
       name: `${name}.${setName}`,
       sourceSet: setName,
+      sourcePaths: [...set.paths],
       kind,
       contentRoots,
       libraries: names.map((n) => ({ name: n, scope: kind === "test" ? "test" : "compile" })),
       moduleDeps: [],
+      ...(ctx.previewTasks ? {
+        compilationTargets: buildTasksOf(ctx.previewTasks, name)
+          .filter((task) => ["java", "kotlin"].some((language) => unqualifiedTaskName(task) === `compile-${language}-${setName}`))
+          .map((task) => task.name),
+        runtimeClassPath: runtimeEntries,
+        runtimeModuleDeps: [],
+      } : {}),
     });
   }
 
@@ -381,6 +446,9 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
       if (target && target !== m) deps.add(target.name);
     }
     m.moduleDeps = [...deps].map((module) => ({ project: root, module, scope: "compile", exported: false }));
+    if (m.runtimeModuleDeps) {
+      m.runtimeModuleDeps = m.moduleDeps.filter((dep) => modules.find((candidate) => candidate.name === dep.module)?.kind !== "test");
+    }
   }
 
   const libraries = ctx.libraries.models(used);
@@ -395,6 +463,7 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
   const kotlin: ProjectModel["kotlin"] = {
     languageVersion: lang?.kind === "version" ? lang.value : undefined,
     apiVersion: api?.kind === "version" ? api.value : undefined,
+    ...(manifest.kotlin?.compose ? { compose: true } : {}),
     freeCompilerArgs: ko?.freeCompilerArgs ?? [],
     jvmTarget: target?.kind === "version" ? (target.major === 8 ? "1.8" : String(target.major)) : undefined,
   };
@@ -428,7 +497,12 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
         kind: declared.kind,
         output: androidArtifactFile(root, key, declared.kind, declared.name),
         manifestFile: normalizePath(path.resolve(root, declared.manifestFile)),
+        sourceSets: packagedSourceSets(manifest, declared),
         ...(declared.minify ? { mapping: androidMappingFile(root, key, declared.name) } : {}),
+        ...(declared.features ? { features: declared.features } : {}),
+        ...(declared.base ? { base: declared.base } : {}),
+        ...(declared.delivery ? { delivery: declared.delivery } : {}),
+        ...(declared.featureDependencies ? { featureDependencies: declared.featureDependencies } : {}),
       })),
     };
   }
@@ -449,6 +523,7 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
       ...(android ? { android } : {}),
     },
     artifacts,
+    runtimeArtifacts,
   };
 }
 
@@ -470,6 +545,22 @@ function wireProjectDependencies(projects: readonly ResolvedProject[]): void {
       consumer.moduleDeps.push({ project: target.model.root, module: module.name, scope, exported: true });
     }
   };
+
+  for (const project of projects) {
+    for (const consumer of project.model.modules) {
+      if (!consumer.runtimeModuleDeps) continue;
+      for (const output of project.runtimeArtifacts.get(consumer.sourceSet) ?? []) {
+        const target = byName.get(output.project);
+        if (!target) continue;
+        const sourceSets = sourceSetsForArtifactOutput(target.spec.manifest, output);
+        for (const module of target.model.modules) {
+          if (module === consumer || module.kind === "test" || !sourceSets.includes(module.sourceSet)) continue;
+          if (consumer.runtimeModuleDeps.some((dep) => dep.project === target.model.root && dep.module === module.name)) continue;
+          consumer.runtimeModuleDeps.push({ project: target.model.root, module: module.name, scope: "compile", exported: true });
+        }
+      }
+    }
+  }
 
   for (const project of projects) {
     for (const consumer of project.model.modules) {

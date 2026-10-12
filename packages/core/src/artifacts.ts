@@ -95,9 +95,14 @@ export function isAndroidAab(artifact: ManifestArtifact): boolean {
   return artifact.type === ANDROID_AAB_TYPE;
 }
 
+/** Dynamic bundle module; it builds through `android-module-<name>` rather than publishing an APK. */
+export function isAndroidFeature(artifact: ManifestArtifact): boolean {
+  return artifact.type === "AndroidFeature";
+}
+
 /** Whether the artifact is built by the Android pipeline at all, whichever archive it publishes. */
 export function isAndroidArtifact(artifact: ManifestArtifact): boolean {
-  return isAndroidApk(artifact) || isAndroidAab(artifact) || isAndroidAar(artifact);
+  return isAndroidApk(artifact) || isAndroidAab(artifact) || isAndroidAar(artifact) || isAndroidFeature(artifact);
 }
 
 /** Where `elide build` writes a Native Image artifact to, and what its parts are named. */

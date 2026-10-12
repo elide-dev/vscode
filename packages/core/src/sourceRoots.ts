@@ -72,3 +72,66 @@ export function collectContentRoots(projectRoot: string, patterns: readonly stri
   }
   return result;
 }
+
+export interface SourceSelection {
+  /** Deepest literal directory to scan (a literal file selector may itself be a file). */
+  root: string;
+  matches(file: string): boolean;
+}
+
+/**
+ * Elide FileCollection selectors use Java NIO globs, not Node globs: `**` crosses
+ * separators even inside a component; Elide also makes a globstar plus slash optional.
+ * Literal paths select their complete tree. Keep this separate from IDE content roots,
+ * whose directory approximation must never decide compiler source membership.
+ */
+export function sourceSelection(project: string, pattern: string): SourceSelection {
+  const wildcard = pattern.search(/[*?[{]/);
+  if (wildcard < 0) {
+    const root = path.resolve(project, pattern);
+    return { root, matches: (file) => isPathUnder(normalizePath(file), normalizePath(root)) };
+  }
+  const slash = pattern.lastIndexOf("/", wildcard);
+  const root = path.resolve(project, slash < 0 ? "." : pattern.slice(0, slash));
+  const literal = (value: string): string => value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  let expression = "^";
+  let group = false;
+  for (let index = 0; index < pattern.length; index++) {
+    const character = pattern[index]!;
+    if (character === "\\") {
+      if (++index === pattern.length) throw new Error(`Invalid source selector: ${pattern}`);
+      expression += literal(pattern[index]!);
+    } else if (character === "*") {
+      if (pattern[index + 1] === "*") {
+        index++;
+        if (pattern[index + 1] === "/") {
+          index++;
+          expression += "(?:.*/)?";
+        } else expression += ".*";
+      } else expression += "[^/]*";
+    } else if (character === "?") expression += "[^/]";
+    else if (character === "{") {
+      if (group) throw new Error(`Nested group in source selector: ${pattern}`);
+      group = true;
+      expression += "(?:";
+    } else if (character === "}" && group) {
+      group = false;
+      expression += ")";
+    } else if (character === "," && group) expression += "|";
+    else if (character === "[") {
+      let members = "";
+      let negative = false;
+      if (pattern[index + 1] === "!") { negative = true; index++; }
+      while (++index < pattern.length && pattern[index] !== "]") {
+        const member = pattern[index]!;
+        if (member === "/") throw new Error(`Separator in source selector character class: ${pattern}`);
+        members += member === "\\" || member === "[" || member === "^" || member === "&" ? `\\${member}` : member;
+      }
+      if (index === pattern.length || !members) throw new Error(`Invalid character class in source selector: ${pattern}`);
+      expression += `(?!/)[${negative ? "^" : ""}${members}]`;
+    } else expression += literal(character);
+  }
+  if (group) throw new Error(`Unclosed group in source selector: ${pattern}`);
+  const matcher = new RegExp(`${expression}$`);
+  return { root, matches: (file) => matcher.test(path.relative(project, file).split(path.sep).join("/")) };
+}

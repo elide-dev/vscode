@@ -41,6 +41,7 @@ export async function executeElideTask(
   project: ElideProject,
   command: ElideCommand,
   invocation: ElideInvocationOptions = {},
+  presentation?: vscode.TaskPresentationOptions,
 ): Promise<vscode.TaskExecution | undefined> {
   const rel = path.relative(project.folder.uri.fsPath, project.root);
   const definition: ElideTaskDefinition = {
@@ -52,6 +53,7 @@ export async function executeElideTask(
   const label = [command, ...(invocation.args ?? [])].join(" ");
   const task = new ElideTaskProvider(workspace).resolveTask(new vscode.Task(definition, project.folder, label, ELIDE_TASK_TYPE));
   if (!task) return undefined;
+  if (presentation) task.presentationOptions = { ...task.presentationOptions, ...presentation };
   return await vscode.tasks.executeTask(task);
 }
 

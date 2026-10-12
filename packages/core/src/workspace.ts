@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { MANIFEST_NAME, OUTPUT_DIR } from "./elide.js";
-import type { AndroidArtifact, JarArtifact, Manifest } from "./manifest.js";
+import { effectiveType, type AndroidArtifact, type JarArtifact, type Manifest } from "./manifest.js";
 import { pklBlock, pklStrings } from "./pkl.js";
 import { isPathUnder, normalizePath } from "./sourceRoots.js";
 
@@ -228,10 +228,13 @@ export function sourceSetsForArtifactOutput(manifest: Manifest, output: Artifact
   return jar ? packagedSourceSets(manifest, jar) : [];
 }
 
-/** The source sets `artifact` packages: those it names which the manifest declares, else the default one. */
+/** Source sets the artifact selects, matching Android's production-set fallback and JAR's main default. */
 export function packagedSourceSets(manifest: Manifest, artifact: JarArtifact | AndroidArtifact): string[] {
   const declared = artifact.sources.filter((s) => s in manifest.sources);
-  return declared.length > 0 ? declared : [DEFAULT_SOURCE_SET];
+  if (declared.length > 0) return declared;
+  return "kind" in artifact
+    ? Object.entries(manifest.sources).filter(([name, set]) => effectiveType(name, set) !== "test").map(([name]) => name)
+    : [DEFAULT_SOURCE_SET];
 }
 
 function realpathOrSelf(p: string): string {

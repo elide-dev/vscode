@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { absolutePattern, collectContentRoots, staticPrefix } from "../src/index.js";
+import { absolutePattern, collectContentRoots, sourceSelection, staticPrefix } from "../src/index.js";
 
 const root = "/proj";
 
@@ -43,5 +43,46 @@ describe("collectContentRoots", () => {
   test("src/a is not a parent of src/ab", () => {
     const roots = collectContentRoots(root, ["src/a/**", "src/ab/**"]);
     expect(roots.get("/proj/src")).toEqual(["/proj/src/a", "/proj/src/ab"]);
+  });
+});
+
+describe("sourceSelection", () => {
+  test("Elide's default glob crosses directories without widening the source tree", () => {
+    const selection = sourceSelection(root, "src/**.*");
+    expect(selection.root).toBe("/proj/src");
+    for (const file of ["src/Main.kt", "src/dev/example/build/Main.java", "src/.dev/Generated.kt", "src/node_modules/Legal.kt"]) {
+      expect(selection.matches(`${root}/${file}`)).toBe(true);
+    }
+    expect(selection.matches("/proj/other/Main.kt")).toBe(false);
+    expect(selection.matches("/proj/src/extensionless")).toBe(false);
+  });
+
+  test("single stars do not include excluded siblings or nested packages", () => {
+    const selection = sourceSelection(root, "src/main/Included*.kt");
+    expect(selection.root).toBe("/proj/src/main");
+    expect(selection.matches("/proj/src/main/Included.kt")).toBe(true);
+    expect(selection.matches("/proj/src/main/Excluded.kt")).toBe(false);
+    expect(selection.matches("/proj/src/main/nested/Included.kt")).toBe(false);
+    expect(selection.matches("/proj/src/test/Included.kt")).toBe(false);
+  });
+
+  test("optional globstar directories, alternatives, classes and escapes retain Java glob meaning", () => {
+    const selection = sourceSelection(root, "src/**/File[!0-9]?.{kt,java}");
+    expect(selection.matches("/proj/src/FileAx.kt")).toBe(true);
+    expect(selection.matches("/proj/src/deep/build/FileAz.java")).toBe(true);
+    expect(selection.matches("/proj/src/File1x.kt")).toBe(false);
+    expect(selection.matches("/proj/src/FileAx.js")).toBe(false);
+    expect(sourceSelection(root, "src/Name\\?.kt").matches("/proj/src/Name?.kt")).toBe(true);
+    expect(sourceSelection(root, "src/Name\\?.kt").matches("/proj/src/NameA.kt")).toBe(false);
+  });
+
+  test("literal trees and exact files cannot select adjacent siblings", () => {
+    const tree = sourceSelection(root, "custom");
+    expect(tree.matches("/proj/custom/build/Main.kt")).toBe(true);
+    expect(tree.matches("/proj/custom-other/Main.kt")).toBe(false);
+    const file = sourceSelection(root, "src/Only.kt");
+    expect(file.matches("/proj/src/Only.kt")).toBe(true);
+    expect(file.matches("/proj/src/Other.kt")).toBe(false);
+    expect(() => sourceSelection(root, "src/[unclosed*.kt")).toThrow();
   });
 });

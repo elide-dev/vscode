@@ -195,7 +195,12 @@ case "$1" in
     [ -f "$f" ] || f=".fake/classpath-\${2%%:*}.txt"
     [ -f "$f" ] && cat "$f" ;;
   install) echo "$PWD" >> "$FAKE_INSTALL_LOG" ;;
-  build) shift; echo "$PWD $*" >> "$FAKE_BUILD_LOG" ;;
+  build)
+    if [ "$2" = "--inspect" ]; then
+      [ ! -f .fake/build-inspect.txt ] || cat .fake/build-inspect.txt
+    else
+      shift; echo "$PWD $*" >> "$FAKE_BUILD_LOG"
+    fi ;;
 esac
 `;
 
@@ -308,6 +313,32 @@ describe("buildProjectModels", () => {
     expect(model!.modules.flatMap((m) => m.moduleDeps).every((d) => d.project === `${ws}/model`)).toBe(true);
   });
 
+  test("preview runtime artifacts become source modules without admitting provided-only workspace artifacts", async () => {
+    const { ws, cliAtRoot, stdlib } = workspace();
+    const manifest = JSON.parse(readFileSync(path.join(ws, ".fake", "manifest.json"), "utf8"));
+    manifest.android = { compileSdk: 36 };
+    manifest.artifacts = { ...manifest.artifacts, app: { "@type": "elide.android.AndroidApk", sources: ["main"] } };
+    writeFileSync(path.join(ws, ".fake", "manifest.json"), JSON.stringify(manifest));
+    writeFileSync(path.join(ws, ".fake", "classpath-main-runtime.txt"), [
+      `${ws}/model/.dev/artifacts/jar/model/model.jar`, stdlib,
+    ].join(path.delimiter));
+    writeFileSync(path.join(ws, ".fake", "classpath-main-provided.txt"), `${ws}/cli/.dev/artifacts/jar/cli/cli.jar`);
+    writeFileSync(path.join(ws, ".fake", "build-inspect.txt"), `3 tasks across 3 projects:
+logstat
+  logstat:compile-kotlin-main  Compile root
+model
+  model:compile-kotlin-main  Compile model
+cli
+  cli:compile-kotlin-main  Compile cli
+`);
+    const models = await build(cliAtRoot);
+    const root = models[0]!.modules.find((module) => module.sourceSet === "main")!;
+    expect(root.runtimeClassPath).toEqual([stdlib]);
+    expect(root.runtimeModuleDeps).toEqual([{ project: `${ws}/model`, module: "model.main", scope: "compile", exported: true }]);
+    expect(root.compilationTargets).toEqual(["logstat:compile-kotlin-main"]);
+    expect(models[1]!.modules[0]!.compilationTargets).toEqual(["model:compile-kotlin-main"]);
+  });
+
   test("the workspace names every library once, whichever member resolved it", async () => {
     const { cliAtRoot, stdlib } = workspace();
     const models = await build(cliAtRoot);
@@ -382,6 +413,10 @@ describe("buildProjectModels: published Android libraries", () => {
     const rClasses = `${root}/.dev/android/app/r-classes`;
     writeFileSync(path.join(root, ".fake", "classpath-main.txt"), [stdlib, exploded].join(path.delimiter));
     writeFileSync(path.join(root, ".fake", "classpath-main-provided.txt"), [platform, rClasses].join(path.delimiter));
+    writeFileSync(path.join(root, ".fake", "build-inspect.txt"), `2 tasks available:
+  android-r-app  Generate R
+  compile-kotlin-main  Compile Kotlin
+`);
 
     const builds = path.join(root, "builds.log");
     process.env.FAKE_BUILD_LOG = builds;
@@ -425,6 +460,18 @@ describe("buildProjectModels: published Android libraries", () => {
     expect(app!.modules[0]!.libraries.map((l) => l.name)).toEqual(
       expect.arrayContaining(["Elide: Android API 36 platform", "Elide: Android resources of app"]),
     );
+  });
+
+  test("preview metadata retains runtime rather than provided inputs and only inspected compiles", async () => {
+    const { root, exploded, platform, rClasses, model } = androidProject();
+    const runtimeOnly = path.join(root, ".dev/dependencies/m2/example/runtime/1/runtime-1.jar");
+    writeFileSync(path.join(root, ".fake", "classpath-main-runtime.txt"), [exploded, runtimeOnly].join(path.delimiter));
+    const [app] = await model(() => true);
+    expect(app!.android!.targets[0]!.sourceSets).toEqual(["main"]);
+    expect(app!.modules[0]!.compilationTargets).toEqual(["compile-kotlin-main"]);
+    expect(app!.modules[0]!.runtimeClassPath).toEqual([exploded, runtimeOnly]);
+    expect(app!.modules[0]!.runtimeClassPath).not.toContain(platform);
+    expect(app!.modules[0]!.runtimeClassPath).not.toContain(rClasses);
   });
 
   test("the archive is unpacked and R is generated when either is missing, and neither runs when both are there", async () => {

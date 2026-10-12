@@ -17,6 +17,8 @@ is referenced anywhere in this package.
 | `pkl.ts` | Read and edit `elide.pkl` as text, for what the exported project model cannot answer (artifact source positions, the workspace above a folder). |
 | `kotlinLsp.ts` | Emit the JSON workspace (`workspace.json`) consumed by the JetBrains Kotlin language server. |
 | `android.ts` | Android build targets, published and staged artifact paths, SDK resolution (`android.sdk`, `ANDROID_HOME`, the conventional location) and the attached devices `adb` reports. |
+| `androidLogcat.ts` | Abortable adb log streams, application UID resolution, priority and literal-text filtering, and explicit stop/restart lifecycle. |
+| `composeInputs.ts` | Host Compose preview build targets and postbuild JVM/runtime inputs: declared source-set/workspace closure, linked resources and merged-manifest namespace, without dexing or packaging an app. |
 
 ## Usage
 
@@ -30,6 +32,11 @@ const manifest = await cli.manifest();
 const models = await buildProjectModels(cli, manifest);
 await writeKotlinLspWorkspace(models, workspaceRoot);
 ```
+
+For Compose projects, pass `{ composeCompilerPlugin: "/absolute/path/to/the/language-server/compose-plugin.jar" }`
+as the third argument to `writeKotlinLspWorkspace`. It must match the language server's compiler, not necessarily
+the project's build compiler. The VSCode adapter resolves the installed JetBrains extension's bundled plugin.
+Models expose `kotlin.compose`; processor/Hilt projects generate and import actual Java/kapt sources during sync.
 
 The package is ESM-only, built with `tsc`, and ships type declarations. It is not published to npm today; it is
 consumed through the workspace by `packages/vscode`.

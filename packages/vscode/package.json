@@ -382,12 +382,51 @@
         "icon": "$(references)"
       },
       {
+        "command": "elide.androidComposePreview",
+        "category": "Elide",
+        "title": "Open Compose Preview",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "elide.androidLogcat",
+        "category": "Elide",
+        "title": "Show Android Logcat",
+        "icon": "$(output)"
+      },
+      {
+        "command": "elide.androidLogcatFilter",
+        "category": "Elide",
+        "title": "Filter Android Logcat"
+      },
+      {
+        "command": "elide.androidLogcatClear",
+        "category": "Elide",
+        "title": "Clear Android Logcat Output"
+      },
+      {
+        "command": "elide.androidLogcatStop",
+        "category": "Elide",
+        "title": "Stop Android Logcat"
+      },
+      {
+        "command": "elide.androidLogcatRestart",
+        "category": "Elide",
+        "title": "Restart Android Logcat"
+      },
+      {
         "command": "elide.revealLibrary",
         "category": "Elide",
         "title": "Reveal in Finder/Explorer"
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "elide.androidComposePreview",
+          "when": "editorLangId == kotlin && elide.hasProjects",
+          "group": "navigation"
+        }
+      ],
       "commandPalette": [
         {
           "command": "elide.run",
@@ -544,8 +583,13 @@
         },
         {
           "command": "elide.build",
-          "when": "view == elide.projects && viewItem == androidAar",
+          "when": "view == elide.projects && viewItem =~ /^(androidAar|androidFeature)$/",
           "group": "inline@1"
+        },
+        {
+          "command": "elide.androidLogcat",
+          "when": "view == elide.projects && viewItem =~ /^(androidDevice|androidApk|android)$/",
+          "group": "android@3"
         },
         {
           "command": "elide.androidRun",
@@ -1055,11 +1099,13 @@
     "package": "vsce package --no-dependencies"
   },
   "dependencies": {
-    "@elide/ide-core": "workspace:*"
+    "@elide/ide-core": "workspace:*",
+    "yauzl": "^3.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
     "@types/vscode": "^1.105.0",
+    "@types/yauzl": "^2.10.3",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.6.0",
     "esbuild": "^0.25.0",

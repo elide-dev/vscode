@@ -17,7 +17,7 @@ Elide's build, run, test, and debug commands are available from the editor.
 - **Multi-project workspaces.** A manifest declaring `workspace.members` is synced as one build: a single install at
   the root, then every member's own source sets, classpath and JDK. A member consuming a sibling's artifact with
   `project("name")` depends on the sibling's modules, along with any siblings that artifact brings in the way Elide
-  resolves the classpath, so code intelligence works across the workspace without building anything first. Each member
+  resolves the classpath, so code intelligence works across the workspace without first publishing those artifacts. Each member
   is also a project of its own in the sidebar (nested under the root), the Test Explorer, tasks, code lenses and
   debug configurations. Editing any member's manifest reloads the workspace. `Elide: Add Workspace Member…` generates
   a new member from a template and declares it in the root's manifest; opening a member's directory on its own
@@ -34,11 +34,13 @@ Elide's build, run, test, and debug commands are available from the editor.
   --inspect`), source sets and dependencies; run, debug, build and sync straight from the tree.
 - **New project wizard.** `Elide: New Project…` lists the templates of the installed CLI (`elide init --templates`),
   asks for the parameters that template declares, generates the project and opens it.
-- **Android projects.** A manifest declaring an `android` block gets an **Android** section in the sidebar: the APKs
-  and AARs it publishes, the devices and emulators `adb` reports, and the emulator, AVD and SDK-install targets.
+- **Android projects.** A manifest declaring an `android` block gets an **Android** section in the sidebar: its APKs,
+  AABs, AARs and dynamic features, the devices and emulators `adb` reports, and emulator, AVD and SDK-install targets.
   `res/` and `assets/` of each artifact become resource roots of the source sets it packages, and a sibling Android
   library's classes are resolved as a module dependency rather than an opaque jar, so navigation works across an
   application and the libraries it consumes. Running an APK installs and launches it on a device you pick.
+  Compose component previews render locally with layoutlib, without a device or emulator, and refresh while editing. Logcat streams have
+  application, priority and text filters. Dagger/Hilt generated sources are included in editor synchronization.
 - **Debugging.** Launch `elide run --debugger` and attach with breakpoints in Kotlin and Java, debug an Android
   application on the device it was installed on, or build a Native Image artifact and debug the binary it produced
   under GDB.
@@ -84,6 +86,8 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `Elide: Create Android Virtual Device` | Create the AVD `android.device` declares, without booting it. |
 | `Elide: Install Android SDK Components` | Install the SDK components the pipeline is missing (`--install-sdk` accepts their licenses). |
 | `Elide: Create Android Signing Keystore` | Mint the keystore an APK signs with, using the Android debug conventions. |
+| `Elide: Open Compose Preview` | Render the Kotlin file's Compose previews beside the source using host-side layoutlib. |
+| `Elide: Show Android Logcat` | Open a filtered device log stream; Filter, Clear, Stop and Restart commands manage it. |
 
 ## Settings
 
@@ -175,6 +179,7 @@ Elide builds Android applications and libraries without Gradle: every step is an
 | An `AndroidApk` artifact | `elide build <artifact>` to package it; **Run** installs and launches it with `elide build android-run-<artifact>`, pinned to the picked device with `--device=<serial>`; **Debug** does the same through `android-debug-<artifact>` and attaches over JDWP. |
 | An `AndroidAab` artifact | `elide build <artifact>`, which publishes `.dev/artifacts/<artifact>.aab`. |
 | An `AndroidAar` artifact | `elide build <artifact>`, which publishes `.dev/artifacts/<artifact>.aar`. |
+| An `AndroidFeature` module | `elide build android-module-<feature>`, staging `.dev/android/<feature>/<feature>.zip`. Its row identifies the base bundle, delivery mode and required features; build the owning AAB to publish it. |
 | The mapping of a minifying artifact | A row beside an artifact with `minify = true`, which opens the `.dev/artifacts/<name>-mapping.txt` R8 published, publishing it with `android-mapping-<artifact>` first when it is not there: without it a stack trace from a shrunk build cannot be read. |
 | **Devices** | `adb devices` of the resolved SDK; a row in the `device` state runs the project's APK on that serial. |
 | **Start emulator** / **Stop emulators** / **Create AVD** | `android-emulator` (with `--no-window` when `elide.android.emulatorWindow` is off), `android-emulator-stop`, `android-avd`. |
@@ -197,6 +202,110 @@ it, launches it waiting for a debugger and attaches to the JDWP socket the targe
 debuggable — `android:debuggable="true"` on `<application>`, which nothing in the build injects — and the target
 says so and stops when it is not. Unit tests of an Android project are plain JVM tests and run in the Test Explorer
 as usual.
+
+#### Compose component preview
+
+Requires the experimental Elide `feat/android` branch with persistent compiler workers,
+transactional incremental compilation, `--warm-incremental`, `--report-abi`, and recorded `kotlinc.args`/`javac.args`,
+an Android SDK for compilation/resource linking, and a JDK 17+ matching the extension
+host's architecture. **No device, emulator, Android Studio, signing keystore, debuggable application or
+`PreviewActivity` is required.**
+
+1. Set `kotlin.features.compose = true`.
+2. Include Compose `ui-tooling` (for example `androidx.compose.ui:ui-tooling-android:aar:1.7.8`) and the Compose
+   libraries your component uses, with Google's Maven repository configured. `ui-tooling-preview` alone supplies
+   annotations, not the renderer's Compose adapter. Keep tooling dependencies out of production artifacts.
+3. Declare an `AndroidApk` artifact as the resource context. The preview builds only its resource/R-class targets
+   and the relevant JVM compilation targets; it does not package, sign, install or launch that APK.
+4. Sync, open a Kotlin file and invoke **Elide: Open Compose Preview** from the Command Palette or editor title.
+   Select a resource context if there are multiple application artifacts. A workspace library can use its consuming
+   application's context.
+
+The extension uses [Google's standalone Compose renderer](https://android.googlesource.com/platform/tools/base/+/HEAD/standalone-render/compose-cli/README.md)
+and layoutlib—the host rendering engine used by Android Studio—not a JavaScript approximation.
+The first preview downloads `compose-preview-renderer:0.0.1-alpha16` and `layoutlib:16.1.0-jdk17` with its platform
+runtime/resources from `dl.google.com`; SHA-256 pins verify each artifact before installation. Downloads and upstream
+licenses are retained in the extension's global storage. A completed installation is reused without network access.
+Supported extension hosts: **macOS arm64/x64, Linux x64, Windows x64**. Unsupported host architectures report an
+error rather than falling back to a device.
+
+Discovery reads compiled annotations, so constant annotation values, repeated `@Preview`, member functions,
+multi-preview meta-annotations and `@PreviewParameter` providers reach the renderer. The gallery displays each
+configuration/provider value, respecting options such as dimensions, background, locale, font scale and UI mode.
+Rendering errors appear with the affected preview rather than leaving an old image on screen.
+
+Kotlin/Java changes refresh live, including unsaved editor buffers. After initialization, persistent compiler
+workers incrementally compile private source snapshots; persistent layoutlib workers render the new classes.
+Initialization also warms the incremental compiler with two unchanged-source passes before publishing the first gallery.
+The gallery keeps its previous images while updating, publishes only the latest edit, and reports elapsed time
+from change detection through webview paint. Compiler failures clear the stale gallery and show diagnostics.
+Preview compilation does not overwrite workspace sources or build outputs.
+Large galleries use up to six renderer JVMs, limited to half the host's available CPUs.
+Source ownership follows the synced manifest's source selections. Adding the first Java source
+to a source set without recorded Java compiler inputs requires a save and full rebuild.
+
+Initial setup builds JVM classes and linked resources. Saving `.xml` or `.pkl` files, changing the project model,
+or pressing **Rebuild preview** performs that full build again. Projects using generated annotation-processor
+sources require a save and full rebuild; unsaved changes display a save prompt rather than stale generated code.
+These setup and rebuild paths are not sub-second updates.
+
+**Fit previews** constrains large images to the panel. Builds do not steal editor focus. Closing the panel
+cancels pending work, stops its compiler/renderer processes, and removes temporary sources, caches and images.
+
+These are design-time snapshots, not interactive animation/click simulation or in-process Live Edit. Each render
+loads fresh project classes into the retained rendering runtime. Components requiring device services, application initialization or unsupported native libraries
+need preview-specific sample data, as with other layoutlib-based tools. Workspace trust is required: previews
+execute project code in a local JVM, not a security sandbox.
+
+For editor analysis, sync passes the Compose compiler plugin shipped with the installed JetBrains Kotlin LSP,
+not the build compiler's potentially incompatible plugin. If it is missing, update/install that extension and
+sync again; Elide's output channel identifies the missing plugin.
+
+#### Dagger and Hilt
+
+Use the experimental Elide `feat/android` branch. Put `dagger-compiler` or `hilt-compiler` in
+`dependencies.maven.processors`, keeping its version aligned with the runtime dependency. Kotlin processing
+requires a managed Kotlin toolchain or an external distribution containing kapt; it is not KSP execution.
+Set `android.hilt = true` for Hilt's Android superclass/lifecycle transformation; plain Dagger needs no Hilt flag.
+
+Sync runs available `compile-java-<sourceSet>` targets for processor/Hilt projects, including Kotlin's kapt
+pass, then imports `.dev/jvm/generated-sources/<sourceSet>/java` and `/kapt`. Empty source sets do not request
+nonexistent compile targets. Kapt stubs are excluded. Source changes regenerate these declarations on the next
+build/sync. A failed generation is reported as a synchronization warning rather than hidden.
+
+Workspace libraries containing Hilt bindings also need the processor. Their generated classes and aggregation
+metadata are available to the consuming application. Dynamically delivered code uses Dagger component
+dependencies against the base app's Hilt entry points, not feature-owned bindings in the base component.
+
+#### Multi-module applications and dynamic features
+
+Reusable Android libraries remain workspace projects publishing `AndroidAar` artifacts; sync connects their
+source modules to consuming apps. Dynamic features are separate source sets **inside the app project**:
+
+- Add their artifact names to the base `AndroidAab.features`.
+- Declare each as `AndroidFeature`, with `base` naming that AAB, a `title` resource in the base,
+  its own `sources` and `manifestFile`, and explicit resource/asset/native-library directories.
+- Use `delivery = "install-time"` or the default `"on-demand"`. For feature-to-feature dependencies, declare
+  `featureDependencies` and matching source-set `dependsOn` edges to the base and required features.
+
+The base and features must have disjoint source sets and distinct manifest packages for their `R` namespaces.
+The base owns shared Maven/workspace libraries; feature dex and resources stay in their own bundle modules.
+Install-time features remain removable splits so dependent features can reference them. Install the AAB with
+bundletool or Play Feature Delivery: a feature module is not a standalone runnable APK, and APK Run/Debug
+does not download on-demand splits. Requires the experimental `feat/android` Elide branch.
+
+#### Logcat
+
+**Elide: Show Android Logcat** (also in the Android tree and device context menu) selects a ready device,
+an installed application ID or all applications, a minimum priority, and an optional case-insensitive literal
+text filter. It streams the SDK's real `adb logcat` into an output channel per project.
+
+**Filter Android Logcat**, **Stop Android Logcat**, and **Restart Android Logcat** control that stream.
+**Clear Android Logcat Output** clears only the editor channel, never the device's shared log buffers.
+Restarting or changing filters replays the device's available buffer. Application filtering uses the installed
+UID, so it follows process restarts and secondary processes; apps sharing that UID also share the filtered logs.
+The device must support `logcat --uid`. Removing the project or closing the extension stops its adb clients.
+
 
 ## Links
 

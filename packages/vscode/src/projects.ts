@@ -23,7 +23,7 @@ import {
 } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { readConfig } from "./config.js";
-import { reloadKotlinLsp } from "./jetbrains.js";
+import { jetBrainsComposeCompilerPlugin, reloadKotlinLsp } from "./jetbrains.js";
 import type { ElideUi } from "./output.js";
 
 export interface ElideProject {
@@ -422,7 +422,11 @@ export class ElideWorkspace implements vscode.Disposable {
 
     if (config.writeWorkspaceJson && models.length > 0) {
       progress.report({ message: `writing ${WORKSPACE_JSON}` });
-      const ws = await writeKotlinLspWorkspace(models, folderPath);
+      const composeCompilerPlugin = jetBrainsComposeCompilerPlugin();
+      if (models.some((model) => model.kotlin.compose) && !composeCompilerPlugin) {
+        this.ui.log("Compose analysis needs the bundled Compose IDE plugin from the JetBrains Kotlin extension; update that extension and sync again.");
+      }
+      const ws = await writeKotlinLspWorkspace(models, folderPath, { composeCompilerPlugin });
       this.ui.log(`wrote ${path.join(folderPath, WORKSPACE_JSON)}: ${ws.modules.length} modules, ${ws.libraries.length} libraries`);
       await this.configureJdkForSymbolResolution(state.folder, models);
       await this.pinKotlinLspImporter(state.folder);

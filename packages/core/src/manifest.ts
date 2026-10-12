@@ -29,8 +29,10 @@ export interface Manifest {
   projectReferences: ProjectReference[];
   /** JAR artifacts, keyed by the name they are declared under. */
   jars: Record<string, JarArtifact>;
-  /** `Android.AndroidApk` and `Android.AndroidAar` artifacts, keyed by the name they are declared under. */
+  /** Android application, bundle, library and dynamic-feature artifacts. */
   androidTargets: Record<string, AndroidArtifact>;
+  /** Compile tasks must run during sync to expose annotation-processor generated declarations. */
+  hasAnnotationProcessors?: boolean;
 }
 
 /**
@@ -69,6 +71,7 @@ export interface AndroidSettings {
   minSdk?: number;
   /** Build-tools release supplying `aapt2`, `d8`, `zipalign` and `apksigner`; absent resolves one from the installation. */
   buildTools?: string;
+  hilt?: boolean;
   device: AndroidDeviceSettings;
 }
 
@@ -87,15 +90,15 @@ export interface AndroidDeviceSettings {
   deviceProfile: string;
 }
 
-/** What an Android artifact publishes: an application package, an app bundle, or a library archive. */
-export type AndroidArtifactKind = "apk" | "aab" | "aar";
+/** An installable APK, application bundle, library archive, or bundle feature module. */
+export type AndroidArtifactKind = "apk" | "aab" | "aar" | "feature";
 
-/** An `Android.AndroidApk`, `Android.AndroidAab` or `Android.AndroidAar` entry of the manifest's `artifacts`. */
+/** An Android artifact entry in the manifest. */
 export interface AndroidArtifact {
   kind: AndroidArtifactKind;
   /** Output file name, which overrides the `<key>.apk` / `<key>.aab` / `<key>.aar` Elide derives. */
   name?: string;
-  /** Source sets packaged into the artifact; empty means the default one. */
+  /** Source sets packaged into the artifact; empty selects every production source set. */
   sources: string[];
   /** Android manifest of the artifact, relative to the project root. */
   manifestFile: string;
@@ -107,6 +110,12 @@ export interface AndroidArtifact {
   jniLibs: string[];
   /** `minify`: the artifact is shrunk and obfuscated by R8, which also publishes an obfuscation mapping. */
   minify: boolean;
+  /** Dynamic feature artifact keys included by an app bundle. */
+  features?: string[];
+  /** Base app bundle artifact for a dynamic feature. */
+  base?: string;
+  delivery?: "install-time" | "on-demand";
+  featureDependencies?: string[];
 }
 
 export interface JvmSettings {
@@ -119,6 +128,8 @@ export interface JvmSettings {
 export interface KotlinSettings {
   apiLevel: KotlinLevel;
   languageLevel: KotlinLevel;
+  /** Enable the language server's matching Compose compiler plugin. */
+  compose?: boolean;
   compilerOptions?: { apiVersion: KotlinLevel; languageVersion: KotlinLevel; freeCompilerArgs: string[] };
 }
 
@@ -220,6 +231,7 @@ const ANDROID_TAGS: Record<string, AndroidArtifactKind> = {
   "elide.android.AndroidApk": "apk",
   "elide.android.AndroidAab": "aab",
   "elide.android.AndroidAar": "aar",
+  "elide.android.AndroidFeature": "feature",
 };
 
 /** Android manifest an artifact declaring none is built from, and the hardware profile its AVD is cut from. */
@@ -244,6 +256,12 @@ function decodeAndroidTargets(v: unknown): Record<string, AndroidArtifact> {
       assets: strings(artifact.assets),
       jniLibs: strings(artifact.jniLibs),
       minify: artifact.minify === true,
+      ...(kind === "aab" ? { features: strings(artifact.features) } : {}),
+      ...(kind === "feature" ? {
+        ...(typeof artifact.base === "string" ? { base: artifact.base } : {}),
+        delivery: artifact.delivery === "install-time" ? "install-time" as const : "on-demand" as const,
+        featureDependencies: strings(artifact.featureDependencies),
+      } : {}),
     };
   }
   return targets;
@@ -259,6 +277,7 @@ function decodeAndroid(v: unknown): AndroidSettings | undefined {
   const abi = typeof device.abi === "string" ? ANDROID_ABIS.find((a) => a === device.abi) : undefined;
   return {
     ...(typeof v.sdk === "string" ? { sdk: v.sdk } : {}),
+    ...(v.hilt === true ? { hilt: true } : {}),
     compileSdk: v.compileSdk,
     ...(typeof v.minSdk === "number" ? { minSdk: v.minSdk } : {}),
     ...(typeof v.buildTools === "string" ? { buildTools: v.buildTools } : {}),
@@ -366,6 +385,7 @@ export function decodeManifest(text: string): Manifest {
     kotlin = {
       apiLevel: decodeKotlinLevel(raw.kotlin.apiLevel),
       languageLevel: decodeKotlinLevel(raw.kotlin.languageLevel),
+      ...(isObject(raw.kotlin.features) && raw.kotlin.features.compose === true ? { compose: true } : {}),
       compilerOptions: co
         ? {
             apiVersion: decodeKotlinLevel(co.apiVersion),
@@ -403,5 +423,6 @@ export function decodeManifest(text: string): Manifest {
     projectReferences: decodeProjectReferences(maven),
     jars: decodeJars(raw.artifacts),
     androidTargets: decodeAndroidTargets(raw.artifacts),
+    ...(Array.isArray(maven?.processors) && maven.processors.length > 0 ? { hasAnnotationProcessors: true } : {}),
   };
 }

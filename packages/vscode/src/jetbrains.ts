@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import * as vscode from "vscode";
 
 export const JETBRAINS_EXTENSION_ID = "JetBrains.kotlin-server";
@@ -10,6 +12,14 @@ interface JetBrainsPackageJson {
 
 export function jetBrainsExtension(): vscode.Extension<unknown> | undefined {
   return vscode.extensions.getExtension(JETBRAINS_EXTENSION_ID);
+}
+
+/** Use the IDE plugin compiled for this server; a project's build plugin may have an incompatible compiler ABI. */
+export function jetBrainsComposeCompilerPlugin(): string | undefined {
+  const extension = jetBrainsExtension();
+  if (!extension) return undefined;
+  const plugin = path.join(extension.extensionPath, "server", "plugins", "kotlin", "lib", "intellij.libraries.kotlinc.compose.compiler.plugin.jar");
+  return existsSync(plugin) ? plugin : undefined;
 }
 
 /** Debugger type contributed by the installed JetBrains extension (`intellij_jvm` on newer builds). */

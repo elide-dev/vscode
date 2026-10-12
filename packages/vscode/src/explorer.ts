@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   ElideCli,
   LIBRARY_NAME_PREFIX,
+  androidFeatureTask,
   buildTasksOf,
   isNativeImageBinary,
   parseManifestArtifacts,
@@ -178,7 +179,7 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
       case "androidTarget":
         item.iconPath = new vscode.ThemeIcon(ANDROID_TARGET_ICONS[node.targetKind]);
         item.description = node.description;
-        item.tooltip = `elide build ${node.artifact}`;
+        item.tooltip = `${node.description ? `${node.description}\n` : ""}elide build ${node.args.join(" ")}`;
         item.command = { command: "elide.build", title: "Build", arguments: [node] };
         break;
       case "androidMapping":
@@ -385,6 +386,7 @@ function androidGroupNodes(root: string, android: AndroidProjectModel | undefine
   const nodes: ElideNode[] = android.targets.flatMap((target) => androidTargetNodes(root, target));
   nodes.push({ kind: "group", label: GROUP_LABELS.androidDevices, root, group: "androidDevices" });
   nodes.push(
+    { kind: "androidAction", label: "Show logcat", root, command: "elide.androidLogcat", description: "device and application logs", icon: "output" },
     { kind: "androidAction", label: "Start emulator", root, command: "elide.androidStartEmulator", description: android.avd, icon: "vm-running" },
     { kind: "androidAction", label: "Stop emulators", root, command: "elide.androidStopEmulator", description: "adb emu kill", icon: "vm-outline" },
     { kind: "androidAction", label: "Create AVD", root, command: "elide.androidCreateAvd", description: android.avd, icon: "vm-connect" },
@@ -413,8 +415,9 @@ function androidTargetNodes(root: string, target: AndroidTargetModel): ElideNode
     root,
     artifact: target.name,
     targetKind: target.kind,
-    args: [target.name],
-    description: path.basename(target.output),
+    args: [target.kind === "feature" ? androidFeatureTask(target.name) : target.name],
+    description: target.kind === "feature" ? `${target.delivery} → ${target.base}${target.featureDependencies?.length ? ` · requires: ${target.featureDependencies.join(", ")}` : ""}` :
+      target.features?.length ? `${path.basename(target.output)} · features: ${target.features.join(", ")}` : path.basename(target.output),
   };
   if (!target.mapping) return [node];
   return [
@@ -431,8 +434,8 @@ function androidTargetNodes(root: string, target: AndroidTargetModel): ElideNode
 }
 
 /** Row icon and context value of each Android artifact: an installable package, an upload bundle, a library. */
-const ANDROID_TARGET_ICONS: Record<AndroidArtifactKind, string> = { apk: "device-mobile", aab: "archive", aar: "package" };
-const ANDROID_TARGET_CONTEXTS: Record<AndroidArtifactKind, string> = { apk: "androidApk", aab: "androidAab", aar: "androidAar" };
+const ANDROID_TARGET_ICONS: Record<AndroidArtifactKind, string> = { apk: "device-mobile", aab: "archive", aar: "package", feature: "extensions" };
+const ANDROID_TARGET_CONTEXTS: Record<AndroidArtifactKind, string> = { apk: "androidApk", aab: "androidAab", aar: "androidAar", feature: "androidFeature" };
 
 /**
  * `view/item/context` key. A member of a workspace takes no member of its own, so its row offers no such action; a

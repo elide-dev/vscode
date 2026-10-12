@@ -98,6 +98,8 @@ anything you set by hand stays.
 | `Elide: Start Android Emulator`, `Elide: Stop Android Emulators`, `Elide: Create Android Virtual Device` | Drive the project's virtual device. |
 | `Elide: Install Android SDK Components` | `elide build android-sdk --install-sdk`. |
 | `Elide: Create Android Signing Keystore` | `elide build android-keystore-<artifact>`. |
+| `Elide: Open Compose Preview` | Render Compose previews locally with Android layoutlib; refresh live while editing. No device or emulator. |
+| `Elide: Show Android Logcat` | Stream device logs with application, priority and text filters. |
 
 ## Tasks
 
@@ -234,10 +236,10 @@ reaches all of them through `elide build`.
 The sync reads three things beyond the usual manifest decoding:
 
 - The `android` block (compile and minimum API level, the declared SDK, the virtual device) and every `AndroidApk` /
-  `AndroidAab` / `AndroidAar` entry of `artifacts`, which become the project model's `android` section.
-- The resource, asset and native-library directories of each artifact (declared, else `src/main/res`,
-  `src/main/assets` and `src/main/jniLibs` when they exist), added as resource roots of the source sets that
-  artifact packages, so `res/` is part of the module the Kotlin LSP imports rather than an unclaimed directory.
+  `AndroidAab` / `AndroidAar` / `AndroidFeature` entry of `artifacts`, which become the project model's `android` section.
+- The resource, asset and native-library directories of each artifact, added as resource roots of the source sets
+  it packages. Applications and libraries fall back to existing `src/main/res`, `src/main/assets` and
+  `src/main/jniLibs`; features use only their explicitly declared directories and never inherit the base app's.
 - The **provided** classpath of each source set, which is where an Android build puts the platform `android.jar`
   and the generated `R` classes: the device carries the framework and the APK's own dex carries `R`, so neither is
   on the compile or runtime classpath the rest of the model is built from, and without them nothing `android.*`
@@ -247,7 +249,8 @@ The sync reads three things beyond the usual manifest decoding:
 An application consuming a workspace sibling's Android library reads that library's **staged** `classes.jar`
 (`<lib>/.dev/android/<artifact>/classes.jar`), never its published `.aar`. That path is recognized the same way a
 sibling JAR under `.dev/artifacts/` is, so the application's modules depend on the library's modules and navigation
-crosses the project boundary without building anything.
+crosses the project boundary without requiring a published AAR. Annotation processors may run during sync to
+make generated declarations available.
 
 A **published** `.aar` is a dependency rather than a sibling's output. Elide unpacks each one into
 `.dev/android/libraries/<group>/<artifact>/<version>/` and puts the `classes.jar` inside it on the classpath, so
@@ -258,8 +261,8 @@ once before building the model; without it the language server would be handed j
 
 The SDK is located the way a build locates it: `android.sdk` in the manifest, then `$ANDROID_HOME`, then
 `$ANDROID_SDK_ROOT`, then the platform's own install location (`~/Library/Android/sdk`, `~/Android/Sdk`,
-`%LOCALAPPDATA%\Android\Sdk`). `elide.android.sdk` overrides all of it. The SDK is needed by the extension only to
-find `adb` for the device list; a build reports a missing SDK itself, and `Elide: Install Android SDK Components`
+`%LOCALAPPDATA%\Android\Sdk`). `elide.android.sdk` overrides it for extension-side device listing and logcat.
+A build reports a missing SDK itself; `Elide: Install Android SDK Components`
 runs `elide build android-sdk --install-sdk`, which is how the component licenses are accepted.
 
 The sidebar's **Android** section lists the artifacts, the devices `adb devices` reports (serial, and whether it is
@@ -270,12 +273,65 @@ an emulator or in a state that cannot take an install), and the project-wide dev
 | Run an APK | `elide build android-run-<artifact>`, plus `--device=<serial>` when a device is picked, or `android-run-emulator-<artifact>` for the project's AVD. With nothing attached the plain target runs, which boots the emulator itself. |
 | Debug an APK | `elide build android-debug-<artifact>`, which installs it, launches it waiting for a debugger and forwards its JDWP socket; the extension attaches to the port the target announces. The APK must carry `android:debuggable="true"` — nothing injects it, and the target reports an APK that does not. |
 | Build an APK, AAB or AAR | `elide build <artifact>` → `.dev/artifacts/<name>.apk` / `.aab` / `.aar` |
+| Build a dynamic-feature module | `elide build android-module-<feature>` → `.dev/android/<feature>/<feature>.zip`; build its owning AAB to publish the application. |
 | Open the R8 mapping | A `minify = true` artifact gets a mapping row beside it, which opens `.dev/artifacts/<name>-mapping.txt` — publishing it with `elide build android-mapping-<artifact>` when it is not there, since building the artifact alone does not — the only way to read a stack trace from a shrunk build. |
 | Start / stop the emulator | `elide build android-emulator` (`--no-window` when `elide.android.emulatorWindow` is off), `elide build android-emulator-stop` |
 | Create the AVD | `elide build android-avd` |
 | Create the signing keystore | `elide build android-keystore-<artifact>` |
 
 Unit tests of an Android project are plain JVM tests and run in the Test Explorer as usual.
+
+### Compose component preview
+
+**Elide: Open Compose Preview** renders locally using Google's standalone Compose renderer and Android layoutlib.
+It requires no device, emulator, Android Studio installation, signing keystore, or debuggable APK. The extension
+builds JVM classes and linked Android resources, not DEX or an installable application.
+
+Enable `kotlin.features.compose`, include Compose `ui-tooling`, sync, and open a Kotlin file containing
+`@Preview` / `@Composable` functions. The gallery renders the file's compiled previews, including annotation
+configuration, member functions, multi-preview annotations and `@PreviewParameter` providers. Kotlin/Java edits,
+including unsaved changes, use persistent incremental compilers and renderers. Resource/configuration saves
+rebuild the resource context; library previews use a consuming workspace application.
+
+The first preview downloads a pinned, SHA-256-verified renderer/runtime from Google Maven into extension storage.
+Subsequent previews reuse it offline. A matching-architecture JDK 17+ is required; supported extension hosts are
+macOS arm64/x64, Linux x64 and Windows x64. These are rendered snapshots, not interactive device mirroring or
+in-process Live Edit. See [the extension guide](packages/vscode/README.md#compose-component-preview) for setup
+and runtime limitations.
+
+### Dagger and Hilt
+
+The experimental Elide `feat/android` branch supports kapt and Hilt Android entry-point transformation.
+Declare processors in `dependencies.maven.processors`, use a managed/external Kotlin toolchain with kapt,
+and enable `android.hilt` for Hilt. Sync discovers the project's actual compile targets, generates processor
+sources and imports the Java/kapt output roots without importing kapt stubs. Workspace AARs retain generated
+components and Hilt aggregation metadata, allowing application bindings to come from sibling libraries.
+
+Hilt bindings owned by dynamically delivered code cannot be installed into the base component; use Dagger
+component dependencies against an entry point exposed by the base app.
+
+### Multi-module apps and dynamic features
+
+Use workspace `AndroidAar` projects for reusable libraries. Inside the application project, an `AndroidAab`
+lists its `features`; each `AndroidFeature` identifies that AAB through `base`, owns disjoint source sets, and
+can declare `featureDependencies`. The sidebar shows the owning base, delivery mode and feature dependencies.
+Features are buildable modules, not independently runnable APKs.
+
+Delivery is `on-demand` by default or `install-time`. Install-time features remain removable splits, preserving
+their identity when another feature depends on them. Elide packages base/shared classes once and gives each
+feature its own resources, assets and dex. Install an AAB through bundletool or Play; the APK Run/Debug commands
+do not perform Play delivery. These capabilities require the experimental `feat/android` Elide branch.
+
+### Logcat
+
+**Elide: Show Android Logcat** selects a device, an application ID (blank means all apps), a minimum priority,
+and an optional case-insensitive literal text filter. The Android tree and device context menu expose it too.
+Each project owns an output channel and adb stream. **Filter**, **Stop**, and **Restart Android Logcat** control
+the stream; **Clear Android Logcat Output** clears only the editor, not the device's shared log buffers.
+Restart and filter changes replay available device logs. Package filtering uses the installed UID, surviving
+process restarts and including secondary processes and any apps sharing that UID. It requires `logcat --uid`.
+Streams stop when their project is removed or the extension closes.
+
 
 ## Settings
 

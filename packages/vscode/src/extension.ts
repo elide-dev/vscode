@@ -13,7 +13,9 @@ import {
   stopAndroidEmulator,
 } from "./android.js";
 import { ELIDE_ANDROID_DEBUG_TYPE, ElideAndroidDebugConfigurationProvider } from "./androidDebug.js";
+import { registerAndroidLogcat } from "./androidLogcat.js";
 import { ElideCodeLensProvider } from "./codelens.js";
+import { registerComposePreview } from "./composePreview.js";
 import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
 import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./explorer.js";
@@ -36,6 +38,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const ui = new ElideUi();
   const workspace = new ElideWorkspace(ui, context.globalState);
   context.subscriptions.push(ui, workspace);
+  context.subscriptions.push(registerComposePreview(workspace, context), registerAndroidLogcat(workspace));
 
   const debugConfigurations = new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions);
   const nativeDebugConfigurations = new ElideNativeDebugConfigurationProvider(workspace, ui);

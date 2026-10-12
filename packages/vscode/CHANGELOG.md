@@ -4,6 +4,22 @@ All notable changes to the Elide extension are documented here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Android Logcat output channels with device selection, application UID, priority and literal-text filters,
+  and clear, stop and restart commands. Clearing the editor output leaves the device's shared log buffer intact.
+- Host-side Compose previews using Google's standalone renderer and Android layoutlib, with no device, emulator,
+  Android Studio, APK installation or signing requirement. Includes verified runtime downloads, compiled annotation
+  discovery, preview configurations/multi-previews/parameter providers, overloaded preview functions, a preview gallery,
+  live unsaved Kotlin/Java updates, warmed persistent incremental compilers and renderers, detection-to-paint timing, and
+  correct Compose compiler configuration for the Kotlin LSP.
+- Android app bundles and dynamic-feature modules in the project model and sidebar, including delivery mode,
+  base/feature relationships, module build targets and isolated feature source/resource roots.
+- Dagger/Hilt editor support: run available annotation-processing compile targets during sync and import
+  generated Java/kapt sources across workspace libraries without exposing kapt stubs.
+
 ## [0.5.0](https://github.com/elide-dev/vscode/compare/v0.4.0...v0.5.0) (2026-09-24)
 
 

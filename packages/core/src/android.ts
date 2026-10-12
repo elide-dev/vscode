@@ -79,6 +79,11 @@ export function androidDebugTask(artifact: string): string {
   return `android-debug-${artifact}`;
 }
 
+/** A dynamic feature stages a bundle module, not a standalone published/installable archive. */
+export function androidFeatureTask(artifact: string): string {
+  return `android-module-${artifact}`;
+}
+
 /** The target that mints the keystore `artifact` signs with, using the Android debug conventions. */
 export function androidKeystoreTask(artifact: string): string {
   return `android-keystore-${artifact}`;
@@ -89,6 +94,7 @@ export function androidKeystoreTask(artifact: string): string {
  * declares one and `<key>.apk` / `<key>.aab` / `<key>.aar` otherwise.
  */
 export function androidArtifactFile(root: string, artifact: string, kind: AndroidArtifactKind, outputName?: string): string {
+  if (kind === "feature") return path.join(root, OUTPUT_DIR, ANDROID_STAGE_DIR, artifact, `${artifact}.zip`);
   return path.join(root, OUTPUT_DIR, ARTIFACTS_DIR, outputName || `${artifact}.${kind}`);
 }
 
@@ -184,7 +190,7 @@ export function androidContentDirs(
     [artifact.jniLibs, ANDROID_DEFAULT_JNI_LIBS],
   ] as const) {
     if (declared.length > 0) dirs.push(...declared.map((dir) => normalizePath(path.resolve(root, dir))));
-    else {
+    else if (artifact.kind !== "feature") {
       const dir = normalizePath(path.resolve(root, conventional));
       if (exists(dir)) dirs.push(dir);
     }
