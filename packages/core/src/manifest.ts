@@ -1,7 +1,7 @@
 import { ManifestParseError } from "./errors.js";
 
 /**
- * Decoded `elide manifest` output.
+ * Decoded `elide project export` output.
  *
  * The CLI serializes its Pkl-derived project model with kotlinx.serialization (`encodeDefaults=false`,
  * `explicitNulls=false`, discriminator `"@type"`), so absent keys mean schema defaults and unions arrive as objects
@@ -209,7 +209,7 @@ function decodeEngine(v: unknown): string | undefined {
   return undefined;
 }
 
-/** Decode the JSON printed by `elide manifest`. Throws {@link ManifestParseError} on malformed input. */
+/** Decode the JSON printed by `elide project export` (`elide manifest` before Elide 1.6). Throws {@link ManifestParseError} on malformed input. */
 export function decodeManifest(text: string): Manifest {
   let raw: unknown;
   try {

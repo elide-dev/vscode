@@ -112,7 +112,7 @@ export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts
   opts.onProgress?.("Querying Elide version");
   const elideVersion = await cli.version(run);
 
-  // `elide manifest` has already validated the member list at the root: every entry is a directory below it holding
+  // `elide project export` has already validated the member list at the root: every entry is a directory below it holding
   // a manifest, and no two members share a name.
   const projects: ProjectSpec[] = [{ name: projectName(manifest, root), root, cli, manifest }];
   for (const entry of manifest.workspaceMembers) {

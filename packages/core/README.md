@@ -8,13 +8,13 @@ is referenced anywhere in this package.
 
 | Module | Responsibility |
 | --- | --- |
-| `elide.ts` | Locate an Elide distribution (explicit home, `$ELIDE_HOME`, platform install locations, `PATH`) and run CLI commands (`manifest`, `install`, `classpath`). |
-| `manifest.ts` | Decode `elide manifest` JSON into a typed manifest: source sets, Kotlin compiler options, entrypoints, JVM settings. |
+| `elide.ts` | Locate an Elide distribution (explicit home, `$ELIDE_HOME`, platform install locations, `PATH`) and run CLI commands (`project export`, `install`, `classpath`). |
+| `manifest.ts` | Decode `elide project export` JSON into a typed manifest: source sets, Kotlin compiler options, entrypoints, JVM settings. |
 | `sourceRoots.ts`, `libraries.ts` | Derive source roots and resolve classpath entries into libraries with attached `-sources.jar` / `-javadoc.jar`. |
 | `jdk.ts` | Discover installed JDKs (SDKMAN, macOS, Linux, Windows locations) and pick one matching the project's `jvm.target`. |
 | `model.ts` | The resulting project model: projects, modules, libraries, SDK. |
 | `workspace.ts` | Elide workspaces: members declared by a manifest, sibling artifacts on a member's classpath and the source sets behind them. |
-| `pkl.ts` | Read and edit `elide.pkl` as text, for what `elide manifest` cannot answer (artifact source positions, the workspace above a folder). |
+| `pkl.ts` | Read and edit `elide.pkl` as text, for what `elide project export` cannot answer (artifact source positions, the workspace above a folder). |
 | `kotlinLsp.ts` | Emit the JSON workspace (`workspace.json`) consumed by the JetBrains Kotlin language server. |
 
 ## Usage

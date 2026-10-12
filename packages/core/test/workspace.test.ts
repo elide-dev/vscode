@@ -149,13 +149,13 @@ describe("findEnclosingWorkspace", () => {
 });
 
 /**
- * A stand-in for the CLI: answers `manifest` and `classpath` from files in the directory it is invoked in, the way
+ * A stand-in for the CLI: answers `project export` and `classpath` from files in the directory it is invoked in, the way
  * the real one answers for the project it is focused on, and records every `install` in the workspace root.
  */
 const FAKE_ELIDE = `#!/bin/sh
 case "$1" in
   --version) echo "1.5.4+test" ;;
-  manifest) cat .fake/manifest.json ;;
+  project) cat .fake/manifest.json ;;
   classpath) cat ".fake/classpath-\${2%%:*}.txt" ;;
   install) echo "$PWD" >> "$FAKE_INSTALL_LOG" ;;
 esac

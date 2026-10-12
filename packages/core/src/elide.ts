@@ -256,10 +256,34 @@ export class ElideCli {
     return stdout.trim().split("\n")[0]?.trim() ?? "";
   }
 
-  /** `elide manifest` → decoded manifest JSON. */
+  /**
+   * `elide project export` → decoded manifest JSON, falling back to `elide manifest` on a CLI that predates the
+   * export command (before 1.6). The first attempt's stderr is held back so that fallback leaves no usage error behind.
+   */
   async manifest(opts: RunOptions = {}): Promise<Manifest> {
+    const held: string[] = [];
+    const replay = () => {
+      for (const line of held) opts.onLine?.(line, true);
+    };
+    try {
+      const manifest = await this.readManifest(["project", "export"], {
+        ...opts,
+        onLine: (line, stderr) => (stderr ? held.push(line) : opts.onLine?.(line, false)),
+      });
+      replay();
+      return manifest;
+    } catch (e) {
+      if (!isUnknownSubcommand(e)) {
+        replay();
+        throw e;
+      }
+    }
+    return this.readManifest(["manifest"], opts);
+  }
+
+  private async readManifest(command: readonly string[], opts: RunOptions): Promise<Manifest> {
     let json = "";
-    await this.run(["manifest", ...elideFlagArgs(this.flags)], {
+    await this.run([...command, ...elideFlagArgs(this.flags)], {
       ...opts,
       onLine: (line, stderr) => {
         if (!stderr) json += `${line}\n`;
@@ -328,6 +352,11 @@ export class ElideCli {
   async init(templateId: string, answers: Readonly<Record<string, string>>, opts: RunOptions = {}): Promise<void> {
     await this.run(initArgs(templateId, answers), opts);
   }
+}
+
+/** Whether `e` is the CLI's usage error for a subcommand it does not have (exit 2, `unrecognized subcommand`). */
+export function isUnknownSubcommand(e: unknown): boolean {
+  return e instanceof ElideCommandFailedError && e.exitCode === 2 && e.stderr.includes("unrecognized subcommand");
 }
 
 /** Split a platform-native classpath string; relative entries are resolved against `root`. */

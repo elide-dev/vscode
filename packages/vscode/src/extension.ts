@@ -119,7 +119,7 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
     const project = workspace.addProject(uri);
     if (!project) {
       // A manifest nested in an Elide workspace can be a member its root declares — or the one whose absence failed
-      // the last sync — and only a sync of the root can tell: the member list is whatever `elide manifest` says.
+      // the last sync — and only a sync of the root can tell: the member list is whatever `elide project export` says.
       const located = workspace.locate(uri);
       const owner = located ? workspace.projectFor(path.dirname(located.fsPath)) : undefined;
       const inWorkspace = owner !== undefined && (owner.workspaceRoot !== undefined || (owner.model?.members.length ?? 0) > 0);

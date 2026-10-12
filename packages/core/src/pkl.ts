@@ -1,7 +1,7 @@
 /**
  * Reading and editing `elide.pkl` as text.
  *
- * `elide manifest` answers for a project the CLI can already load, which is not every question an editor asks: the
+ * `elide project export` answers for a project the CLI can already load, which is not every question an editor asks: the
  * artifacts a manifest declares carry no source positions in that JSON, and the workspace above a folder has to be
  * found before any project is loaded. Both are read from the manifest text instead, with the little of Pkl's syntax
  * those questions need — braces, string literals and `//` comments.
