@@ -159,6 +159,17 @@
           "default": true,
           "markdownDescription": "Boot the Android emulator with a window. Off passes `--no-window`, which runs it headless."
         },
+        "elide.android.composePreview.prewarm": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Start the Compose preview renderer and compiler in the background when a Kotlin file with `@Preview` functions is focused in a trusted Android project, so **Elide: Open Compose Preview** opens in about a second. Runs the file's previews from the last build's classes; never builds, and never downloads the renderer runtime. Requires `#elide.android.composePreview.keepAliveMinutes#` above 0."
+        },
+        "elide.android.composePreview.keepAliveMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "markdownDescription": "Minutes an unused Compose preview backend (render JVMs and compiler workers, several GB of memory) stays warm after its panel closes or after prewarming. `0` stops it with its panel and disables prewarming."
+        },
         "elide.flags": {
           "type": "array",
           "items": {

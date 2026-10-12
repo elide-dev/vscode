@@ -106,6 +106,8 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `elide.debug.miDebuggerPath` | `""` | `gdb` / `lldb-mi` binary for `elide-native` sessions; empty resolves `gdb` on `PATH`. |
 | `elide.android.sdk` | `""` | SDK root the device list is read from; empty resolves the one the build would use. |
 | `elide.android.emulatorWindow` | `true` | Boot the emulator with a window; off passes `--no-window`. |
+| `elide.android.composePreview.prewarm` | `true` | Start the Compose preview backend when a file with `@Preview` functions is focused. |
+| `elide.android.composePreview.keepAliveMinutes` | `10` | Minutes an unused Compose preview backend stays warm; `0` stops it with its panel. |
 
 The extension also maintains two Kotlin LSP settings: `intellij.buildTool` (pinned to `json` in workspace settings) and
 `intellij.jdkForSymbolResolution` (an absolute path, written to user settings only). Explicit values you set by hand
@@ -234,23 +236,37 @@ multi-preview meta-annotations and `@PreviewParameter` providers reach the rende
 configuration/provider value, respecting options such as dimensions, background, locale, font scale and UI mode.
 Rendering errors appear with the affected preview rather than leaving an old image on screen.
 
-Kotlin/Java changes refresh live, including unsaved editor buffers. After initialization, persistent compiler
-workers incrementally compile private source snapshots; persistent layoutlib workers render the new classes.
-Initialization also warms the incremental compiler with two unchanged-source passes before publishing the first gallery.
-The gallery keeps its previous images while updating, publishes only the latest edit, and reports elapsed time
-from change detection through webview paint. Compiler failures clear the stale gallery and show diagnostics.
+Kotlin/Java changes refresh live, including unsaved editor buffers. Persistent compiler workers incrementally
+compile private source snapshots; persistent layoutlib workers render the new classes. The gallery keeps its
+previous images while updating, publishes only the latest edit, and reports elapsed time from change detection
+through webview paint. Compiler failures clear the stale gallery and show diagnostics.
 Preview compilation does not overwrite workspace sources or build outputs.
 Large galleries use up to six renderer JVMs, limited to half the host's available CPUs.
 Source ownership follows the synced manifest's source selections. Adding the first Java source
 to a source set without recorded Java compiler inputs requires a save and full rebuild.
 
-Initial setup builds JVM classes and linked resources. Saving `.xml` or `.pkl` files, changing the project model,
-or pressing **Rebuild preview** performs that full build again. Projects using generated annotation-processor
-sources require a save and full rebuild; unsaved changes display a save prompt rather than stale generated code.
-These setup and rebuild paths are not sub-second updates.
+Opening a preview builds JVM classes and linked resources, but does not wait for that build to paint:
 
-**Fit previews** constrains large images to the panel. Builds do not steal editor focus. Closing the panel
-cancels pending work, stops its compiler/renderer processes, and removes temporary sources, caches and images.
+- **Prewarm.** Focusing a Kotlin file with `@Preview` functions in a trusted, synced Android project starts the
+  renderer JVMs and compiler workers in the background and renders that file from the last build's classes, so
+  **Elide: Open Compose Preview** typically paints in well under a second. Prewarming never builds and never
+  downloads the renderer runtime; it is off when `elide.android.composePreview.prewarm` is disabled.
+- **Keep-alive.** Closing the panel keeps its renderer and warm compilers for
+  `elide.android.composePreview.keepAliveMinutes` (default 10; `0` stops them with the panel). Reopening reuses them.
+  The backend holds several GB of memory while warm; at most one unused backend is kept.
+- **Build outputs as the first generation.** When the last build's classes match the current sources, they are
+  displayed directly instead of a cold compile; the incremental compiler warms in the background afterwards.
+- **Stored galleries.** Each gallery is stored under its exact inputs (build fingerprint, source text, renderer and
+  JDK), so reopening an unchanged file, even after restarting VS Code, or undoing an edit paints immediately.
+
+Until the build finishes, the status reads *verifying build…*; if the build changes resources, dependencies or
+compiler settings, the gallery re-renders. Saving `.xml` or `.pkl` files, changing the project model, or pressing
+**Rebuild preview** performs that build again. Projects using generated annotation-processor sources require a save
+and full rebuild; unsaved changes display a save prompt rather than stale generated code. A first preview of a
+project that was never built, or whose sources changed since its last build without a prewarmed backend, waits
+for the build and a cold renderer.
+
+**Fit previews** constrains large images to the panel. Builds do not steal editor focus.
 
 These are design-time snapshots, not interactive animation/click simulation or in-process Live Edit. Each render
 loads fresh project classes into the retained rendering runtime. Components requiring device services, application initialization or unsupported native libraries

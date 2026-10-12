@@ -1,5 +1,6 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -228,7 +229,7 @@ export class ComposeRenderer {
   private constructor(private readonly workers: RenderWorker[], private readonly directory: string) {}
 
   static async create(
-    runtime: ComposeRuntime, java: string, helperDirectory: string, directory: string, signal: AbortSignal,
+    runtime: ComposeRuntime, java: string, helperDirectory: string, cacheRoot: string, directory: string, signal: AbortSignal,
   ): Promise<ComposeRenderer> {
     signal.throwIfAborted();
     await mkdir(directory, { recursive: true });
@@ -236,12 +237,7 @@ export class ComposeRenderer {
     const workers: RenderWorker[] = [];
     let renderer: ComposeRenderer | undefined;
     try {
-      // Compile exactly once with the selected JDK, then share these classes across render workers.
-      await run(java, ["-cp", runtime.rendererClassPath.join(path.delimiter),
-        path.join(helperDirectory, "CompileRenderer.java"), sessionDirectory,
-        path.join(helperDirectory, "DiscoverPreviews.java"), path.join(helperDirectory, "RenderServer.java")],
-      { signal, timeout: 60_000, killSignal: "SIGKILL", maxBuffer: protocolLimit, windowsHide: true });
-      signal.throwIfAborted();
+      const classes = await compiledHelpers(runtime, java, helperDirectory, cacheRoot, signal);
       const count = Math.max(1, Math.min(6, Math.floor(availableParallelism() / 2)));
       const directories = Array.from({ length: count }, (_, index) => path.join(sessionDirectory, `worker-${index}`));
       await Promise.all(directories.map((workerDirectory) => mkdir(workerDirectory)));
@@ -250,7 +246,7 @@ export class ComposeRenderer {
         for (const worker of workers) worker.dispose();
       };
       for (const [index, workerDirectory] of directories.entries()) {
-        workers.push(new RenderWorker(java, runtime, sessionDirectory, workerDirectory, signal, index, count, failure));
+        workers.push(new RenderWorker(java, runtime, classes, workerDirectory, signal, index, count, failure));
       }
       renderer = new ComposeRenderer(workers, sessionDirectory);
       await Promise.all(workers.map((worker) => worker.ready));
@@ -299,5 +295,44 @@ export class ComposeRenderer {
     this.disposed = true;
     for (const worker of this.workers) worker.dispose();
     void rm(this.directory, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+const helperSources = ["DiscoverPreviews.java", "RenderServer.java"];
+
+/** Identifies the renderer code: pinned runtime plus helper sources. Equal digests render equal images. */
+export async function helperDigest(runtime: ComposeRuntime, helperDirectory: string): Promise<string> {
+  const hash = createHash("sha256").update(JSON.stringify(runtime.rendererClassPath));
+  for (const file of ["CompileRenderer.java", ...helperSources]) hash.update(file).update("\0").update(await readFile(path.join(helperDirectory, file)));
+  return hash.digest("hex");
+}
+
+/**
+ * Helpers compile against the pinned runtime with `--release 17`, so the classes depend only on
+ * their sources and that runtime. Compile once per content key and reuse across sessions.
+ */
+async function compiledHelpers(runtime: ComposeRuntime, java: string, helperDirectory: string, cacheRoot: string, signal: AbortSignal): Promise<string> {
+  const root = path.join(cacheRoot, "compose-helpers");
+  const destination = path.join(root, (await helperDigest(runtime, helperDirectory)).slice(0, 24));
+  const ready = async (): Promise<boolean> => {
+    try { return (await stat(path.join(destination, "RenderServer.class"))).isFile() && (await stat(path.join(destination, "ready"))).isFile(); }
+    catch { return false; }
+  };
+  if (await ready()) return destination;
+  await mkdir(root, { recursive: true });
+  const staging = await mkdtemp(path.join(root, "staging-"));
+  try {
+    await run(java, ["-cp", runtime.rendererClassPath.join(path.delimiter),
+      path.join(helperDirectory, "CompileRenderer.java"), staging, ...helperSources.map((file) => path.join(helperDirectory, file))],
+    { signal, timeout: 60_000, killSignal: "SIGKILL", maxBuffer: protocolLimit, windowsHide: true });
+    await writeFile(path.join(staging, "ready"), "");
+    try { await rename(staging, destination); }
+    catch (error) {
+      // Another extension host published the same content key first.
+      if (!await ready()) throw error;
+    }
+    return destination;
+  } finally {
+    await rm(staging, { recursive: true, force: true });
   }
 }

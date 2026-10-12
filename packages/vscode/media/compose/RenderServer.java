@@ -50,6 +50,7 @@ class RenderServer {
     private Renderer renderer;
     private Inputs inputs;
     private long resourceModified;
+    private byte[] resourceDigest;
     private DefaultModuleClassLoader dependencies;
     private DefaultModuleClassLoader generationLoader;
     private List<String> reloadableClassPath;
@@ -118,10 +119,24 @@ class RenderServer {
         }
     }
 
+    private static byte[] digest(Path file) throws IOException {
+        try {
+            return java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(file));
+        } catch (java.security.NoSuchAlgorithmException failure) {
+            throw new IllegalStateException(failure);
+        }
+    }
+
     private void prepare(Inputs next) throws Exception {
-        long modified = Files.getLastModifiedTime(Path.of(next.resourceApkPath())).toMillis();
+        Path resources = Path.of(next.resourceApkPath());
+        long modified = Files.getLastModifiedTime(resources).toMillis();
+        // Elide rewrites identical cached outputs on every build; only new content needs a new framework.
+        if (next.equals(inputs) && modified != resourceModified && Arrays.equals(digest(resources), resourceDigest)) {
+            resourceModified = modified;
+        }
         if (!next.equals(inputs) || modified != resourceModified) {
             closeRenderer();
+            resourceDigest = digest(resources);
             var project = new HashSet<>(next.projectClassPath());
             var stable = new ArrayList<String>();
             var reloadable = new ArrayList<String>();

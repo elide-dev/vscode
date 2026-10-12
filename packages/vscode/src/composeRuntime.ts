@@ -73,14 +73,7 @@ function runtimeAt(directory: string): ComposeRuntime {
   };
 }
 
-/** Installs into private staging directories, publishing only a complete, immutable runtime.
- * Competing extension hosts can provision independently: one atomic rename wins and the
- * others reuse that installation. Cancellation never invalidates another host's cache.
- */
-export async function ensureComposeRuntime(
-  cacheRoot: string, signal: AbortSignal, onProgress: (text: string) => void,
-): Promise<ComposeRuntime> {
-  signal.throwIfAborted();
+function runtimeInstallation(cacheRoot: string) {
   const host = `${process.platform}-${process.arch}`;
   const platform = PLATFORMS[host];
   if (!platform) {
@@ -101,6 +94,25 @@ export async function ensureComposeRuntime(
       throw error;
     }
   };
+  return { platform, key, root, destination, marker, required, isReady };
+}
+
+/** The verified runtime when it is already cached; never downloads. */
+export async function installedComposeRuntime(cacheRoot: string): Promise<ComposeRuntime | undefined> {
+  if (!PLATFORMS[`${process.platform}-${process.arch}`]) return undefined;
+  const installation = runtimeInstallation(cacheRoot);
+  return await installation.isReady() ? runtimeAt(installation.destination) : undefined;
+}
+
+/** Installs into private staging directories, publishing only a complete, immutable runtime.
+ * Competing extension hosts can provision independently: one atomic rename wins and the
+ * others reuse that installation. Cancellation never invalidates another host's cache.
+ */
+export async function ensureComposeRuntime(
+  cacheRoot: string, signal: AbortSignal, onProgress: (text: string) => void,
+): Promise<ComposeRuntime> {
+  signal.throwIfAborted();
+  const { platform, key, root, destination, marker, required, isReady } = runtimeInstallation(cacheRoot);
   if (await isReady()) {
     signal.throwIfAborted();
     return runtimeAt(destination);

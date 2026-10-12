@@ -14,7 +14,10 @@ All notable changes to the Elide extension are documented here. The format follo
   Android Studio, APK installation or signing requirement. Includes verified runtime downloads, compiled annotation
   discovery, preview configurations/multi-previews/parameter providers, overloaded preview functions, a preview gallery,
   live unsaved Kotlin/Java updates, warmed persistent incremental compilers and renderers, detection-to-paint timing, and
-  correct Compose compiler configuration for the Kotlin LSP.
+  correct Compose compiler configuration for the Kotlin LSP. Opening a preview paints without waiting for its build:
+  focusing a preview file prewarms the renderer and compilers (`elide.android.composePreview.prewarm`), closed
+  panels keep them warm (`elide.android.composePreview.keepAliveMinutes`), the last build's classes stand in for the
+  cold first compile, and galleries are stored by their exact inputs for instant reopen.
 - Android app bundles and dynamic-feature modules in the project model and sidebar, including delivery mode,
   base/feature relationships, module build targets and isolated feature source/resource roots.
 - Dagger/Hilt editor support: run available annotation-processing compile targets during sync and import

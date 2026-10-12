@@ -28,6 +28,10 @@ export interface ElideConfig {
   androidSdk: string | undefined;
   /** Whether `Elide: Start Android Emulator` boots the AVD with a window. */
   androidEmulatorWindow: boolean;
+  /** Start Compose preview infrastructure when a previewable Kotlin file is focused. */
+  composePreviewPrewarm: boolean;
+  /** Minutes an unused Compose preview backend stays warm; 0 stops it with its panel. */
+  composePreviewKeepAlive: number;
   codeLens: boolean;
   /** `-f` build flags added to every Elide invocation (`elide.flags`). */
   flags: string[];
@@ -50,6 +54,8 @@ export function readConfig(scope?: vscode.ConfigurationScope): ElideConfig {
     installClassifiers: c.get<string[]>("install.classifiers", ["sources"]),
     androidSdk: nonEmpty(c.get<string>("android.sdk")),
     androidEmulatorWindow: c.get<boolean>("android.emulatorWindow", true),
+    composePreviewPrewarm: c.get<boolean>("android.composePreview.prewarm", true),
+    composePreviewKeepAlive: Math.max(0, c.get<number>("android.composePreview.keepAliveMinutes", 10)),
     codeLens: c.get<boolean>("codeLens.enabled", true),
     flags: elideStringArrayFrom(c.get("flags")),
     commandOptions: {
