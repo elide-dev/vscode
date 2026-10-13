@@ -1,10 +1,13 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  ElideCli,
+  ElideCommandFailedError,
   ElideNotFoundError,
   InvalidElideHomeError,
+  distributionAt,
   lockfileDigest,
   lockfilesIn,
   outermostManifests,
@@ -113,5 +116,69 @@ describe("lockfileDigest", () => {
   test("a project without lockfiles digests to a constant", async () => {
     expect(await lockfileDigest(path.dirname(projectDev()))).toBe(await lockfileDigest(path.dirname(projectDev())));
     expect(await lockfilesIn(path.dirname(projectDev()))).toEqual([]);
+  });
+});
+
+/**
+ * Stand-ins for the CLI, with the exit codes and usage errors of the real ones: 1.6 removed `manifest` in favour of
+ * `project export`, which 1.5 does not have. Each prints its argv to stderr after the manifest.
+ */
+const MANIFEST_JSON = '{"name":"demo"}';
+const ELIDE_1_6 = `#!/bin/sh
+case "$1 $2" in
+  "project export") echo '${MANIFEST_JSON}'; echo "argv: $*" >&2 ;;
+  manifest*) echo 'elide manifest: removed; use \`elide project export\` instead' >&2; exit 2 ;;
+esac
+`;
+const ELIDE_1_5 = `#!/bin/sh
+case "$1 $2" in
+  "project export") printf "error: unrecognized subcommand 'export'\\n\\nUsage: elide project [-p --project <PATH>] [SUBCOMMAND]\\n" >&2; exit 2 ;;
+  manifest*) echo '${MANIFEST_JSON}'; echo "argv: $*" >&2 ;;
+esac
+`;
+const ELIDE_BROKEN_PROJECT = `#!/bin/sh
+echo "Pkl Error: Cannot find module 'elide:nope.pkl'" >&2
+exit 1
+`;
+
+describe("ElideCli.manifest", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+  const cliFor = (script: string, flags: string[] = []): ElideCli => {
+    const home = mkdtempSync(path.join(tmpdir(), "elide-home-"));
+    dirs.push(home);
+    mkdirSync(path.join(home, "bin"));
+    writeFileSync(path.join(home, "bin", "elide"), script);
+    chmodSync(path.join(home, "bin", "elide"), 0o755);
+    return new ElideCli(distributionAt(home), home, flags);
+  };
+  const manifestOf = async (cli: ElideCli) => {
+    const stderr: string[] = [];
+    const manifest = await cli.manifest({ onLine: (line, isStderr) => isStderr && stderr.push(line) });
+    return { manifest, stderr };
+  };
+
+  test("reads `elide project export` on Elide 1.6", async () => {
+    const { manifest, stderr } = await manifestOf(cliFor(ELIDE_1_6, ["release"]));
+    expect(manifest.name).toBe("demo");
+    expect(stderr).toEqual(["argv: project export -f release"]);
+  });
+
+  test("falls back to `elide manifest` on a CLI without `project export`, hiding the usage error", async () => {
+    const { manifest, stderr } = await manifestOf(cliFor(ELIDE_1_5, ["release"]));
+    expect(manifest.name).toBe("demo");
+    expect(stderr).toEqual(["argv: manifest -f release"]);
+  });
+
+  test("any other failure of `project export` is reported as is", async () => {
+    const stderr: string[] = [];
+    const failure = await cliFor(ELIDE_BROKEN_PROJECT)
+      .manifest({ onLine: (line, isStderr) => isStderr && stderr.push(line) })
+      .catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(ElideCommandFailedError);
+    expect((failure as ElideCommandFailedError).args).toEqual(["project", "export"]);
+    expect(stderr).toEqual(["Pkl Error: Cannot find module 'elide:nope.pkl'"]);
   });
 });

@@ -33,7 +33,8 @@ and a pinned (`&version=`) link.
 
 Opening a folder that contains `elide.pkl` runs a **sync**:
 
-1. `elide manifest` — the resolved project manifest as JSON (source sets, Kotlin compiler options, entrypoints).
+1. `elide project export` (`elide manifest` before Elide 1.6) — the resolved project manifest as JSON (source sets,
+   Kotlin compiler options, entrypoints).
 2. `elide install` — only when the lockfile (`.dev/elide.lock*.bin`) is older than the manifest.
 3. `elide classpath <source set>:compile` for every compilable source set.
 4. `workspace.json` is written at the workspace folder root in the Kotlin LSP's JSON workspace format (one module per

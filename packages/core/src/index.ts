@@ -10,6 +10,7 @@ export {
   isLockfileCurrent,
   isLockfileName,
   isNestedUnder,
+  isUnknownSubcommand,
   killProcessTree,
   lockfileDigest,
   lockfilesIn,

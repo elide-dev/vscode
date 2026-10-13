@@ -32,7 +32,7 @@ export function artifactProjectRoot(entry: string): string | undefined {
  * The members a manifest declares, read from its text: `workspace { members { "model" "cli" } }`.
  *
  * Reading the text answers for a directory no project has been loaded from — the workspace above the folder an
- * editor was pointed at — which `elide manifest` cannot be asked about without loading that project first.
+ * editor was pointed at — which `elide project export` cannot be asked about without loading that project first.
  */
 export function parseWorkspaceMembers(text: string): string[] {
   const workspace = pklBlock(text, "workspace");
