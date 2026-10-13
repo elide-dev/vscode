@@ -23,7 +23,7 @@ import {
 } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { readConfig } from "./config.js";
-import { reloadKotlinLsp } from "./jetbrains.js";
+import { KotlinSetupPendingError, notifyKotlinSetupPending, reloadKotlinLsp } from "./jetbrains.js";
 import type { ElideUi } from "./output.js";
 
 export interface ElideProject {
@@ -430,6 +430,11 @@ export class ElideWorkspace implements vscode.Disposable {
       void reloadKotlinLsp().then(
         (used) => this.ui.log(used ? `Kotlin LSP reload requested via ${used}` : "Kotlin LSP not running yet; it will import workspace.json on start"),
         (e) => {
+          if (e instanceof KotlinSetupPendingError) {
+            this.ui.log(`Kotlin LSP not started: ${e.message}`);
+            notifyKotlinSetupPending(e.steps, { once: true });
+            return;
+          }
           this.ui.log(`Kotlin LSP reload failed: ${e instanceof Error ? e.message : String(e)}`);
           void vscode.window.showWarningMessage("Elide: Kotlin LSP did not reload; run 'IntelliJ: Restart Language Server'.");
         },
