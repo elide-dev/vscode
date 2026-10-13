@@ -26,6 +26,7 @@ export {
 } from "./elide.js";
 export * from "./artifacts.js";
 export * from "./buildTasks.js";
+export * from "./coverage.js";
 export * from "./invocation.js";
 export * from "./init.js";
 export * from "./jvmTests.js";

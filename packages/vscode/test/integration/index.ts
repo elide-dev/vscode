@@ -3,11 +3,11 @@
  * JetBrains Kotlin LSP import → hovers/diagnostics, then manifest-change resync, tasks, and JDWP debugging.
  */
 import assert from "node:assert/strict";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { resolveElideDistribution } from "@elide/ide-core";
+import { compareElideVersions, parseElideVersion, resolveElideDistribution } from "@elide/ide-core";
 import * as vscode from "vscode";
 import type { ElideExtensionApi as ElideApi } from "../../src/extension.js";
 import { errorsOf, hoverAt, log, waitFor } from "./helpers.js";
@@ -283,6 +283,33 @@ export async function run(): Promise<void> {
     2_000,
   );
   log("test explorer ok");
+
+  // 4f'. Coverage: with a JaCoCo XML report requested, a run with coverage publishes the JVM coverage of the main
+  //      source, where `main` is never called by the test and `greeting` is. Elide 1.6 moved the setting from
+  //      `testing.coverage` to a top-level `coverage` block.
+  const manifestSource = readFileSync(manifest, "utf8");
+  const elideVersion = parseElideVersion(execFileSync(resolveElideDistribution({}).bin, ["--version"], { encoding: "utf8" }));
+  const legacyCoverage = elideVersion !== undefined && compareElideVersions(elideVersion, { major: 1, minor: 6, patch: 0 }) < 0;
+  appendFileSync(
+    manifest,
+    legacyCoverage
+      ? `\ntesting {\n    coverage {\n        jvm {\n            reports {\n                import("elide:Jvm.pkl").xmlReport()\n            }\n        }\n    }\n}\n`
+      : `\ncoverage {\n    jvm {\n        reports {\n            import("elide:Coverage.pkl").xmlReport()\n        }\n    }\n}\n`,
+  );
+  const covered = await waitFor(
+    "coverage of Main.kt published",
+    async () => {
+      const summary = await api.runAll({ coverage: true });
+      return summary.coverage?.[mainKt.fsPath] ? summary : undefined;
+    },
+    180_000,
+    2_000,
+  );
+  writeFileSync(manifest, manifestSource);
+  log("runAll with coverage:", JSON.stringify(covered.coverage));
+  const mainCoverage = covered.coverage![mainKt.fsPath]!;
+  assert.ok(mainCoverage.covered > 0 && mainCoverage.covered < mainCoverage.total, `partial coverage of Main.kt, got ${JSON.stringify(mainCoverage)}`);
+  log("coverage ok");
 
   // 4g. Sidebar: the activity-bar view focuses, the tree exposes the project with its four groups, and the lazily
   //     loaded build targets come from `elide build --inspect`.

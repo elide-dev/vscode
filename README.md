@@ -167,6 +167,31 @@ The **Debug** profile runs the same command with a bare `--debugger` and attache
 agent announces itself. That flag takes no address on `elide test`: the agent always binds 5005, so one debug run at
 a time.
 
+The **Run with Coverage** profile adds `--coverage` and, once the run exits, shows the reports it wrote in the
+editor's coverage gutter and the Test Coverage view: guest (JavaScript/TypeScript) LCOV from
+`.dev/reports/coverage/js/lcov.info`, and JVM coverage from the JaCoCo XML report under
+`.dev/reports/coverage/jvm/<task>/` (`.dev/artifacts/coverage/jvm/<task>/` before Elide 1.6), with per-line branch
+counts. Elide writes JVM coverage as JaCoCo execution data (`.exec`) by default, which cannot be read without the
+compiled classes; ask for the XML report in `elide.pkl` to see it in the editor:
+
+```pkl
+import "elide:Coverage.pkl" as Coverage
+
+coverage {
+  jvm {
+    reports {
+      Coverage.xmlReport()
+    }
+  }
+}
+```
+
+Before Elide 1.6 the same setting is `testing { coverage { jvm { reports { Jvm.xmlReport() } } } }`, with
+`import "elide:Jvm.pkl" as Jvm`.
+
+JaCoCo sources are resolved against the project's source roots by package and file name, so a Kotlin file whose
+directory does not match its package is not shown.
+
 ## Debugging
 
 Launch configuration type `elide`:
