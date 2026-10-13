@@ -4,6 +4,13 @@ All notable changes to the Elide extension are documented here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1](https://github.com/elide-dev/vscode/compare/v0.6.0...v0.6.1) (2026-10-13)
+
+
+### Fixed
+
+* point at the kotlin extension's first-run setup instead of a reload failure ([#21](https://github.com/elide-dev/vscode/issues/21)) ([de66dbf](https://github.com/elide-dev/vscode/commit/de66dbf2e0ab1c7ccc6eaf811bae45eac9bc2b27))
+
 ## [0.6.0](https://github.com/elide-dev/vscode/compare/v0.5.0...v0.6.0) (2026-10-13)
 
 
