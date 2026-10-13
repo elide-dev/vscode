@@ -133,6 +133,10 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         this.artifacts.clear();
         this.changed.fire(undefined);
       }),
+      vscode.commands.registerCommand("elide.androidRefreshDevices", () => this.changed.fire(undefined)),
+      vscode.tasks.onDidEndTask((event) => {
+        if (event.execution.task.source === "elide") this.changed.fire(undefined);
+      }),
     ];
   }
 
@@ -331,17 +335,24 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
    */
   private async androidDeviceNodes(project: ElideProject): Promise<ElideNode[]> {
     if (!androidSdkFor(project)) return [{ kind: "message", label: "no Android SDK found — set elide.android.sdk or ANDROID_HOME" }];
-    const devices = await attachedDevices(project);
-    if (!devices) return [{ kind: "message", label: "no adb in the SDK — install platform-tools" }];
-    if (devices.length === 0) return [{ kind: "message", label: "no device attached" }];
-    return devices.map((device) => ({
-      kind: "androidDevice",
-      label: device.serial,
-      root: project.root,
-      device: device.serial,
-      description: device.ready ? (device.emulator ? "emulator" : "device") : device.state,
-      ready: device.ready,
-    }));
+    try {
+      const devices = await attachedDevices(project);
+      if (!devices) return [{ kind: "message", label: "no adb in the SDK — install platform-tools" }];
+      if (devices.length === 0) return [{ kind: "message", label: "no device attached — connect a device or start an emulator" }];
+      return devices.map((device) => ({
+        kind: "androidDevice",
+        label: device.serial,
+        root: project.root,
+        device: device.serial,
+        description: device.ready ? (device.emulator ? "emulator" : "device") :
+          device.state === "unauthorized" ? "unauthorized — unlock device and accept USB debugging" : `${device.state} — reconnect device`,
+        ready: device.ready,
+      }));
+    } catch (error) {
+      this.ui.log(`Android device discovery: ${error instanceof Error ? error.message : String(error)}`);
+      return [{ kind: "androidAction", label: "Device discovery failed", root: project.root,
+        command: "elide.androidDoctor", description: "Check Android environment", icon: "warning" }];
+    }
   }
 
   /** `elide build --inspect` of the workspace `project` belongs to, run in the workspace root and cached. */
@@ -386,6 +397,9 @@ function androidGroupNodes(root: string, android: AndroidProjectModel | undefine
   const nodes: ElideNode[] = android.targets.flatMap((target) => androidTargetNodes(root, target));
   nodes.push({ kind: "group", label: GROUP_LABELS.androidDevices, root, group: "androidDevices" });
   nodes.push(
+    { kind: "androidAction", label: "Select deployment target", root, command: "elide.androidSelectTarget", description: "application and device for Run / Debug", icon: "device-mobile" },
+    { kind: "androidAction", label: "Check Android environment", root, command: "elide.androidDoctor", description: "SDK, tools and device readiness", icon: "checklist" },
+    { kind: "androidAction", label: "Refresh devices", root, command: "elide.androidRefreshDevices", description: "discover connected devices", icon: "refresh" },
     { kind: "androidAction", label: "Show logcat", root, command: "elide.androidLogcat", description: "device and application logs", icon: "output" },
     { kind: "androidAction", label: "Start emulator", root, command: "elide.androidStartEmulator", description: android.avd, icon: "vm-running" },
     { kind: "androidAction", label: "Stop emulators", root, command: "elide.androidStopEmulator", description: "adb emu kill", icon: "vm-outline" },

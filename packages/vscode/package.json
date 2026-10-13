@@ -1,7 +1,7 @@
 {
   "name": "elide",
   "displayName": "Elide",
-  "description": "Elide build tool integration: Kotlin/Java classpath for the Kotlin LSP, build/run/test tasks, and JDWP debugging.",
+  "description": "Elide for Kotlin, Java and Android: project sync, build/run/debug, device-free Compose previews, deployment targets, Logcat and tests.",
   "version": "0.5.0",
   "preview": true,
   "publisher": "elide",
@@ -38,6 +38,9 @@
     "build",
     "build tool",
     "kotlin lsp",
+    "android",
+    "compose",
+    "logcat",
     "pkl"
   ],
   "capabilities": {
@@ -54,7 +57,7 @@
     "workspace"
   ],
   "main": "./dist/extension.js",
-  "extensionDependencies": [
+  "extensionPack": [
     "JetBrains.kotlin-server"
   ],
   "activationEvents": [
@@ -65,6 +68,12 @@
     "onView:elide.activity"
   ],
   "contributes": {
+    "languages": [
+      {
+        "id": "elide-android-logcat",
+        "aliases": ["Elide Android Logcat"]
+      }
+    ],
     "configuration": {
       "title": "Elide",
       "properties": {
@@ -375,6 +384,24 @@
         "icon": "$(file-code)"
       },
       {
+        "command": "elide.androidSelectTarget",
+        "category": "Elide",
+        "title": "Select Android Deployment Target…",
+        "icon": "$(device-mobile)"
+      },
+      {
+        "command": "elide.androidDoctor",
+        "category": "Elide",
+        "title": "Check Android Environment",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "elide.androidRefreshDevices",
+        "category": "Elide",
+        "title": "Refresh Android Devices",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "elide.androidRun",
         "category": "Elide",
         "title": "Run Android App…",
@@ -660,6 +687,11 @@
           "command": "elide.addMember",
           "when": "view == elide.projects && viewItem == project",
           "group": "inline@3"
+        },
+        {
+          "command": "elide.androidDoctor",
+          "when": "view == elide.projects && viewItem =~ /^project/",
+          "group": "android@1"
         },
         {
           "command": "elide.revealLibrary",
@@ -1049,7 +1081,25 @@
               },
               "device": {
                 "type": "string",
-                "markdownDescription": "Device serial to pin the run to (`--device=<serial>`); empty lets the `android-debug-<artifact>` target choose, booting the emulator when nothing is attached."
+                "markdownDescription": "Device serial to pin the debug launch to (`--device=<serial>`). Empty uses the remembered deployment target or offers a device selection; a disconnected selection never silently deploys elsewhere."
+              },
+              "flags": {
+                "type": "array",
+                "items": { "type": "string" },
+                "markdownDescription": "Build flags (`-f NAME[=VALUE]`) layered over `elide.flags`."
+              },
+              "options": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": ["string", "number", "boolean", "array"],
+                  "items": { "type": ["string", "number"] }
+                },
+                "markdownDescription": "CLI build options layered over `elide.build.options`. Use `device`, not an option, to select the deployment device."
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": { "type": "string" },
+                "description": "Extra environment variables for the Elide build process."
               },
               "port": {
                 "type": "number",
@@ -1088,7 +1138,7 @@
       {
         "id": "elide.gettingStarted",
         "title": "Get started with Elide",
-        "description": "Build, run, test and debug Kotlin/JVM projects with the Elide build tool.",
+        "description": "Build, run, test and debug Kotlin/JVM and Android projects with the Elide build tool.",
         "steps": [
           {
             "id": "install",
@@ -1132,6 +1182,17 @@
             },
             "completionEvents": [
               "onCommand:elide.sync"
+            ]
+          },
+          {
+            "id": "android",
+            "title": "Prepare Android development",
+            "description": "Check your SDK and devices even before sync succeeds. Then choose a persistent APK and device for Run and Debug.\n[Check Android Environment](command:elide.androidDoctor)\n[Select Deployment Target…](command:elide.androidSelectTarget)\n[Open Compose Preview](command:elide.androidComposePreview)",
+            "media": {
+              "markdown": "media/walkthrough/run.md"
+            },
+            "completionEvents": [
+              "onCommand:elide.androidSelectTarget"
             ]
           },
           {

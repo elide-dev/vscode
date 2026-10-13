@@ -10,6 +10,7 @@ import {
 } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { androidSdkFor, toAndroidTarget } from "./android.js";
+import { ANDROID_LOGCAT_LANGUAGE, registerAndroidStackLinks } from "./androidStackLinks.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
 
 interface LogcatView {
@@ -27,7 +28,7 @@ const PACKAGE_NAME = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/;
 /** Registers the palette/tree commands and owns all adb processes and output channels. */
 export function registerAndroidLogcat(workspace: ElideWorkspace): vscode.Disposable {
   const views = new Map<string, LogcatView>();
-  const registrations: vscode.Disposable[] = [];
+  const registrations: vscode.Disposable[] = [registerAndroidStackLinks(workspace)];
   let disposed = false;
   let generation = 0;
   let discovery: { root: string; controller: AbortController } | undefined;
@@ -187,7 +188,7 @@ export function registerAndroidLogcat(workspace: ElideWorkspace): vscode.Disposa
     if (!chosen || !usable(project.root, revision)) return;
     let view = existing;
     if (!view) {
-      const output = vscode.window.createOutputChannel(`Elide Logcat: ${project.model?.name ?? project.root} (${project.root})`);
+      const output = vscode.window.createOutputChannel(`Elide Logcat: ${project.model?.name ?? project.root} (${project.root})`, ANDROID_LOGCAT_LANGUAGE);
       const stream = new AndroidLogcatSession(
         (line) => output.appendLine(line),
         (error) => {

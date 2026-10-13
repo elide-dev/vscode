@@ -1,7 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
-import { ANDROID_DEVICE_OPTION, androidDebugTask, elideInvocationArgs, mergeElideInvocationOptions, resolveElideDistribution } from "@elide/ide-core";
+import { ANDROID_DEVICE_OPTION, androidDebugTask, elideInvocationArgs, elideInvocationOptionsFrom, mergeElideInvocationOptions, resolveElideDistribution, type ElideOptionValue } from "@elide/ide-core";
 import * as vscode from "vscode";
+import type { AndroidDeploymentController } from "./androidDeployment.js";
 import { configuredInvocation, readConfig } from "./config.js";
 import { launchWithJdwp, resolveAttachType } from "./debug.js";
 import type { ElideUi } from "./output.js";
@@ -17,11 +18,14 @@ export const ELIDE_ANDROID_DEBUG_TYPE = "elide-android";
 interface ElideAndroidLaunchConfig extends vscode.DebugConfiguration {
   /** Android application package to build, install and debug. */
   artifact?: string;
-  /** Device serial to pin the run to; absent lets the debug target choose, booting the emulator when nothing is attached. */
+  /** Device serial to validate and pin; absent uses the shared Android deployment selection. */
   device?: string;
   /** Local port of a JDWP socket already forwarded off a device: attach to it, building and installing nothing. */
   port?: number;
   project?: string;
+  flags?: string[];
+  options?: Record<string, ElideOptionValue>;
+  env?: Record<string, string>;
 }
 
 /**
@@ -36,6 +40,7 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
     private readonly ui: ElideUi,
     /** Attach sessions and the Elide process each owns, shared with the `elide` provider so ending one ends the other. */
     private readonly sessions: Map<string, ChildProcess>,
+    private readonly deployments: AndroidDeploymentController,
   ) {}
 
   provideDebugConfigurations(): vscode.DebugConfiguration[] {
@@ -52,13 +57,34 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
       void vscode.window.showErrorMessage("Elide: open a workspace folder containing elide.pkl to debug.");
       return undefined;
     }
-    if (!launch.artifact && launch.port === undefined) {
+    if ((typeof launch.artifact !== "string" || !launch.artifact) && launch.port === undefined) {
       void vscode.window.showErrorMessage("Elide: name the Android application package to debug in `artifact`.");
       return undefined;
     }
-    const root = launch.project
-      ? path.resolve(targetFolder.uri.fsPath, launch.project)
-      : (this.workspace.projectsIn(targetFolder)[0]?.root ?? targetFolder.uri.fsPath);
+    if (launch.device !== undefined && (typeof launch.device !== "string" || !launch.device)) {
+      void vscode.window.showErrorMessage("Elide: `device` must name a nonempty Android device serial.");
+      return undefined;
+    }
+    let root: string | undefined;
+    if (launch.project) {
+      root = path.resolve(targetFolder.uri.fsPath, launch.project);
+    } else if (launch.port !== undefined) {
+      root = this.workspace.projectsIn(targetFolder)[0]?.root ?? targetFolder.uri.fsPath;
+    } else {
+      const candidates = this.workspace.projectsIn(targetFolder).filter((candidate) =>
+        candidate.model?.android?.targets.some((target) => target.kind === "apk" && target.name === launch.artifact),
+      );
+      const editor = vscode.window.activeTextEditor;
+      const owner = editor?.document.uri.scheme === "file" ? this.workspace.projectFor(editor.document.uri.fsPath) : undefined;
+      root = candidates.find((candidate) => candidate === owner)?.root
+        ?? candidates.find((candidate) => candidate.root === this.deployments.target?.root)?.root;
+      if (!root) root = candidates.length === 1 ? candidates[0]?.root : (await vscode.window.showQuickPick(
+        candidates.map((candidate) => ({ label: candidate.model?.name ?? candidate.root, description: candidate.root, root: candidate.root })),
+        { placeHolder: `Android project declaring APK '${launch.artifact}'` },
+      ))?.root;
+      if (candidates.length === 0) void vscode.window.showErrorMessage(`Elide: '${launch.artifact}' is not an Android APK in any synced project in this folder.`);
+      if (!root) return undefined;
+    }
     const project = this.workspace.projectAt(root);
     if (!project) {
       void vscode.window.showWarningMessage(`Elide: project ${root} is not synced; run 'Elide: Sync Project(s)'.`);
@@ -84,6 +110,14 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
       return undefined;
     }
 
+    if (!await vscode.workspace.saveAll(false)) return undefined;
+    const deployment = await this.deployments.resolve({
+      root: project.root,
+      artifact: launch.artifact,
+      ...(launch.device ? { device: launch.device } : {}),
+    });
+    if (!deployment) return undefined;
+
     let dist;
     try {
       dist = resolveElideDistribution({ explicitHome: settings.home });
@@ -91,13 +125,16 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
       void vscode.window.showErrorMessage(`Elide: ${e instanceof Error ? e.message : String(e)}`);
       return undefined;
     }
-    const invocation = mergeElideInvocationOptions(configuredInvocation(settings, "build"), {
-      args: [androidDebugTask(launch.artifact ?? "")],
-      ...(launch.device ? { options: { [ANDROID_DEVICE_OPTION]: launch.device } } : {}),
-    });
+    const device = await this.deployments.debugDevice(deployment);
+    if (!device) return undefined;
+    const invocation = mergeElideInvocationOptions(
+      configuredInvocation(settings, "build"),
+      elideInvocationOptionsFrom({ flags: launch.flags, options: launch.options, env: launch.env }),
+      { args: [androidDebugTask(deployment.artifact)], options: { [ANDROID_DEVICE_OPTION]: device } },
+    );
     const argv = elideInvocationArgs("build", invocation);
     this.ui.log(`android debug: ${dist.bin} ${argv.join(" ")} (cwd ${project.root})`);
-    launchWithJdwp({ dist: dist.bin, argv, cwd: project.root, name, folder: targetFolder, attachType }, this.ui, this.sessions);
+    launchWithJdwp({ dist: dist.bin, argv, cwd: project.root, name, folder: targetFolder, attachType, ...(invocation.env ? { env: invocation.env } : {}) }, this.ui, this.sessions);
     // The real session is the attach started once the device's JVM is listening.
     return undefined;
   }

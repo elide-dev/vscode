@@ -57,9 +57,13 @@ Elide's build, run, test, and debug commands are available from the editor.
 | | |
 | --- | --- |
 | [Elide](https://elide.dev) **1.5+** | Found via `elide.home`, `$ELIDE_HOME`, the platform install locations, or `PATH`. **1.6.1+** reports live task progress and resolves a project's classpaths in one call; older releases sync with one call per classpath and show tasks once they finish. |
-| **Kotlin by JetBrains** (`JetBrains.kotlin-server`, ≥ 0.0.11) | Installed automatically as an extension dependency. Complete its one-time region / data-sharing prompt so the server starts. |
+| **Kotlin by JetBrains** (`JetBrains.kotlin-server`, ≥ 0.0.11) | Installed automatically as a companion extension. Complete its one-time region / data-sharing prompt for Kotlin/Java analysis and JVM debugging. |
 | A JDK | `$JAVA_HOME`, SDKMAN, `/Library/Java/JavaVirtualMachines`, `/usr/lib/jvm`, or `elide.jdk.home`. Elide's bundled JDK image cannot be used for symbol resolution: it ships without a `release` file. |
 | An Android SDK, for Android projects | `android.sdk` in the manifest, `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or where the SDK installs itself on this platform. `Elide: Install Android SDK Components` installs what a build is missing. |
+
+Elide activates independently of the Kotlin language server: sync, build, previews and environment diagnostics
+remain available while it starts or if it is unavailable. Opening an Elide Kotlin or Java source document starts
+the companion when needed, including Java-first projects.
 
 The extension needs a trusted workspace and a local filesystem — syncing runs the workspace's Elide CLI.
 
@@ -90,6 +94,9 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `Elide: Show Output` | Open the `Elide` output channel. |
 | `Elide: Show Activity` | Reveal the **Activity** view: syncs and preview builds, step by step, with durations. |
 | `Elide: Open Activity Log` | Open the latest operation's output, with timestamps, in an editor. |
+| `Elide: Select Android Deployment Target…` | Choose the remembered project, APK and device shared by Run and Debug. |
+| `Elide: Check Android Environment` | Inspect local tools and device readiness, including before sync succeeds; select a finding for fixes. |
+| `Elide: Refresh Android Devices` | Refresh devices without a project resync. |
 | `Elide: Run Android App…` | Build an APK and install and launch it on a device or the emulator. |
 | `Elide: Debug Android App…` | Build an APK, install and launch it waiting for a debugger, and attach over JDWP. |
 | `Elide: Start Android Emulator` / `Elide: Stop Android Emulators` | Boot the project's AVD, or shut running emulators down. |
@@ -215,6 +222,31 @@ it, launches it waiting for a debugger and attaches to the JDWP socket the targe
 debuggable — `android:debuggable="true"` on `<application>`, which nothing in the build injects — and the target
 says so and stops when it is not. Unit tests of an Android project are plain JVM tests and run in the Test Explorer
 as usual.
+
+#### Deployment target and environment
+
+The device status-bar item and **Select Android Deployment Target…** choose the project, APK and destination
+shared by Run and Debug. The selection persists in workspace state. Explicit tree/code-lens targets override it;
+otherwise a runnable app owning the active file takes precedence over the remembered app. Library files do not
+accidentally turn their library into a deployment target.
+
+Each deployment validates the artifact against the synced model and checks fresh adb state. If the selected
+device is disconnected, offline or unauthorized, deployment stops rather than silently choosing another device.
+Run and Debug save dirty file-backed documents before building and stop if saving fails. Project-emulator Debug
+identifies the exact AVD, boots it when necessary with cancellable bounded startup, and rejects ambiguous
+instances. Android launch configurations also validate their target; `flags`, `options` and `env` layer over
+workspace defaults, with the selected device taking precedence.
+
+**Check Android Environment** works before a successful sync. It reports Elide, JDK, SDK/platform-tools,
+connected devices and Kotlin extension availability; synced declarations additionally enable compile-SDK,
+AVD and APK checks. Unknown declarations are not invented, and an optional missing emulator does not block
+physical-device development. Select a finding for concrete settings, sync, output or SDK/device actions.
+Inspection performs no build, dependency installation or license acceptance. The full report goes to **Elide
+Output**. Find it in the command palette, Elide menu, Android tree or project context menu.
+Symlinked workspace paths are flagged because JetBrains source breakpoints can report “Source file not found”;
+the finding offers to open the canonical folder in a new window.
+
+Device rows refresh after Elide tasks or **Refresh Android Devices**, without background adb polling.
 
 #### Compose component preview
 
@@ -355,6 +387,12 @@ text filter. It streams the SDK's real `adb logcat` into an output channel per p
 Restarting or changing filters replays the device's available buffer. Application filtering uses the installed
 UID, so it follows process restarts and secondary processes; apps sharing that UID also share the filtered logs.
 The device must support `logcat --uid`. Removing the project or closing the extension stops its adb clients.
+
+Ctrl/Cmd-click an application stack frame to open its Kotlin/Java source line, including workspace-library
+frames, nested classes and Kotlin file facades. Resolution uses the synced source roots, package and filename;
+unknown/native frames, out-of-range lines and ambiguous same-package filenames remain unlinked. Source-index
+caches are invalidated when projects or source files change. Obfuscated release traces still need their R8
+mapping; the links do not retrace obfuscated names.
 
 
 ## Links

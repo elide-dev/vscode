@@ -8,6 +8,16 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ### Added
 
+- A persistent Android deployment target shared by Run and Debug, visible in the status bar and selectable from
+  the sidebar or command palette. Deployments validate the APK and current device state; disconnected targets
+  never silently fall back to another device. Dirty file-backed documents are saved before building.
+- **Check Android Environment**: cancellable, read-only diagnostics for Elide, JDK, SDK, compile SDK, devices,
+  optional emulator/AVD, Kotlin extension and APK declarations, with explicit remediation actions. Available even
+  before sync succeeds; unresolved declarations remain unknown and SDK licenses are never accepted by inspection.
+- Clickable Kotlin/Java application stack frames in Android Logcat, resolving across synced workspace source
+  roots. Ambiguous, native, unknown and out-of-range frames remain unlinked.
+- **Refresh Android Devices**, device refresh after Elide tasks, and Android actions in the Elide menu and
+  getting-started walkthrough.
 - An **Activity** view in the Elide sidebar recording each sync and Compose preview build of the window as it runs:
   its steps, every `elide` command they ran and the build tasks Elide reported finishing, each with its duration and
   share of the whole. Rows open the step's output, with timestamps, in an editor; running operations can be cancelled.
@@ -45,6 +55,9 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ### Changed
 
+- Kotlin by JetBrains is installed as a companion extension instead of a hard activation dependency. Elide's CLI
+  features remain available independently of language-server startup; Kotlin and Java source documents activate
+  the companion on demand, including Java-first projects.
 - The `Elide` output channel no longer echoes the exported project model and resolved classpaths during sync; it shows
   each command line, the output Elide prints for a person, and each command's exit status and duration.
 - Syncs resolve each project's classpaths with one `elide classpath --json` per project on Elide 1.6.1 and newer,
@@ -57,12 +70,20 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ### Fixed
 
+- Android debug launches use the same validated deployment selection as Run, resolve the project's emulator by
+  AVD identity, and honor launch-configuration build flags, options and environment variables.
+- Environment checks use the Android platform jar from the resolved classpath, including minor-version SDK
+  directories, and flag symlinked workspace paths that prevent JetBrains source breakpoints from resolving.
+- Logcat source navigation includes legitimate package directories named `build`, `out`, `dist` or `generated`
+  beneath the declared source roots.
 - Compose previews render the library versions the APK ships. When workspace members resolve a library at different
   versions, the newest is used (Maven ordering, a tie going to the application's own copy), as Elide dexes it, instead
   of the application's older transitive copy. Previews of a workspace library compiled against a newer version, such
   as Material 3, no longer fail with `NoSuchMethodError`.
 - A Compose preview rebuild started within half a second of the previous build finishing is no longer reported as
   "stopped" without running: it waits for the previous run's terminal to close instead of being handed that run.
+- Editor smoke runs disable updates to the shared extensions directory and keep macOS scratch paths short without
+  overriding `TMPDIR`, so the Kotlin client and JVM agree on the daemon port-file location.
 
 ## [0.5.0](https://github.com/elide-dev/vscode/compare/v0.4.0...v0.5.0) (2026-09-24)
 

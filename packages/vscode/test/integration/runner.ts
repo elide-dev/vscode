@@ -37,7 +37,9 @@ if (!readdirSync(extensionsDir).some((d) => d.startsWith("jetbrains.kotlin-serve
 const scenarios = ["workspace", "compose", "android"] as const;
 const scenario = scenarios.find((name) => name === process.env.ELIDE_TEST_SCENARIO) ?? "ktjvm";
 
-const userDataDir = mkdtempSync(path.join(tmpdir(), "elide-vscode-user-"));
+// Keep macOS IPC paths short without overriding TMPDIR: the Kotlin client and JVM must agree on their port-file directory.
+const scratchRoot = process.platform === "darwin" ? "/tmp" : tmpdir();
+const userDataDir = mkdtempSync(path.join(scratchRoot, "elide-vscode-user-"));
 mkdirSync(path.join(userDataDir, "User"), { recursive: true });
 writeFileSync(
   path.join(userDataDir, "User", "settings.json"),
@@ -49,6 +51,9 @@ writeFileSync(
       "intellij.dataSharing": "none",
       "security.workspace.trust.enabled": false,
       "update.mode": "none",
+      // The installed extensions directory is shared with the user; a smoke run must not update it.
+      "extensions.autoUpdate": false,
+      "extensions.autoCheckUpdates": false,
       "telemetry.telemetryLevel": "off",
       // An emulator the test boots runs headless.
       ...(scenario === "android" ? { "elide.android.emulatorWindow": false } : {}),
@@ -61,7 +66,7 @@ writeFileSync(
 // Work on a scratch copy of the sample so the test can mutate elide.pkl freely; the compose sample stays in place.
 const sample = scenario === "compose"
   ? path.resolve(process.env.ELIDE_ANDROID_SAMPLE ?? path.resolve(repoRoot, "..", "elide-android-sample"))
-  : mkdtempSync(path.join(realpathSync(tmpdir()), `elide-${scenario}-`));
+  : mkdtempSync(path.join(realpathSync(scratchRoot), `elide-${scenario}-`));
 if (scenario === "workspace") prepareWorkspaceSample();
 else if (scenario === "compose") prepareComposeSample();
 else if (scenario === "android") prepareAndroidSample();

@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import {
   ANDROID_AVD_TASK,
   ANDROID_DEVICE_OPTION,
@@ -12,12 +14,14 @@ import {
   androidMappingTask,
   androidRunTask,
   androidSdkRoot,
-  listAndroidDevices,
+  adbExecutable,
+  parseAdbDevices,
   type AndroidDevice,
-  type AndroidTargetModel,
 } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { ELIDE_ANDROID_DEBUG_TYPE } from "./androidDebug.js";
+import type { AndroidDeploymentController } from "./androidDeployment.js";
+import { androidApks } from "./androidDeploymentState.js";
 import { readConfig } from "./config.js";
 import type { ElideUi } from "./output.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
@@ -36,7 +40,7 @@ export interface AndroidTarget {
   root: string;
   /** Artifact key, for the commands that act on one. */
   artifact?: string;
-  /** Device serial to pin the run to; absent lets the run target choose. */
+  /** Device serial to pin the deployment to. */
   device?: string;
 }
 
@@ -93,18 +97,17 @@ export function androidSdkFor(project: ElideProject): string | undefined {
   return project.model?.android?.sdkRoot ?? androidSdkRoot();
 }
 
-/** APKs the project publishes; only those have run targets. */
-function apksOf(project: ElideProject): AndroidTargetModel[] {
-  return (project.model?.android?.targets ?? []).filter((target) => target.kind === "apk");
-}
-
 /**
  * The APK a command acts on: the one it names, else the project's only one, else whichever the user picks. A
  * project declaring none has nothing to run.
  */
 async function pickApk(project: ElideProject, named: string | undefined): Promise<string | undefined> {
-  const apks = apksOf(project);
-  if (named) return named;
+  const apks = androidApks(project);
+  if (named) {
+    if (apks.some((apk) => apk.name === named)) return named;
+    void vscode.window.showErrorMessage(`Elide: '${named}' is not an Android APK in this project's current model. Sync the project or select another APK.`);
+    return undefined;
+  }
   if (apks.length === 1) return apks[0]?.name;
   if (apks.length === 0) {
     void vscode.window.showWarningMessage("Elide: this project declares no Android application package.");
@@ -117,79 +120,42 @@ async function pickApk(project: ElideProject, named: string | undefined): Promis
   return pick?.label;
 }
 
-/** Devices attached to the project's SDK, or `undefined` when there is no SDK (or no `platform-tools`) to ask. */
+/** Devices attached to the project's SDK; missing platform-tools returns undefined, adb failures are surfaced. */
 export async function attachedDevices(project: ElideProject): Promise<AndroidDevice[] | undefined> {
   const sdk = androidSdkFor(project);
-  return sdk ? await listAndroidDevices(sdk) : undefined;
+  if (!sdk || !existsSync(adbExecutable(sdk))) return undefined;
+  const { stdout } = await promisify(execFile)(adbExecutable(sdk), ["devices"], { encoding: "utf8", timeout: 10_000 });
+  return parseAdbDevices(stdout);
 }
 
-/** How one run reaches a device: a pinned serial, the project's emulator, or whatever the run target finds. */
-interface RunChoice {
-  task: string;
-  device?: string;
-}
-
-/**
- * Install and launch an APK.
- *
- * With a device named — a row of the sidebar's device list — the run is pinned to it. Otherwise the attached
- * devices are offered beside the emulator; with nothing attached there is nothing to choose, and the plain run
- * target is used, which boots the emulator itself.
- */
-export async function runAndroid(workspace: ElideWorkspace, value: unknown): Promise<void> {
-  const invocation = await resolve(workspace, value);
-  if (!invocation) return;
-  const { project, target } = invocation;
-  const artifact = await pickApk(project, target.artifact);
-  if (!artifact) return;
-
-  const choice = target.device
-    ? { task: androidRunTask(artifact), device: target.device }
-    : await pickRunChoice(project, artifact);
-  if (!choice) return;
-
+/** Build, install and launch the selected APK without letting adb implicitly choose another device. */
+export async function runAndroid(workspace: ElideWorkspace, deployments: AndroidDeploymentController, value: unknown): Promise<void> {
+  if (!await vscode.workspace.saveAll(false)) return;
+  const deployment = await deployments.resolve(value);
+  if (!deployment) return;
+  const { project, artifact, destination } = deployment;
   await executeElideTask(workspace, project, "build", {
-    args: [choice.task],
-    ...(choice.device ? { options: { [ANDROID_DEVICE_OPTION]: choice.device } } : {}),
+    args: [androidRunTask(artifact, destination.kind === "emulator" ? "emulator" : undefined)],
+    ...(destination.kind === "device" ? { options: { [ANDROID_DEVICE_OPTION]: destination.serial } } : {}),
   });
-}
-
-async function pickRunChoice(project: ElideProject, artifact: string): Promise<RunChoice | undefined> {
-  const devices = (await attachedDevices(project))?.filter((device) => device.ready) ?? [];
-  // Nothing attached: the plain run target boots the emulator, so there is nothing to ask.
-  if (devices.length === 0) return { task: androidRunTask(artifact) };
-
-  const items: (vscode.QuickPickItem & { choice: RunChoice })[] = devices.map((device) => ({
-    label: `$(device-mobile) ${device.serial}`,
-    description: device.emulator ? "emulator" : "device",
-    choice: { task: androidRunTask(artifact), device: device.serial },
-  }));
-  items.push({
-    label: "$(vm) Emulator",
-    description: `boot ${project.model?.android?.avd ?? "the project's AVD"} if it is not running`,
-    choice: { task: androidRunTask(artifact, "emulator") },
-  });
-  const pick = await vscode.window.showQuickPick(items, { placeHolder: `Run ${artifact} on` });
-  return pick?.choice;
 }
 
 /**
  * Build, install and debug an APK. An `elide-android` configuration owns the whole sequence — build, install,
  * launch waiting for a debugger, forward the JDWP socket, attach — so the command only names what to debug.
  */
-export async function debugAndroid(workspace: ElideWorkspace, value: unknown): Promise<void> {
-  const invocation = await resolve(workspace, value);
-  if (!invocation) return;
-  const { project, target } = invocation;
-  const artifact = await pickApk(project, target.artifact);
-  if (!artifact) return;
+export async function debugAndroid(_workspace: ElideWorkspace, deployments: AndroidDeploymentController, value: unknown): Promise<void> {
+  if (!await vscode.workspace.saveAll(false)) return;
+  const deployment = await deployments.resolve(value);
+  if (!deployment) return;
+  const { project, artifact, destination } = deployment;
   const rel = path.relative(project.folder.uri.fsPath, project.root);
   await vscode.debug.startDebugging(project.folder, {
     type: ELIDE_ANDROID_DEBUG_TYPE,
     request: "launch",
     name: `Elide: Debug ${artifact}`,
     artifact,
-    ...(target.device ? { device: target.device } : {}),
+    ...(destination.kind === "device" ? { device: destination.serial } : {}),
     ...(rel ? { project: rel } : {}),
   });
 }
