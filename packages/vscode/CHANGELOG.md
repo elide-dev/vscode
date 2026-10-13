@@ -4,6 +4,18 @@ All notable changes to the Elide extension are documented here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/elide-dev/vscode/compare/v0.5.0...v0.6.0) (2026-10-13)
+
+
+### Added
+
+* run tests with coverage and show it in the editor ([#19](https://github.com/elide-dev/vscode/issues/19)) ([7746bd2](https://github.com/elide-dev/vscode/commit/7746bd2fd6a9a4007521bd6b51aaa2b29ede9402))
+
+
+### Fixed
+
+* sync with elide project export, falling back to elide manifest ([#18](https://github.com/elide-dev/vscode/issues/18)) ([409a569](https://github.com/elide-dev/vscode/commit/409a569d4b4a075455d63e7353e0a1226370585d))
+
 ## [0.5.0](https://github.com/elide-dev/vscode/compare/v0.4.0...v0.5.0) (2026-09-24)
 
 
