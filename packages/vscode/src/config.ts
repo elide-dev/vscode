@@ -17,6 +17,8 @@ export interface ElideConfig {
   jdkHome: string | undefined;
   syncOnStartup: boolean;
   onManifestChange: ManifestChangePolicy;
+  /** Show a notification with the current step (and Cancel) while a sync runs longer than a moment. */
+  syncNotification: boolean;
   writeWorkspaceJson: boolean;
   debugAdapter: DebugAdapterChoice;
   nativeMiMode: NativeMiMode;
@@ -47,6 +49,7 @@ export function readConfig(scope?: vscode.ConfigurationScope): ElideConfig {
     jdkHome: nonEmpty(c.get<string>("jdk.home")),
     syncOnStartup: c.get<boolean>("sync.onStartup", true),
     onManifestChange: c.get<ManifestChangePolicy>("sync.onManifestChange", "prompt"),
+    syncNotification: c.get<boolean>("sync.showProgressNotification", true),
     writeWorkspaceJson: c.get<boolean>("kotlinLsp.writeWorkspaceJson", true),
     debugAdapter: c.get<DebugAdapterChoice>("debug.adapter", "intellij"),
     nativeMiMode: c.get<NativeMiMode>("debug.nativeMiMode", "auto"),

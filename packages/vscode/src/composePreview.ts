@@ -1,5 +1,17 @@
 import path from "node:path";
-import { composePreviewApplications, composePreviewBuildTargets, resolveElideDistribution, type AndroidTargetModel, type ProjectModel } from "@elide/ide-core";
+import {
+  TimelineNode,
+  composePreviewApplications,
+  composePreviewBuildTargets,
+  formatDuration,
+  liveStatus,
+  observeCommands,
+  parseElideOutputLine,
+  resolveElideDistribution,
+  type AndroidTargetModel,
+  type ProjectModel,
+  type TimelineLine,
+} from "@elide/ide-core";
 import * as vscode from "vscode";
 import { ComposeBackends, type ComposeBackend, type PreviewBuild, type PreviewRequest } from "./composeBackend.js";
 import type { PreviewImage } from "./composeRender.js";
@@ -7,10 +19,31 @@ import { previewHtml } from "./composePreviewHtml.js";
 import { resolvePreviewSource, type PreviewSourceTarget } from "./composeSource.js";
 import { readConfig } from "./config.js";
 import { ensureComposeRuntime, installedComposeRuntime } from "./composeRuntime.js";
+import type { ElideUi } from "./output.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
-import { executeElideTask, taskExitCode } from "./tasks.js";
+import { executeObservedElideTask } from "./tasks.js";
 
 const previewInput = /\.(?:kt|java|xml|pkl)$/;
+/** Build output lines the panel keeps for its Build log; the activity log has every line. */
+const LOG_LINES = 2_000;
+/** Compiler errors quoted in a failed build's diagnostics. */
+const QUOTED_ERRORS = 20;
+
+/**
+ * The compiler errors of a failed build as Elide printed them: each `error:` line with the `In file:` location that
+ * follows it.
+ */
+function buildErrors(lines: readonly TimelineLine[]): string[] {
+  const errors: string[] = [];
+  for (const [index, line] of lines.entries()) {
+    const parsed = parseElideOutputLine(line.text);
+    if (parsed?.kind !== "diagnostic" || parsed.severity !== "error") continue;
+    const location = lines[index + 1]?.text.startsWith("In file:") ? `\n  ${lines[index + 1]!.text}` : "";
+    errors.push(`error: ${parsed.message}${location}`);
+    if (errors.length === QUOTED_ERRORS) break;
+  }
+  return errors;
+}
 
 function ownedBy(workspace: ElideWorkspace, folder: vscode.WorkspaceFolder, uri: vscode.Uri): boolean {
   if (uri.scheme !== "file" || !previewInput.test(uri.fsPath)) return false;
@@ -81,6 +114,18 @@ class PreviewSession implements vscode.Disposable {
   private closed = false;
   private lastStatus = "Starting preview…";
   private statusState: "working" | "ready" | "error" = "working";
+  /** Epoch milliseconds the phase the status names began, for the panel's elapsed-time counter. */
+  private statusSince: number | undefined;
+  /** The current refresh: its steps time the summary shown once its images paint. */
+  private trace: TimelineNode | undefined;
+  /** The latest preview build, whose log the panel's "Open in editor" shows. */
+  private buildStep: TimelineNode | undefined;
+  /** Build output the panel's Build log holds, replayed when the webview reloads. */
+  private readonly logLines: string[] = [];
+  /** Lines not yet posted to the webview; batched, since a build can print thousands. */
+  private logQueue: string[] = [];
+  private logReset = false;
+  private logTimer: NodeJS.Timeout | undefined;
   private images: PreviewImage[] = [];
   private sourceTargets = new Map<string, PreviewSourceTarget>();
   private failedRevision = -1;
@@ -99,6 +144,7 @@ class PreviewSession implements vscode.Disposable {
 
   constructor(
     private readonly workspace: ElideWorkspace,
+    private readonly ui: ElideUi,
     private readonly context: vscode.ExtensionContext,
     private readonly backends: ComposeBackends,
     private readonly project: ElideProject,
@@ -114,11 +160,14 @@ class PreviewSession implements vscode.Disposable {
       this.panel.webview.onDidReceiveMessage((message: unknown) => {
         if (!message || typeof message !== "object" || !("type" in message)) return;
         if (message.type === "ready") {
-          this.status(this.lastStatus, this.statusState);
+          this.status(this.lastStatus, this.statusState, this.statusSince);
+          void this.panel.webview.postMessage({ type: "log", reset: true, lines: this.logLines });
           this.publishImages(true);
           void this.panel.webview.postMessage({ type: "invalidate", revision: this.revision });
         }
         if (message.type === "refresh") this.schedule(true);
+        if (message.type === "openLog") void this.ui.activity.openLog(this.buildStep ?? this.trace);
+        if (message.type === "showActivity") void vscode.commands.executeCommand("elide.showActivity");
         if (message.type === "navigate" && "revision" in message && message.revision === this.revision
           && this.imageRevision === this.revision && "imageId" in message && "nodeId" in message
           && typeof message.imageId === "string" && typeof message.nodeId === "string") {
@@ -128,7 +177,7 @@ class PreviewSession implements vscode.Disposable {
           && this.imageRevision === this.revision && this.failedRevision !== this.revision && this.images.length) {
           const errors = this.images.filter((image) => image.error).length;
           const elapsed = Math.round(performance.now() - this.detectedAt);
-          this.summary = `${this.images.length - errors} rendered${errors ? ` · ${errors} failed (open Details)` : ""} · ${elapsed} ms · host layoutlib`;
+          this.summary = `${this.images.length - errors} rendered in ${formatDuration(elapsed)}${errors ? ` · ${errors} failed (open Details)` : ""}`;
           this.renderedStatus();
           this.paints.fire({ source: this.source.fsPath, images: this.images.length, failed: errors, elapsedMs: elapsed, verifying: this.verifying });
         }
@@ -194,16 +243,52 @@ class PreviewSession implements vscode.Disposable {
     this.timer = setTimeout(() => void this.refresh(), 0);
   }
 
-  private status(text: string, state: "working" | "ready" | "error" = "working"): void {
+  private status(text: string, state: "working" | "ready" | "error" = "working", since?: number): void {
     this.lastStatus = text;
     this.statusState = state;
-    if (!this.closed) void this.panel.webview.postMessage({ type: "status", text, state,
+    this.statusSince = since;
+    if (!this.closed) void this.panel.webview.postMessage({ type: "status", text, state, since,
       retained: state !== "ready" && this.images.some((image) => image.data) });
   }
 
+  /** The painted summary, the phases of the refresh that took long enough to matter, and what happens next. */
   private renderedStatus(): void {
-    if (this.summary) this.status(`${this.summary} · ${this.verifying ? "verifying build…" : "live edits"}`,
-      this.verifying ? "working" : this.images.some((image) => image.error) ? "error" : "ready");
+    if (!this.summary) return;
+    const phases = (this.trace?.children ?? []).filter((step) => step.durationMs >= 50 && (step.state === "succeeded" || step.state === "failed"))
+      .map((step) => `${step.label.toLowerCase()} ${formatDuration(step.durationMs)}`);
+    this.status(`${this.summary}${phases.length ? ` · ${phases.join(", ")}` : ""} · host layoutlib · ${this.verifying ? "verifying build…" : "live edits"}`,
+      this.verifying ? "working" : this.images.some((image) => image.error) ? "error" : "ready",
+      this.verifying && this.buildStep?.running ? this.buildStep.startedAt : undefined);
+  }
+
+  /** Queue a build output line for the panel's Build log; posted in batches. */
+  private appendLog(line: string): void {
+    this.logLines.push(line);
+    if (this.logLines.length > LOG_LINES) this.logLines.splice(0, this.logLines.length - LOG_LINES);
+    this.logQueue.push(line);
+    this.logTimer ??= setTimeout(() => this.flushLog(), 100);
+  }
+
+  private resetLog(): void {
+    this.logLines.length = 0;
+    this.logQueue = [];
+    this.logReset = true;
+    this.logTimer ??= setTimeout(() => this.flushLog(), 0);
+  }
+
+  /** Post queued log lines and, while a build runs with nothing painted yet, what it has done so far. */
+  private flushLog(): void {
+    this.logTimer = undefined;
+    if (this.closed) return;
+    void this.panel.webview.postMessage({ type: "log", reset: this.logReset, lines: this.logQueue });
+    this.logQueue = [];
+    this.logReset = false;
+    const build = this.buildStep;
+    if (!build?.running || this.summary) return;
+    const command = build.children.at(-1);
+    const task = command?.children.findLast((child) => !child.running);
+    const progress = [liveStatus(build), command?.detail, task && `last: ${task.label} (${formatDuration(task.durationMs)})`].filter(Boolean).join(" · ");
+    this.status(`Building ${this.artifact.name} preview inputs${progress ? ` · ${progress}` : "…"}`, "working", build.startedAt);
   }
 
   private publishImages(replay = false): void {
@@ -239,15 +324,43 @@ class PreviewSession implements vscode.Disposable {
     return true;
   }
 
-  private async build(model: ProjectModel, artifact: AndroidTargetModel, models: readonly ProjectModel[]): Promise<void> {
-    this.task = await executeElideTask(this.workspace, this.project, "build", { args: composePreviewBuildTargets(model, artifact, models) },
-      { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Dedicated, focus: false });
+  /**
+   * Build what the preview renders as a step of `trace`. The task terminal stays hidden; the panel's Build log, its
+   * status line and the Activity view follow the build instead, and a failure quotes the compiler's errors.
+   */
+  private async build(model: ProjectModel, artifact: AndroidTargetModel, models: readonly ProjectModel[], trace: TimelineNode): Promise<void> {
+    const step = trace.start("Build");
+    this.buildStep = step;
+    this.resetLog();
+    this.status(`Building ${artifact.name} preview inputs…`, "working", step.startedAt);
+    const { execution, exitCode } = await executeObservedElideTask(this.project, "build", { args: composePreviewBuildTargets(model, artifact, models) },
+      { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Dedicated, focus: false },
+      observeCommands(() => step, (line) => this.appendLog(line)));
+    this.task = execution;
     if (this.closed) {
-      this.task?.terminate();
+      execution.terminate();
+      step.end("cancelled", "preview closed");
       throw new Error("Compose preview closed.");
     }
-    if (!this.task || await taskExitCode(this.task) !== 0) throw new Error("Preview build failed; see the Elide task terminal.");
+    const code = await exitCode;
     this.task = undefined;
+    if (code === 0) {
+      step.end("succeeded");
+      if (!this.summary) this.status(`Built ${artifact.name} preview inputs in ${formatDuration(step.durationMs)}; rendering…`);
+      return;
+    }
+    if (code === undefined) {
+      step.end("cancelled", "stopped");
+      throw new Error("The preview build was stopped. Rebuild to try again.");
+    }
+    const errors = buildErrors(step.lines());
+    const count = `${errors.length}${errors.length === QUOTED_ERRORS ? "+" : ""} error${errors.length === 1 ? "" : "s"}`;
+    step.end("failed", `exit ${code}${errors.length ? ` · ${count}` : ""}`);
+    throw new Error([
+      `Build failed after ${formatDuration(step.durationMs)}: elide build exited with ${code}.`,
+      ...errors,
+      "Open the Build log for the complete output; compiler errors are listed in the Problems view.",
+    ].join("\n"));
   }
 
   /** Once per build, after the images it produced are shown: get the next edit's compile warm. */
@@ -264,12 +377,22 @@ class PreviewSession implements vscode.Disposable {
     }).catch(() => {});
   }
 
+  /**
+   * Bring the gallery up to date with the editor. A refresh that builds is an operation of the Activity view, since
+   * it can take a while and fail in the build; a live edit's compile-and-render is timed for the status line only.
+   */
   private async refresh(): Promise<void> {
     if (this.closed || this.building) return;
     this.building = true;
     this.pending = false;
     const revision = this.revision;
     const backend = this.backend;
+    const trace = this.rebuild || !backend.compiler
+      ? this.ui.activity.start(`Compose preview: ${path.basename(this.source.fsPath)}`, { detail: this.artifact.name, cancel: () => this.task?.terminate() })
+      : TimelineNode.root("Compose preview update");
+    this.trace = trace;
+    let outcome: "succeeded" | "failed" | "cancelled" = "cancelled";
+    let failure: string | undefined;
     try {
       if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before executing Compose previews.");
       const model = this.workspace.projectAt(this.project.root)?.model;
@@ -280,32 +403,46 @@ class PreviewSession implements vscode.Disposable {
       if (this.rebuild || !backend.compiler) {
         this.rebuild = false;
         const build = previewBuild(this.workspace, this.project, model, artifact);
-        const runtime = await ensureComposeRuntime(this.context.globalStorageUri.fsPath, this.controller.signal, (text) => this.status(text));
+        const runtime = await trace.run("Compose runtime", () =>
+          ensureComposeRuntime(this.context.globalStorageUri.fsPath, this.controller.signal, (text) => this.status(text)));
+        const starting = trace.start("Start renderer");
         const renderer = backend.startRenderer(runtime, javaFor(model));
-        renderer.catch(() => {});
-        this.status(`Preparing ${artifact.name} preview classes and resources…`);
+        renderer.then(() => starting.end(), (error: unknown) => starting.end("failed", error instanceof Error ? error.message : String(error)));
         let buildFailed = false;
-        const built = this.build(model, artifact, build.models).catch((error: unknown) => {
+        const built = this.build(model, artifact, build.models, trace).catch((error: unknown) => {
           buildFailed = true;
           throw error;
         });
         built.catch(() => {});
         // While Elide confirms the build, paint a stored gallery of these exact inputs, or render
         // from a warm compiler or the last build's classes.
+        const early = trace.start("Preview from the last build");
         const provisional = (async () => {
           if (!backend.compiler) await backend.configure(build, request.documents, false);
-          const images = await backend.preview(request, false);
+          const images = await backend.preview(request, false, early);
           return images && !buildFailed ? this.show(images, revision, true, request) : false;
-        })().catch(() => false);
+        })().then(
+          (shown) => {
+            early.end(shown ? "succeeded" : "skipped", shown ? undefined : "nothing to show before the build");
+            return shown;
+          },
+          (error: unknown) => {
+            // Never built, or the build is rewriting its outputs: the gallery waits for the build instead.
+            early.end("skipped", error instanceof Error ? error.message : String(error));
+            return false;
+          },
+        );
         await built;
         this.warmPending = true;
         const shown = await provisional;
         if (this.closed) return;
-        const changed = await backend.configure(build, request.documents, true);
+        const changed = await trace.run("Prepare compiler", () => backend.configure(build, request.documents, true));
         this.model = model;
         if (this.closed || revision !== this.revision) return;
         if (shown && !changed) {
           this.verifying = false;
+          outcome = "succeeded";
+          trace.end("succeeded");
           this.renderedStatus();
           if (this.summary) {
             const failed = this.images.filter((image) => image.error).length;
@@ -314,18 +451,22 @@ class PreviewSession implements vscode.Disposable {
           this.warm(request);
           return;
         }
-        await renderer;
+        await trace.run("Wait for renderer", () => renderer);
       }
-      if (!await this.show(await backend.preview(request), revision, false, request)) return;
+      if (!await this.show(await backend.preview(request, true, trace), revision, false, request)) return;
+      outcome = "succeeded";
       this.warm(request);
     } catch (error) {
       if (!this.closed && revision === this.revision) {
+        outcome = "failed";
+        failure = error instanceof Error ? error.message.split("\n")[0] : String(error);
         this.failedRevision = revision;
         this.verifying = false;
         this.summary = undefined;
         this.status(`Preview failed: ${error instanceof Error ? error.message : String(error)}`, "error");
       }
     } finally {
+      trace.end(outcome, failure ?? (outcome === "cancelled" ? "superseded by a newer change" : undefined));
       this.task = undefined;
       this.building = false;
       if (!this.closed && this.pending) { clearTimeout(this.timer); void this.refresh(); }
@@ -350,6 +491,7 @@ class PreviewSession implements vscode.Disposable {
     if (this.closed) return;
     this.closed = true;
     clearTimeout(this.timer);
+    clearTimeout(this.logTimer);
     this.controller.abort();
     this.task?.terminate();
     for (const subscription of this.subscriptions) subscription.dispose();
@@ -358,7 +500,7 @@ class PreviewSession implements vscode.Disposable {
   }
 }
 
-export function registerComposePreview(workspace: ElideWorkspace, context: vscode.ExtensionContext): { disposable: vscode.Disposable; api: ElideComposePreviewApi } {
+export function registerComposePreview(workspace: ElideWorkspace, ui: ElideUi, context: vscode.ExtensionContext): { disposable: vscode.Disposable; api: ElideComposePreviewApi } {
   const cacheRoot = context.globalStorageUri.fsPath;
   const backends = new ComposeBackends(cacheRoot, context.asAbsolutePath("media/compose"), () => readConfig().composePreviewKeepAlive * 60_000);
   const paints = new vscode.EventEmitter<ComposePreviewPaint>();
@@ -404,7 +546,7 @@ export function registerComposePreview(workspace: ElideWorkspace, context: vscod
       const app = previewApp(workspace, project, editor.document.uri.fsPath);
       if (!app) throw new Error("No Android application in this workspace folder packages this file. Declare an AndroidApk that includes its source set or depends on its library, then sync.");
       session?.dispose();
-      session = new PreviewSession(workspace, context, backends, app.project, app.target, editor.document.uri, paints);
+      session = new PreviewSession(workspace, ui, context, backends, app.project, app.target, editor.document.uri, paints);
     } catch (error) {
       void vscode.window.showErrorMessage(`Elide: ${error instanceof Error ? error.message : String(error)}`);
     }

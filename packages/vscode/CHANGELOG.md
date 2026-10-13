@@ -8,6 +8,17 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ### Added
 
+- An **Activity** view in the Elide sidebar recording each sync and Compose preview build of the window as it runs:
+  its steps, every `elide` command they ran and the build tasks Elide reported finishing, each with its duration and
+  share of the whole. Rows open the step's output, with timestamps, in an editor; running operations can be cancelled.
+- Sync progress that stays visible: the status bar names the step in progress with the elapsed time, a sync running
+  longer than two seconds shows a cancellable notification (`elide.sync.showProgressNotification`), the status bar
+  tooltip and the `Elide` output channel break the last sync down by step, and a failed sync names the step that
+  failed and offers its log.
+- Compose preview builds report their progress in the panel: finished tasks, the latest task's duration and an
+  elapsed-time counter on the status line, a live **Build log** drawer, the compiler errors of a failed build under
+  **Details**, and a per-phase time breakdown (build, compile, render) once the gallery paints. The first-run renderer
+  download reports bytes received.
 - Android Logcat output channels with device selection, application UID, priority and literal-text filters,
   and clear, stop and restart commands. Clearing the editor output leaves the device's shared log buffer intact.
 - Host-side Compose previews using Google's standalone renderer and Android layoutlib, with no device, emulator,
@@ -27,9 +38,19 @@ All notable changes to the Elide extension are documented here. The format follo
   base/feature relationships, module build targets and isolated feature source/resource roots.
 - Dagger/Hilt editor support: run available annotation-processing compile targets during sync and import
   generated Java/kapt sources across workspace libraries without exposing kapt stubs.
+- Live build progress from Elide 1.6.1's progress records (`ELIDE_PROGRESS=json`): the Activity view shows each
+  build task while it runs, with the progress it and its steps report, and the status bar and sync notification say
+  what Elide is doing now and how many of the build's tasks are done (`Resolving Maven dependencies: 40% (1/3)`).
+  Compiler diagnostics from these records carry absolute locations. Older releases keep the text-based view.
 
 ### Changed
 
+- The `Elide` output channel no longer echoes the exported project model and resolved classpaths during sync; it shows
+  each command line, the output Elide prints for a person, and each command's exit status and duration.
+- Syncs resolve each project's classpaths with one `elide classpath --json` per project on Elide 1.6.1 and newer,
+  instead of one process per source set and usage. Older releases are still asked one query at a time.
+- Compose preview build terminals run with `ELIDE_PROGRESS=plain`, so the terminal, the panel's Build log and its
+  status line name each task as it starts.
 - Compose previews choose their Android resource context automatically instead of asking: the application packaging
   the previewed file's source set, or the nearest one depending on its workspace library. Focusing a library's
   preview file in a workspace with several applications now prewarms too.
@@ -40,6 +61,8 @@ All notable changes to the Elide extension are documented here. The format follo
   versions, the newest is used (Maven ordering, a tie going to the application's own copy), as Elide dexes it, instead
   of the application's older transitive copy. Previews of a workspace library compiled against a newer version, such
   as Material 3, no longer fail with `NoSuchMethodError`.
+- A Compose preview rebuild started within half a second of the previous build finishing is no longer reported as
+  "stopped" without running: it waits for the previous run's terminal to close instead of being handed that run.
 
 ## [0.5.0](https://github.com/elide-dev/vscode/compare/v0.4.0...v0.5.0) (2026-09-24)
 

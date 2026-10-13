@@ -179,21 +179,34 @@ describe("findEnclosingWorkspace", () => {
 });
 
 /**
- * A stand-in for the CLI: answers `manifest` and `classpath` from files in the directory it is invoked in, the way
- * the real one answers for the project it is focused on, and records every `install` in the workspace root and
+ * A stand-in for the CLI: answers `project export` and `classpath` from files in the directory it is invoked in, the
+ * way the real one answers for the project it is focused on, and records every `install` in the workspace root and
  * every `build` with the targets it was given.
  *
  * A classpath is read from the file named after the source set and the usage, falling back to the set alone, so a
- * fixture declares a `provided` classpath only when the usage matters to it.
+ * fixture declares a `provided` classpath only when the usage matters to it. A `fail-<set>-<usage>` file makes that
+ * query fail, which fails a whole `classpath --json` batch the way the real CLI does.
  */
 const FAKE_ELIDE = `#!/bin/sh
+entries() {
+  [ ! -f ".fake/fail-\${1%%:*}-\${1##*:}" ] || { echo "cannot resolve $1" >&2; exit 1; }
+  f=".fake/classpath-\${1%%:*}-\${1##*:}.txt"
+  [ -f "$f" ] || f=".fake/classpath-\${1%%:*}.txt"
+  [ ! -f "$f" ] || cat "$f"
+}
 case "$1" in
-  --version) echo "1.5.4+test" ;;
-  manifest) cat .fake/manifest.json ;;
+  --version) echo "1.6.1+test" ;;
+  project|manifest) cat .fake/manifest.json ;;
   classpath)
-    f=".fake/classpath-\${2%%:*}-\${2##*:}.txt"
-    [ -f "$f" ] || f=".fake/classpath-\${2%%:*}.txt"
-    [ -f "$f" ] && cat "$f" ;;
+    if [ "$2" != "--json" ]; then entries "$2"; exit; fi
+    shift 2
+    sep="{"
+    for q in "$@"; do
+      cp=$(entries "$q") || exit 1
+      printf '%s"%s":[%s]' "$sep" "$q" "$([ -z "$cp" ] || printf '"%s"' "$(printf %s "$cp" | sed 's/:/","/g')")"
+      sep=","
+    done
+    echo "}" ;;
   install) echo "$PWD" >> "$FAKE_INSTALL_LOG" ;;
   build)
     if [ "$2" = "--inspect" ]; then
@@ -472,6 +485,20 @@ describe("buildProjectModels: published Android libraries", () => {
     expect(app!.modules[0]!.runtimeClassPath).toEqual([exploded, runtimeOnly]);
     expect(app!.modules[0]!.runtimeClassPath).not.toContain(platform);
     expect(app!.modules[0]!.runtimeClassPath).not.toContain(rClasses);
+  });
+
+  test("a source set whose platform cannot be resolved is a warning, and the other sets still resolve theirs", async () => {
+    const { root, model } = androidProject();
+    const manifestPath = path.join(root, ".fake", "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.sources.test = { "@type": "elide.sources.SourceSetSpec", paths: ["src/test/kotlin/**/*.kt"] };
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    writeFileSync(path.join(root, ".fake", "fail-test-provided"), "");
+    const [app] = await model(() => true);
+    expect(app!.warnings.filter((w) => w.startsWith("Could not resolve the Android platform classpath"))).toEqual([
+      expect.stringContaining("of test (elide classpath test:provided): elide classpath test:provided failed (exit 1):\ncannot resolve test:provided"),
+    ]);
+    expect(app!.modules.find((m) => m.sourceSet === "main")!.libraries.map((l) => l.name)).toContain("Elide: Android API 36 platform");
   });
 
   test("the archive is unpacked and R is generated when either is missing, and neither runs when both are there", async () => {

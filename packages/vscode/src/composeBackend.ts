@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { composePreviewInputs, type AndroidTargetModel, type ProjectModel } from "@elide/ide-core";
+import { composePreviewInputs, type AndroidTargetModel, type ProjectModel, type TimelineNode } from "@elide/ide-core";
 import { ComposeCompiler } from "./composeCompiler.js";
 import { ComposeRenderer, helperDigest, isPreviewImage, type PreviewImage } from "./composeRender.js";
 import type { ComposeRuntime } from "./composeRuntime.js";
@@ -151,17 +151,18 @@ export class ComposeBackend {
   /**
    * Images for `request`: a stored gallery when these exact inputs rendered before, otherwise compile
    * what changed and render. Without `compile`, a compiler holding no classes yet returns undefined
-   * instead of compiling from scratch.
+   * instead of compiling from scratch. Compiling and rendering are timed as steps of `trace`.
    */
-  preview(request: PreviewRequest): Promise<PreviewImage[]>;
-  preview(request: PreviewRequest, compile: boolean): Promise<PreviewImage[] | undefined>;
-  async preview(request: PreviewRequest, compile = true): Promise<PreviewImage[] | undefined> {
+  preview(request: PreviewRequest, compile?: true, trace?: TimelineNode): Promise<PreviewImage[]>;
+  preview(request: PreviewRequest, compile: boolean, trace?: TimelineNode): Promise<PreviewImage[] | undefined>;
+  async preview(request: PreviewRequest, compile = true, trace?: TimelineNode): Promise<PreviewImage[] | undefined> {
     for (;;) {
       const compiler = this.current;
       if (!compiler) throw new Error("Compose preview has no compiler inputs; build the project first.");
       const sources = await compiler.sources(request.documents);
       const stored = await this.stored(compiler, sources.key, request);
       if (stored) {
+        trace?.record("Stored gallery", 0, "succeeded", "these exact inputs rendered before");
         this.prime(request);
         return stored;
       }
@@ -170,13 +171,16 @@ export class ComposeBackend {
         const replaced = await this.compiling.run(async () => {
           if (this.current !== compiler) return true;
           if (compiler.publishedSources === sources.key) return false;
-          await compiler.update(sources);
+          await (trace ? trace.run("Compile", () => compiler.update(sources)) : compiler.update(sources));
           await this.rendering.run(() => compiler.publish());
           return false;
         });
         if (replaced) continue;
       }
-      const images = await this.rendering.run(async () => this.current === compiler ? await this.render(compiler, request) : undefined);
+      const images = await this.rendering.run(async () => {
+        if (this.current !== compiler) return undefined;
+        return trace ? await trace.run("Render", () => this.render(compiler, request)) : await this.render(compiler, request);
+      });
       if (images) return images;
     }
   }

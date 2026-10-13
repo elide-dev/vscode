@@ -12,7 +12,7 @@ import {
   explodedAndroidLibrary,
 } from "./android.js";
 import { buildTasksOf, unqualifiedTaskName, type BuildTaskInfo } from "./buildTasks.js";
-import { ElideCli, MANIFEST_NAME, isLockfileCurrent, type RunOptions } from "./elide.js";
+import { ElideCli, MANIFEST_NAME, isLockfileCurrent, type ClasspathQuery, type RunOptions } from "./elide.js";
 import { resolveJdk, type Jdk, type ResolveJdkOptions } from "./jdk.js";
 import { DEFAULT_LIBRARIES_ROOT, libraryFor, type LibraryModel } from "./libraries.js";
 import { effectiveType, type AndroidArtifactKind, type Manifest, type SourceSetType } from "./manifest.js";
@@ -129,6 +129,7 @@ export interface AndroidTargetModel {
 export interface BuildModelOptions {
   onProgress?: (step: string) => void;
   onLine?: (line: string, stderr: boolean) => void;
+  onCommand?: RunOptions["onCommand"];
   signal?: AbortSignal;
   /** Skip `elide install` even when the lockfile is stale. */
   skipInstall?: boolean;
@@ -174,7 +175,7 @@ interface BuildContext {
  */
 export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts: BuildModelOptions = {}): Promise<ProjectModel[]> {
   const root = normalizePath(path.resolve(cli.projectRoot));
-  const run: RunOptions = { onLine: opts.onLine, signal: opts.signal };
+  const run: RunOptions = { onLine: opts.onLine, onCommand: opts.onCommand, signal: opts.signal };
 
   opts.onProgress?.("Querying Elide version");
   const elideVersion = await cli.version(run);
@@ -255,14 +256,18 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
   // directory `android-libraries` explodes it into, and `elide classpath` resolves dependencies without running
   // that target. Listing those paths before the first build would hand the language server jars that are not
   // there, so the target is run — once, and only when an entry actually names a directory that is missing.
+  opts.onProgress?.(`Resolving classpaths: ${name}`);
+  const answers = await cli.classpaths(
+    sets.flatMap(({ setName, kind }): ClasspathQuery[] =>
+      ctx.previewTasks && kind !== "test" ? [`${setName}:compile`, `${setName}:runtime`] : [`${setName}:compile`]),
+    run,
+  );
   const classpaths = new Map<string, string[]>();
   const runtimeClasspaths = new Map<string, string[]>();
-  for (const { setName, kind } of sets) {
-    opts.onProgress?.(`Resolving classpath: ${name}.${setName}`);
-    classpaths.set(setName, await cli.classpath(setName, "compile", run));
-    if (ctx.previewTasks && kind !== "test") {
-      runtimeClasspaths.set(setName, await cli.classpath(setName, "runtime", run));
-    }
+  for (const { setName } of sets) {
+    classpaths.set(setName, answers.get(`${setName}:compile`)!);
+    const runtime = answers.get(`${setName}:runtime`);
+    if (runtime) runtimeClasspaths.set(setName, runtime);
   }
   const fileExists = opts.exists ?? existsSync;
   const missing = [...classpaths.values(), ...runtimeClasspaths.values()].flat().some((entry) => explodedAndroidLibrary(entry) && !fileExists(entry));
@@ -299,10 +304,13 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
         );
       }
     }
+    opts.onProgress?.(`Resolving Android platform: ${name}`);
+    // One query that fails fails the batch; asked again one set at a time, the sets that resolve still do.
+    const queries = sets.map(({ setName }): ClasspathQuery => `${setName}:provided`);
+    const batched = await cli.classpaths(queries, run).catch(() => undefined);
     for (const { setName } of sets) {
-      opts.onProgress?.(`Resolving Android platform: ${name}.${setName}`);
       try {
-        provided.set(setName, await cli.classpath(setName, "provided", run));
+        provided.set(setName, batched?.get(`${setName}:provided`) ?? await cli.classpath(setName, "provided", run));
       } catch (e) {
         // An unresolvable platform is a reason to resolve less, never to fail the sync: the rest of the model —
         // sources, siblings, Maven libraries — is what it was before the Android pipeline had anything to say.

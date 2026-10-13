@@ -32,6 +32,13 @@ Elide's build, run, test, and debug commands are available from the editor.
   `elide test --reporter=tap` with live results, failure messages and stack-trace locations.
 - **Elide sidebar.** An activity-bar view with each project's entrypoints, tasks, build targets (`elide build
   --inspect`), source sets and dependencies; run, debug, build and sync straight from the tree.
+- **Activity.** The sidebar's **Activity** view lists every sync and Compose preview build of the window, live
+  while it runs: each step (reading the manifest, installing dependencies, resolving classpaths, generating
+  resources, writing `workspace.json`), the `elide` commands it ran, and the build tasks those reported, each with
+  its duration and share of the whole. With Elide 1.6.1 or newer, tasks appear as they start, with the progress they
+  report, and the status bar says what Elide is doing and how many of the build's tasks are done. Any row opens its
+  output, with timestamps, in an editor; a running operation can be cancelled from the row. The status bar tooltip
+  shows where the last sync's time went, and the `Elide` output channel ends each sync with the same breakdown.
 - **New project wizard.** `Elide: New Project…` lists the templates of the installed CLI (`elide init --templates`),
   asks for the parameters that template declares, generates the project and opens it.
 - **Android projects.** A manifest declaring an `android` block gets an **Android** section in the sidebar: its APKs,
@@ -49,7 +56,7 @@ Elide's build, run, test, and debug commands are available from the editor.
 
 | | |
 | --- | --- |
-| [Elide](https://elide.dev) **1.5+** | Found via `elide.home`, `$ELIDE_HOME`, the platform install locations, or `PATH`. |
+| [Elide](https://elide.dev) **1.5+** | Found via `elide.home`, `$ELIDE_HOME`, the platform install locations, or `PATH`. **1.6.1+** reports live task progress and resolves a project's classpaths in one call; older releases sync with one call per classpath and show tasks once they finish. |
 | **Kotlin by JetBrains** (`JetBrains.kotlin-server`, ≥ 0.0.11) | Installed automatically as an extension dependency. Complete its one-time region / data-sharing prompt so the server starts. |
 | A JDK | `$JAVA_HOME`, SDKMAN, `/Library/Java/JavaVirtualMachines`, `/usr/lib/jvm`, or `elide.jdk.home`. Elide's bundled JDK image cannot be used for symbol resolution: it ships without a `release` file. |
 | An Android SDK, for Android projects | `android.sdk` in the manifest, `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or where the SDK installs itself on this platform. `Elide: Install Android SDK Components` installs what a build is missing. |
@@ -58,8 +65,9 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 
 ## Getting started
 
-1. Open a folder containing `elide.pkl`. The status bar shows the project name and sync progress; click it for the
-   Elide actions, or run `Elide: Show Output` for the CLI log.
+1. Open a folder containing `elide.pkl`. While it syncs, the status bar names the step in progress and the time
+   so far; a sync that takes more than a couple of seconds also shows a cancellable notification. Click the status
+   bar item for the Elide actions, or open the **Activity** view to see where a sync's time went.
 2. Open a Kotlin or Java file. Once the Kotlin LSP has imported the generated `workspace.json`, completion and
    navigation resolve against the project's dependencies.
 3. Open the **Elide** view in the activity bar to run entrypoints, tasks and build targets, or press F5 with an
@@ -80,6 +88,8 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `Elide: Add Workspace Member…` | Create a project inside an existing one and declare it in `workspace.members`. |
 | `Elide: Open generated Kotlin LSP workspace` | Open the generated `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel. |
+| `Elide: Show Activity` | Reveal the **Activity** view: syncs and preview builds, step by step, with durations. |
+| `Elide: Open Activity Log` | Open the latest operation's output, with timestamps, in an editor. |
 | `Elide: Run Android App…` | Build an APK and install and launch it on a device or the emulator. |
 | `Elide: Debug Android App…` | Build an APK, install and launch it waiting for a debugger, and attach over JDWP. |
 | `Elide: Start Android Emulator` / `Elide: Stop Android Emulators` | Boot the project's AVD, or shut running emulators down. |
@@ -97,6 +107,7 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `elide.jdk.home` | `""` | JDK for symbol resolution; else `jvm.javaHome`, `$JAVA_HOME`, installed JDKs matching `jvm.target`. |
 | `elide.sync.onStartup` | `true` | Sync when the workspace opens. |
 | `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` or the lockfile changes. |
+| `elide.sync.showProgressNotification` | `true` | Show a notification with the step in progress and a Cancel button while a sync runs for more than two seconds. |
 | `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json`. |
 | `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
 | `elide.flags` | `[]` | `-f NAME[=VALUE]` build flags for every Elide invocation, project sync included. |
@@ -269,8 +280,15 @@ and full rebuild; unsaved changes show a save prompt and retain the last success
 project that was never built, or whose sources changed since its last build without a prewarmed backend, waits
 for the build and a cold renderer.
 
+While the preview builds, the status line names the tasks Elide has finished so far, the most recent one with its
+duration, and counts the build's elapsed time. **Build log** opens the build's output inside the panel as it
+arrives; **Open in editor** shows the complete log with timestamps, and **Timing** reveals the build in the
+**Activity** view. A failed build quotes the compiler errors under **Details** and lists them in the Problems view.
+Once a gallery paints, the status line breaks its time down by phase (build, compile, render). Builds do not steal
+editor focus; the build's task terminal stays available in the Terminal panel.
+
 The gallery follows VS Code's light, dark and high-contrast themes. **Fit** constrains images to their cards;
-toggle it for actual pixel size. Builds do not steal editor focus.
+toggle it for actual pixel size.
 
 **Inspect** overlays Compose's measured layout bounds. Click a component to select it, then choose **Open source**,
 double-click, or press Enter to navigate to its call site, including calls in workspace libraries. The component

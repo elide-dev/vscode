@@ -11,6 +11,10 @@
  * `./compose.ts`. That sample must have been built once with an Android-capable Elide. The Compose renderer
  * runtime is reused from the regular VS Code profile when present, otherwise downloaded.
  *
+ * `ELIDE_TEST_SCENARIO=android` opens a clean copy (no `.dev`, so nothing prebuilt) of the `sample-android`
+ * checkout beside this repository, or of `ELIDE_ANDROID_APP_SAMPLE`, and runs `./android.ts`: sync, build the APK,
+ * and install and launch it on the attached device or a headless emulator.
+ *
  * Prerequisites: VS Code at /Applications/Visual Studio Code.app, `JetBrains.kotlin-server` installed in
  * ~/.vscode/extensions, `elide` installed. Usage: `bun run test:integration` from packages/vscode.
  */
@@ -30,6 +34,9 @@ const vscodeExecutablePath = process.env.VSCODE_EXECUTABLE ?? "/Applications/Vis
 const extensionsDir = path.join(homedir(), ".vscode", "extensions");
 if (!readdirSync(extensionsDir).some((d) => d.startsWith("jetbrains.kotlin-server-"))) throw new Error(`JetBrains.kotlin-server is not installed in ${extensionsDir}`);
 
+const scenarios = ["workspace", "compose", "android"] as const;
+const scenario = scenarios.find((name) => name === process.env.ELIDE_TEST_SCENARIO) ?? "ktjvm";
+
 const userDataDir = mkdtempSync(path.join(tmpdir(), "elide-vscode-user-"));
 mkdirSync(path.join(userDataDir, "User"), { recursive: true });
 writeFileSync(
@@ -43,13 +50,13 @@ writeFileSync(
       "security.workspace.trust.enabled": false,
       "update.mode": "none",
       "telemetry.telemetryLevel": "off",
+      // An emulator the test boots runs headless.
+      ...(scenario === "android" ? { "elide.android.emulatorWindow": false } : {}),
     },
     null,
     2,
   ),
 );
-
-const scenario = process.env.ELIDE_TEST_SCENARIO === "workspace" || process.env.ELIDE_TEST_SCENARIO === "compose" ? process.env.ELIDE_TEST_SCENARIO : "ktjvm";
 
 // Work on a scratch copy of the sample so the test can mutate elide.pkl freely; the compose sample stays in place.
 const sample = scenario === "compose"
@@ -57,12 +64,21 @@ const sample = scenario === "compose"
   : mkdtempSync(path.join(realpathSync(tmpdir()), `elide-${scenario}-`));
 if (scenario === "workspace") prepareWorkspaceSample();
 else if (scenario === "compose") prepareComposeSample();
+else if (scenario === "android") prepareAndroidSample();
 else prepareKtjvmSample();
 
 function prepareComposeSample(): void {
   if (!existsSync(path.join(sample, "app", ".dev", "jvm"))) throw new Error(`no built Elide Android sample at ${sample}; set ELIDE_ANDROID_SAMPLE`);
   const runtime = path.join(homedir(), "Library", "Application Support", "Code", "User", "globalStorage", "elide.elide", "compose-runtime");
   if (existsSync(runtime)) cpSync(runtime, path.join(userDataDir, "User", "globalStorage", "elide.elide", "compose-runtime"), { recursive: true });
+}
+
+function prepareAndroidSample(): void {
+  const source = process.env.ELIDE_ANDROID_APP_SAMPLE ?? path.resolve(repoRoot, "..", "sample-android");
+  if (!existsSync(path.join(source, "elide.pkl"))) throw new Error(`no Elide Android application at ${source}; set ELIDE_ANDROID_APP_SAMPLE`);
+  // Build outputs, editor state and the generated workspace.json would stand in for what the sync and build produce.
+  const skipped = new Set([".dev", ".git", ".idea", ".vscode", "node_modules", "workspace.json"]);
+  cpSync(source, sample, { recursive: true, filter: (src) => !skipped.has(path.basename(src)) });
 }
 
 function prepareWorkspaceSample(): void {

@@ -184,3 +184,143 @@ esac
     expect(argv()).toEqual(["--version", "project export", "manifest"]);
   });
 });
+
+describe("ElideCli command observers", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const cli = (script: string) => {
+    const home = mkdtempSync(path.join(tmpdir(), "elide-home-"));
+    const root = mkdtempSync(path.join(tmpdir(), "elide-proj-"));
+    dirs.push(home, root);
+    mkdirSync(path.join(home, "bin"));
+    writeFileSync(path.join(home, "bin", "elide"), `#!/bin/sh\n${script}\n`);
+    chmodSync(path.join(home, "bin", "elide"), 0o755);
+    return new ElideCli(distributionAt(home), root);
+  };
+
+  const observe = () => {
+    const seen: { argv: readonly string[]; lines: string[]; exitCode?: number | null }[] = [];
+    return {
+      seen,
+      onCommand: (argv: readonly string[]) => {
+        const entry: (typeof seen)[number] = { argv, lines: [] };
+        seen.push(entry);
+        return {
+          line: (line: string, stderr: boolean) => entry.lines.push(`${stderr ? "err" : "out"} ${line}`),
+          record: (record: { type: string }) => entry.lines.push(`record ${record.type}`),
+          end: ({ exitCode }: { exitCode: number | null }) => { entry.exitCode = exitCode; },
+        };
+      },
+    };
+  };
+
+  test("a command whose stdout is its result shows the observer only what it printed for a person", async () => {
+    const observer = observe();
+    const entries = await cli(`echo "/a.jar:/b.jar"; echo "resolving" >&2`).classpath("main", "compile", { onCommand: observer.onCommand });
+    expect(entries).toEqual(["/a.jar", "/b.jar"]);
+    expect(observer.seen).toEqual([{ argv: ["classpath", "main:compile"], lines: ["err resolving"], exitCode: 0 }]);
+  });
+
+  test("a build shows every line, and a failure still ends its observation with the exit code", async () => {
+    const observer = observe();
+    await expect(cli(`echo "compiled"; echo "✗ Build failed in (1.0s)" >&2; exit 3`).build(["app"], { onCommand: observer.onCommand })).rejects.toThrow();
+    expect(observer.seen).toEqual([{ argv: ["build", "app"], lines: ["out compiled", "err ✗ Build failed in (1.0s)"], exitCode: 3 }]);
+  });
+
+  test("progress records reach the observer as records, and everyone else as the text they stand for", async () => {
+    const observer = observe();
+    const lines: string[] = [];
+    const records = [
+      `{"type":"task-started","task":"app:compile-kotlin-main","project":"app","message":"Compiling Kotlin sources","time":1}`,
+      `{"type":"message","level":"error","text":"error: kotlinc: Unresolved reference 'x'.\\nIn file: src/Main.kt:3:5","file":"/p/src/Main.kt","line":3,"column":5,"time":2}`,
+      `{"type":"build-finished","outcome":"failure","exitCode":1,"durationMs":3000,"message":"Build failed","time":3}`,
+    ];
+    const failure = cli(`cat >&2 <<'EOF'\n${records.join("\n")}\n{"not":"a record"}\nEOF\nexit 1`)
+      .build(["app"], { onCommand: observer.onCommand, onLine: (line) => lines.push(line) });
+    const error = await failure.then(() => undefined, (e: unknown) => e as Error);
+    const text = ["error: kotlinc: Unresolved reference 'x'.", "In file: /p/src/Main.kt:3:5", "✗ Build failed in 3.0s", `{"not":"a record"}`];
+    expect(lines).toEqual(text);
+    expect(observer.seen[0]!.lines).toEqual([
+      "record task-started",
+      "record message", ...text.slice(0, 2).map((line) => `err ${line}`),
+      "record build-finished", `err ${text[2]}`,
+      `err ${text[3]}`,
+    ]);
+    expect(error?.message).toEndWith(text.join("\n"));
+  });
+
+  test("every process asks for progress records unless the caller picks another mode", async () => {
+    const elide = cli(`echo "$ELIDE_PROGRESS"`);
+    expect((await elide.run(["build"])).stdout).toBe("json\n");
+    expect((await elide.run(["build"], { env: { ELIDE_PROGRESS: "plain" } })).stdout).toBe("plain\n");
+  });
+});
+
+describe("ElideCli.classpaths", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A CLI reporting `version` that answers `--json` only when `json` is set, failing on a set named `broken`. */
+  const cliReporting = (version: string, json: boolean) => {
+    const home = mkdtempSync(path.join(tmpdir(), "elide-home-"));
+    const root = mkdtempSync(path.join(tmpdir(), "elide-proj-"));
+    dirs.push(home, root);
+    const log = path.join(root, "argv.log");
+    mkdirSync(path.join(home, "bin"));
+    writeFileSync(
+      path.join(home, "bin", "elide"),
+      `#!/bin/sh
+echo "$*" >> "${log}"
+case "$*" in
+  --version) echo "${version}" ;;
+  *broken*) echo "no such source set" >&2; exit 1 ;;
+  "classpath --json"*) ${json ? `echo '{"main:compile":["/m2/a.jar","lib/b.jar"],"main:runtime":["/m2/a.jar","/m2/r.jar"]}'` : `echo "Unknown option: '--json'" >&2; exit 2`} ;;
+  "classpath main:compile") echo "/m2/a.jar:lib/b.jar" ;;
+  "classpath main:runtime") echo "/m2/a.jar:/m2/r.jar" ;;
+esac
+`,
+    );
+    chmodSync(path.join(home, "bin", "elide"), 0o755);
+    return {
+      cli: new ElideCli(distributionAt(home), root),
+      root,
+      argv: (): string[] => readFileSync(log, "utf8").trim().split("\n"),
+    };
+  };
+  const answers = (root: string) => new Map([
+    ["main:compile", ["/m2/a.jar", path.join(root, "lib/b.jar")]],
+    ["main:runtime", ["/m2/a.jar", "/m2/r.jar"]],
+  ]);
+
+  test("1.6.1 answers every query from one process; an older release is asked one query at a time", async () => {
+    const recent = cliReporting("1.6.1+abc1234", true);
+    expect(await recent.cli.classpaths(["main:compile", "main:runtime"])).toEqual(answers(recent.root));
+    expect(recent.argv()).toEqual(["--version", "classpath --json main:compile main:runtime"]);
+
+    const older = cliReporting("1.6.0+abc1234", false);
+    expect(await older.cli.classpaths(["main:compile", "main:runtime"])).toEqual(answers(older.root));
+    expect(older.argv()).toEqual(["--version", "classpath main:compile", "classpath main:runtime"]);
+  });
+
+  test("a version that cannot be read is tried with --json once, and the form that answered is kept", async () => {
+    const { cli, root, argv } = cliReporting("development build", false);
+    expect(await cli.classpaths(["main:compile", "main:runtime"])).toEqual(answers(root));
+    await cli.classpaths(["main:compile"]);
+    expect(argv()).toEqual([
+      "--version",
+      "classpath --json main:compile main:runtime", "classpath main:compile", "classpath main:runtime",
+      "classpath main:compile",
+    ]);
+  });
+
+  test("a release that batches fails the call with the query that could not be resolved", async () => {
+    const { cli, argv } = cliReporting("1.6.1+abc1234", true);
+    await expect(cli.classpaths(["main:compile", "broken:provided"])).rejects.toThrow(/no such source set/);
+    expect(argv()).toEqual(["--version", "classpath --json main:compile broken:provided"]);
+  });
+});

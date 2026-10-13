@@ -36,7 +36,8 @@ h1 { font-size: 13px; font-weight: 650; margin: 0; letter-spacing: .01em; }
 .status-row[data-state="ready"] .status-dot { background: var(--vscode-testing-iconPassed, #73c991); }
 .status-row[data-state="error"] .status-dot { background: var(--error); }
 #status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-#diagnostics-toggle { font-size: 11px; min-height: 24px; padding: 1px 6px; }
+#diagnostics-toggle, #log-toggle { font-size: 11px; min-height: 24px; padding: 1px 6px; }
+#status-elapsed { font-variant-numeric: tabular-nums; white-space: nowrap; }
 #retained { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border: 1px solid var(--border); border-radius: 3px; padding: 0 5px; white-space: nowrap; }
 #gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); align-items: start; gap: 18px; padding: 20px 18px 32px; }
 .preview-card { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
@@ -72,10 +73,15 @@ body:not(.inspect) .layout-overlay { display: none; }
 .empty-icon svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.25; }
 #empty-title { color: var(--text); font-size: 15px; font-weight: 600; margin: 0 0 8px; }
 #empty-description { margin: 0; font-size: 12px; }
-#diagnostics { position: fixed; z-index: 10; bottom: 12px; left: 12px; right: 12px; max-height: min(55vh, 460px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 4px 18px var(--vscode-widget-shadow, #0005); }
-.diagnostics-header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 6px 12px; }
-#diagnostics-title { margin: 0; font-size: 12px; }
+#diagnostics, #build-log { position: fixed; z-index: 10; bottom: 12px; left: 12px; right: 12px; max-height: min(55vh, 460px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 4px 18px var(--vscode-widget-shadow, #0005); }
+.diagnostics-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); padding: 6px 12px; }
+.panel-actions { display: flex; align-items: center; gap: 4px; }
+#diagnostics-title, #build-log-title { margin: 0; font-size: 12px; }
 #diagnostics-body { margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 var(--vscode-editor-font-family, monospace); user-select: text; color: var(--error); }
+#build-log-body { min-height: 120px; padding: 8px 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 var(--vscode-editor-font-family, monospace); user-select: text; }
+.log-error { color: var(--error); }
+.log-warning { color: var(--vscode-editorWarning-foreground, #cca700); }
+.log-command { color: var(--muted); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .vscode-high-contrast .preview-card, .vscode-high-contrast-light .preview-card, .vscode-high-contrast button, .vscode-high-contrast-light button { border-color: var(--vscode-contrastBorder, var(--border)); }
 .vscode-high-contrast .layout-outline, .vscode-high-contrast-light .layout-outline { stroke-opacity: 1; stroke-width: 2; }
@@ -94,7 +100,7 @@ body:not(.inspect) .layout-overlay { display: none; }
       <button id="inspect" type="button" aria-pressed="false" title="Show layout outlines and inspect components"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h18v18H3zM3 9h18M9 9v12"/></svg><span>Inspect</span></button>
     </div>
   </div>
-  <div id="status" class="status-row" data-state="working"><span class="status-dot" aria-hidden="true"></span><span id="status-text" role="status" aria-live="polite">Starting preview…</span><span id="retained" hidden>Last good preview</span><button id="diagnostics-toggle" type="button" aria-controls="diagnostics" aria-expanded="false" hidden>Details</button></div>
+  <div id="status" class="status-row" data-state="working"><span class="status-dot" aria-hidden="true"></span><span id="status-text" role="status" aria-live="polite">Starting preview…</span><span id="status-elapsed" title="Time since this build started" hidden></span><span id="retained" hidden>Last good preview</span><button id="log-toggle" type="button" aria-controls="build-log" aria-expanded="false" title="Follow the output of the preview build" hidden>Build log</button><button id="diagnostics-toggle" type="button" aria-controls="diagnostics" aria-expanded="false" hidden>Details</button></div>
 </header>
 <main aria-label="Compose preview gallery">
   <div id="empty"><div class="empty-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 9v12"/></svg></div><h2 id="empty-title">Preparing your previews</h2><p id="empty-description">Rendered composables will appear here. You can keep editing while they build.</p></div>
@@ -103,6 +109,7 @@ body:not(.inspect) .layout-overlay { display: none; }
 <p id="keyboard-help" class="sr-only">Use arrow keys to select components, Home or End for the first or last component, Alt plus Up for the enclosing component, and Enter to open source. Click to select, or double-click to open source.</p>
 <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
 <section id="diagnostics" aria-labelledby="diagnostics-title" hidden><div class="diagnostics-header"><h2 id="diagnostics-title">Preview diagnostics</h2><button id="diagnostics-close" type="button" aria-label="Close diagnostics">Close</button></div><pre id="diagnostics-body" tabindex="0"></pre></section>
+<section id="build-log" aria-labelledby="build-log-title" hidden><div class="diagnostics-header"><h2 id="build-log-title">Build log</h2><div class="panel-actions"><button id="build-log-open" type="button" title="Open the complete output of this build, with timestamps, in an editor">Open in editor</button><button id="build-log-activity" type="button" title="Show each step of the preview build and how long it took">Timing</button><button id="build-log-close" type="button" aria-label="Close build log">Close</button></div></div><div id="build-log-body" tabindex="0" role="log" aria-label="Preview build output"></div></section>
 <script nonce="${nonce}">
 const api = acquireVsCodeApi();
 const gallery = document.getElementById('gallery');
@@ -116,6 +123,10 @@ let statusState = 'working';
 let statusText = 'Starting preview…';
 let diagnosticsText = '';
 let diagnosticOrigin = null;
+/** Epoch milliseconds the running phase began; the status row counts up from it. */
+let since = null;
+let logLines = 0;
+const LOG_LIMIT = 2000;
 const cards = new Map();
 const svgNS = 'http://www.w3.org/2000/svg';
 function element(tag, className, text) {
@@ -314,7 +325,7 @@ function installNodes(card, nodes) {
 function emptyState() {
   document.getElementById('empty').hidden = cards.size > 0;
   document.getElementById('empty-title').textContent = statusState === 'error' ? 'Preview could not be built' : statusState === 'working' ? 'Preparing your previews' : 'No previews to display';
-  document.getElementById('empty-description').textContent = statusState === 'error' ? 'Open Details for diagnostics. Your previews will appear after the next successful build.' : statusState === 'working' ? 'Rendered composables will appear here. You can keep editing while they build.' : 'Add a @Preview composable to this file, then rebuild.';
+  document.getElementById('empty-description').textContent = statusState === 'error' ? 'Open Details for diagnostics, or Build log for the build output. Your previews will appear after the next successful build.' : statusState === 'working' ? 'Rendered composables will appear here. You can keep editing while they build' + (logLines ? '; open Build log to follow the build.' : '.') : 'Add a @Preview composable to this file, then rebuild.';
 }
 function closeDiagnostics() {
   document.getElementById('diagnostics').hidden = true;
@@ -322,12 +333,53 @@ function closeDiagnostics() {
   if (diagnosticOrigin && diagnosticOrigin.isConnected) diagnosticOrigin.focus({ preventScroll: true });
 }
 function showDiagnostics(text, title, origin) {
+  closeBuildLog(false);
   diagnosticOrigin = origin;
   document.getElementById('diagnostics-title').textContent = title || 'Preview diagnostics';
   document.getElementById('diagnostics-body').textContent = text;
   document.getElementById('diagnostics').hidden = false;
   document.getElementById('diagnostics-toggle').setAttribute('aria-expanded', 'true');
   document.getElementById('diagnostics-close').focus({ preventScroll: true });
+}
+function closeBuildLog(restoreFocus) {
+  if (document.getElementById('build-log').hidden) return;
+  document.getElementById('build-log').hidden = true;
+  document.getElementById('log-toggle').setAttribute('aria-expanded', 'false');
+  if (restoreFocus) document.getElementById('log-toggle').focus({ preventScroll: true });
+}
+function showBuildLog() {
+  if (!document.getElementById('diagnostics').hidden) closeDiagnostics();
+  const body = document.getElementById('build-log-body');
+  document.getElementById('build-log').hidden = false;
+  document.getElementById('log-toggle').setAttribute('aria-expanded', 'true');
+  body.scrollTop = body.scrollHeight;
+  body.focus({ preventScroll: true });
+}
+function logClass(line) {
+  if (/^(?:\[[^\]]*\]\s+)?(?:error:|✗)/.test(line) || /^\s*✗/.test(line)) return 'log-error';
+  if (/^(?:\[[^\]]*\]\s+)?warning:/.test(line)) return 'log-warning';
+  return /^\$ /.test(line) ? 'log-command' : '';
+}
+function appendLog(lines, reset) {
+  const body = document.getElementById('build-log-body');
+  if (reset) { body.replaceChildren(); logLines = 0; }
+  // Follow the output unless the reader scrolled up to look at something.
+  const following = body.scrollTop + body.clientHeight >= body.scrollHeight - 8;
+  const fragment = document.createDocumentFragment();
+  for (const line of lines) if (typeof line === 'string') { fragment.append(element('div', logClass(line), line)); logLines++; }
+  body.append(fragment);
+  for (; logLines > LOG_LIMIT && body.firstChild; logLines--) body.firstChild.remove();
+  if (following) body.scrollTop = body.scrollHeight;
+  document.getElementById('log-toggle').hidden = logLines === 0;
+  if (logLines === 0) closeBuildLog(false);
+  emptyState();
+}
+function updateElapsed() {
+  const elapsed = document.getElementById('status-elapsed');
+  if (since === null || statusState !== 'working') { elapsed.hidden = true; return; }
+  const seconds = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  elapsed.textContent = seconds < 60 ? seconds + ' s' : Math.floor(seconds / 60) + ' m ' + String(seconds % 60).padStart(2, '0') + ' s';
+  elapsed.hidden = false;
 }
 function applyStatus(data) {
   statusState = ['working', 'ready', 'error'].includes(data.state) ? data.state : 'working';
@@ -339,6 +391,8 @@ function applyStatus(data) {
   document.getElementById('status-text').title = summary;
   document.getElementById('retained').hidden = data.retained !== true;
   document.getElementById('diagnostics-toggle').hidden = !diagnosticsText;
+  since = Number.isFinite(data.since) ? data.since : null;
+  updateElapsed();
   gallery.setAttribute('aria-busy', String(statusState === 'working'));
   if (!document.getElementById('diagnostics').hidden && diagnosticOrigin === document.getElementById('diagnostics-toggle')) {
     if (diagnosticsText) document.getElementById('diagnostics-body').textContent = diagnosticsText;
@@ -424,7 +478,19 @@ document.getElementById('diagnostics-toggle').onclick = event => {
   else closeDiagnostics();
 };
 document.getElementById('diagnostics-close').onclick = closeDiagnostics;
-document.addEventListener('keydown', event => { if (event.key === 'Escape' && !document.getElementById('diagnostics').hidden) { event.preventDefault(); closeDiagnostics(); } });
+document.getElementById('log-toggle').onclick = () => {
+  if (document.getElementById('build-log').hidden) showBuildLog();
+  else closeBuildLog(true);
+};
+document.getElementById('build-log-close').onclick = () => closeBuildLog(true);
+document.getElementById('build-log-open').onclick = () => api.postMessage({ type: 'openLog' });
+document.getElementById('build-log-activity').onclick = () => api.postMessage({ type: 'showActivity' });
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  if (!document.getElementById('diagnostics').hidden) { event.preventDefault(); closeDiagnostics(); }
+  else if (!document.getElementById('build-log').hidden) { event.preventDefault(); closeBuildLog(true); }
+});
+setInterval(updateElapsed, 1000);
 window.addEventListener('message', ({ data }) => {
   if (!data || typeof data !== 'object') return;
   if (data.type === 'status') applyStatus(data);
@@ -433,6 +499,7 @@ window.addEventListener('message', ({ data }) => {
     gallery.setAttribute('aria-busy', 'true');
     for (const card of cards.values()) updateInspector(card);
   } else if (data.type === 'images') void receiveImages(data);
+  else if (data.type === 'log' && Array.isArray(data.lines)) appendLog(data.lines, data.reset === true);
 });
 preferences();
 api.postMessage({ type: 'ready' });

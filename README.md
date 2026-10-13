@@ -22,7 +22,8 @@ and a pinned (`&version=`) link.
 
 ## Requirements
 
-- Elide **1.5+** installed (`~/.local/share/elide`, `$ELIDE_HOME`, or `elide` on `PATH`).
+- Elide **1.5+** installed (`~/.local/share/elide`, `$ELIDE_HOME`, or `elide` on `PATH`). **1.6.1+** adds live task
+  progress and batched classpath queries; older releases work without them.
 - The **Kotlin by JetBrains** extension (`JetBrains.kotlin-server`, ≥ 0.0.11). It is declared as an extension
   dependency and installed automatically; complete its one-time region / data-sharing setup so the language server
   starts.
@@ -37,7 +38,9 @@ Opening a folder that contains `elide.pkl` runs a **sync**:
    entrypoints). Elide 1.5 answers the same document to `elide manifest`, which 1.6 retired; the reported version
    decides which is run.
 2. `elide install` — only when the lockfile (`.dev/elide.lock*.bin`) is older than the manifest.
-3. `elide classpath <source set>:compile` for every compilable source set.
+3. The compile classpath of every compilable source set (plus the runtime and Android `provided` ones an Android
+   project needs): one `elide classpath --json <set>:<usage>…` per project on Elide 1.6.1+, one
+   `elide classpath <set>:<usage>` per query before that.
 4. `workspace.json` is written at the workspace folder root in the Kotlin LSP's JSON workspace format (one module per
    source set, one library per jar with `-sources.jar`/`-javadoc.jar` attached when present, the selected JDK as SDK,
    Kotlin language/API level and free compiler args as kotlinc flags).
@@ -61,6 +64,20 @@ its own for path-keyed features (code lenses, tests, tasks, debugging), and edit
 Opening a member's own directory instead of the root gives that member no siblings: the CLI still puts their JARs on
 its classpath, but they are build outputs of projects the window does not hold, so the sync reports them as
 unresolvable rather than inventing a library for a jar that may not exist, and offers to open the workspace root.
+
+Each step of a sync, the `elide` commands it runs and the build tasks those report are timed. The status bar names
+what is in progress, a sync that runs longer than two seconds also shows a cancellable notification
+(`elide.sync.showProgressNotification`), and the **Activity** view in the Elide sidebar keeps the step tree of every
+sync and Compose preview build, with each step's duration, share of the whole and output. The status bar tooltip and
+the `Elide` output channel end each sync with a breakdown of where its time went.
+
+Every CLI process the extension drives itself runs with `ELIDE_PROGRESS=json`. Elide 1.6.1+ then writes one JSON
+record per build event on stderr (task started, progress, finished; messages with absolute source locations; the
+verdict), so running tasks and their progress show while they run — `Resolving Maven dependencies: 40% (1/3)` in
+the status bar. The records are rendered back to the text Elide prints without a terminal for the `Elide` output
+channel and logs. Older releases ignore the variable and print a line per finished task, so progress is known as
+tasks finish. Task terminals are left in `auto` (or `plain`, for the piped terminal of a Compose preview build), since
+they are read by a person and the `$elide` problem matcher.
 
 ### Mixed-editor checkouts (`.idea`, Gradle, Maven)
 
@@ -93,6 +110,8 @@ anything you set by hand stays.
 | `Elide: Run Elide Command…` | Pick `build`, `test`, `install`, or `run <entrypoint>` and run it as a task. |
 | `Elide: Open generated Kotlin LSP workspace` | Open `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel (CLI output, sync log). |
+| `Elide: Show Activity` | Reveal the **Activity** view: each sync and preview build, its steps and their durations. |
+| `Elide: Open Activity Log` | Open the latest operation's output, with timestamps, in an editor. |
 | `Elide: Run Android App…` | Build an APK and install and launch it on a device or the emulator. |
 | `Elide: Debug Android App…` | Build an APK, install and launch it waiting for a debugger, and attach over JDWP. |
 | `Elide: Start Android Emulator`, `Elide: Stop Android Emulators`, `Elide: Create Android Virtual Device` | Drive the project's virtual device. |

@@ -8,7 +8,9 @@ is referenced anywhere in this package.
 
 | Module | Responsibility |
 | --- | --- |
-| `elide.ts` | Locate an Elide distribution (explicit home, `$ELIDE_HOME`, platform install locations, `PATH`) and run CLI commands (`project export` / `manifest`, `install`, `classpath`, `build`). |
+| `elide.ts` | Locate an Elide distribution (explicit home, `$ELIDE_HOME`, platform install locations, `PATH`) and run CLI commands (`project export` / `manifest`, `install`, `classpath` / batched `classpath --json`, `build`) with `ELIDE_PROGRESS=json`. |
+| `buildOutput.ts` | Read what Elide reports about a build: `ELIDE_PROGRESS=json` records, and the text an older CLI prints. |
+| `timeline.ts`, `commandTimeline.ts` | Time an operation as a tree of steps, and follow each CLI process it starts as a step with its build tasks, their progress and a live status line. |
 | `manifest.ts` | Decode the exported project JSON into a typed manifest: source sets, Kotlin compiler options, entrypoints, JVM settings. |
 | `sourceRoots.ts`, `libraries.ts` | Derive source roots and resolve classpath entries into libraries with attached `-sources.jar` / `-javadoc.jar`. |
 | `jdk.ts` | Discover installed JDKs (SDKMAN, macOS, Linux, Windows locations) and pick one matching the project's `jvm.target`. |

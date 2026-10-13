@@ -17,8 +17,10 @@ export {
   parseClasspath,
   resolveElideDistribution,
   whichExecutable,
+  type ClasspathQuery,
   type ClasspathUsage,
   type ElideDistribution,
+  type CommandObserver,
   type ResolveElideOptions,
   type RunOptions,
   type RunResult,
@@ -40,3 +42,6 @@ export * from "./jdk.js";
 export * from "./model.js";
 export * from "./kotlinLsp.js";
 export * from "./workspace.js";
+export * from "./timeline.js";
+export * from "./buildOutput.js";
+export * from "./commandTimeline.js";

@@ -61,7 +61,8 @@
     "workspaceContains:**/elide.pkl",
     "onDebugResolve:elide",
     "onTaskType:elide",
-    "onView:elide.projects"
+    "onView:elide.projects",
+    "onView:elide.activity"
   ],
   "contributes": {
     "configuration": {
@@ -93,6 +94,11 @@
           ],
           "default": "prompt",
           "description": "What to do when elide.pkl changes, or when the lockfile's resolved dependencies do. Rewrites of .dev/elide.lock*.bin that leave the dependencies unchanged (every elide run/test/build does one) are ignored."
+        },
+        "elide.sync.showProgressNotification": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show a notification with the step in progress, and a Cancel button, while a sync runs for more than a couple of seconds. The status bar and the **Elide › Activity** view show progress either way."
         },
         "elide.kotlinLsp.writeWorkspaceJson": {
           "type": "boolean",
@@ -272,6 +278,30 @@
         "command": "elide.showOutput",
         "category": "Elide",
         "title": "Show Output"
+      },
+      {
+        "command": "elide.showActivity",
+        "category": "Elide",
+        "title": "Show Activity",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "elide.openActivityLog",
+        "category": "Elide",
+        "title": "Open Activity Log",
+        "icon": "$(output)"
+      },
+      {
+        "command": "elide.cancelActivity",
+        "category": "Elide",
+        "title": "Cancel",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "elide.clearActivity",
+        "category": "Elide",
+        "title": "Clear Finished Activity",
+        "icon": "$(clear-all)"
       },
       {
         "command": "elide.showMenu",
@@ -498,6 +528,10 @@
         {
           "command": "elide.androidOpenMapping",
           "when": "false"
+        },
+        {
+          "command": "elide.cancelActivity",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -515,6 +549,11 @@
           "command": "elide.newProject",
           "when": "view == elide.projects",
           "group": "navigation@3"
+        },
+        {
+          "command": "elide.clearActivity",
+          "when": "view == elide.activity",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
@@ -625,6 +664,16 @@
         {
           "command": "elide.revealLibrary",
           "when": "view == elide.projects && viewItem == library"
+        },
+        {
+          "command": "elide.cancelActivity",
+          "when": "view == elide.activity && viewItem =~ /Cancellable$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.openActivityLog",
+          "when": "view == elide.activity && viewItem =~ /^activity/",
+          "group": "inline@2"
         }
       ]
     },
@@ -644,6 +693,12 @@
           "name": "Projects",
           "contextualTitle": "Elide",
           "icon": "media/elide.svg"
+        },
+        {
+          "id": "elide.activity",
+          "name": "Activity",
+          "contextualTitle": "Elide",
+          "icon": "media/elide.svg"
         }
       ]
     },
@@ -652,6 +707,10 @@
         "view": "elide.projects",
         "when": "!elide.hasProjects",
         "contents": "No Elide project (`elide.pkl`) in this workspace.\n[New Project…](command:elide.newProject)\n[Open Folder](command:vscode.openFolder)\n[Elide documentation](https://docs.elide.dev)"
+      },
+      {
+        "view": "elide.activity",
+        "contents": "Nothing has run yet. Syncs and Compose preview builds appear here while they run, step by step, with the time each step took and its output.\n[Sync Project(s)](command:elide.sync)"
       }
     ],
     "problemMatchers": [

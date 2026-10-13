@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { MANIFEST_NAME, WORKSPACE_JSON, isLockfileName, nativeImageBinary, type ElideCommand } from "@elide/ide-core";
 import * as vscode from "vscode";
+import { ACTIVITY_VIEW_ID, type ElideActivityApi } from "./activity.js";
 import {
   createAndroidAvd,
   createAndroidKeystore,
@@ -31,6 +32,7 @@ export interface ElideExtensionApi {
   tests: ElideTestApi;
   explorer: ElideExplorerApi;
   composePreview: ElideComposePreviewApi;
+  activity: ElideActivityApi;
 }
 
 const DEBOUNCE_MS = 1_000;
@@ -39,7 +41,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const ui = new ElideUi();
   const workspace = new ElideWorkspace(ui, context.globalState);
   context.subscriptions.push(ui, workspace);
-  const composePreview = registerComposePreview(workspace, context);
+  const composePreview = registerComposePreview(workspace, ui, context);
   context.subscriptions.push(composePreview.disposable, registerAndroidLogcat(workspace));
 
   const debugConfigurations = new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions);
@@ -79,6 +81,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.debug.registerDebugConfigurationProvider(ELIDE_NATIVE_DEBUG_TYPE, nativeDebugConfigurations),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_ANDROID_DEBUG_TYPE, androidDebugConfigurations),
     vscode.window.registerTreeDataProvider(PROJECTS_VIEW_ID, explorer),
+    vscode.window.registerTreeDataProvider(ACTIVITY_VIEW_ID, ui.activity),
     explorer,
     tests,
   );
@@ -97,7 +100,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     if (readConfig().syncOnStartup) void workspace.syncAll("startup");
     else workspace.markStaleAll();
   }
-  return { tests, explorer, composePreview: composePreview.api };
+  return { tests, explorer, composePreview: composePreview.api, activity: ui.activity };
 }
 
 export function deactivate(): void {}
@@ -264,6 +267,7 @@ const MENU_ACTIONS: { label: string; description: string; command: string }[] = 
   { label: "$(beaker) Run All Tests", description: "Run every test in the Testing view", command: "testing.runAll" },
   { label: "$(file-code) Open elide.pkl", description: "Project manifest", command: "elide.openManifest" },
   { label: "$(json) Open generated Kotlin LSP workspace", description: WORKSPACE_JSON, command: "elide.openWorkspaceJson" },
+  { label: "$(pulse) Show Activity", description: "What syncs and preview builds did, step by step, and where their time went", command: "elide.showActivity" },
   { label: "$(output) Show Output", description: "Elide output channel", command: "elide.showOutput" },
   { label: "$(new-folder) New Project…", description: "Create a project from an Elide template", command: "elide.newProject" },
   { label: "$(add) Add Workspace Member…", description: "Create a project inside this one and declare it a member", command: "elide.addMember" },
@@ -278,7 +282,7 @@ async function showMenu(workspace: ElideWorkspace): Promise<void> {
     items.push({
       label: `$(error) Last sync failed: ${error.split("\n")[0]}`,
       description: folder.name,
-      command: "elide.showOutput",
+      command: "elide.showActivity",
     });
     break;
   }

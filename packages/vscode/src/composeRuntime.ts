@@ -122,10 +122,15 @@ export async function ensureComposeRuntime(
   const staging = await mkdtemp(path.join(root, `${key}.install-`));
   try {
     const archive = layoutlibArtifact("layoutlib-runtime", platform.sha256, "layoutlib-runtime.jar", `-${platform.classifier}`);
-    for (const artifact of [RENDERER, API, RESOURCES, archive]) {
+    const artifacts = [RENDERER, API, RESOURCES, archive];
+    for (const [index, artifact] of artifacts.entries()) {
       signal.throwIfAborted();
-      onProgress(`Downloading ${artifact.file} for host Compose rendering…`);
-      await download(artifact, staging, signal);
+      const label = `Downloading ${artifact.file} (${index + 1} of ${artifacts.length}) for host Compose rendering…`;
+      onProgress(label);
+      await download(artifact, staging, signal, (received, total) => {
+        const mib = (bytes: number) => (bytes / 1_048_576).toFixed(1);
+        onProgress(`${label} ${mib(received)}${total ? ` of ${mib(total)} MiB (${Math.floor((received / total) * 100)}%)` : " MiB"}`);
+      });
     }
     signal.throwIfAborted();
     onProgress("Extracting the host layoutlib runtime…");
@@ -158,7 +163,8 @@ export async function ensureComposeRuntime(
   }
 }
 
-async function download(artifact: Artifact, directory: string, signal: AbortSignal): Promise<void> {
+/** `onBytes` hears how much has arrived, at most every quarter second, against the advertised size if any. */
+async function download(artifact: Artifact, directory: string, signal: AbortSignal, onBytes: (received: number, total: number | undefined) => void): Promise<void> {
   const response = await fetch(artifact.url, { signal });
   if (!response.ok || !response.body) {
     await response.body?.cancel();
@@ -166,9 +172,17 @@ async function download(artifact: Artifact, directory: string, signal: AbortSign
   }
   const partial = path.join(directory, `${artifact.file}.part`);
   const hash = createHash("sha256");
+  const total = Number(response.headers.get("content-length")) || undefined;
+  let received = 0;
+  let reportedAt = 0;
   const digest = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       hash.update(chunk);
+      received += chunk.length;
+      if (Date.now() - reportedAt >= 250) {
+        reportedAt = Date.now();
+        onBytes(received, total);
+      }
       callback(null, chunk);
     },
   });

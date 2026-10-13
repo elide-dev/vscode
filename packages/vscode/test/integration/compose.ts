@@ -50,6 +50,23 @@ export async function runComposeScenario(): Promise<void> {
   const confirmed = await nextPaint(mark, "build confirmation", true);
   log(`open: build confirmed after ${Math.round(performance.now() - started)} ms (${confirmed.elapsedMs} ms in session)`);
 
+  // The sync and the preview build are recorded step by step, with the commands they ran and where the time went.
+  const activity = (extension.exports as ElideApi).activity;
+  const operations = activity.getChildren();
+  const sync = operations.find((operation) => operation.label.startsWith("Sync ") && operation.state === "succeeded");
+  assert.ok(sync, "a finished sync in the Activity view");
+  const manifestStep = sync.children.find((step) => step.label === "Reading the project manifest");
+  assert.ok(manifestStep?.children.some((command) => command.label.startsWith("elide project export") && command.state === "succeeded"), "the sync's manifest step ran `elide project export`");
+  const opened = operations.find((operation) => operation.label === "Compose preview: PreviewGallery.kt" && operation.state === "succeeded");
+  assert.ok(opened, "the preview build in the Activity view");
+  const buildStep = opened.children.find((step) => step.label === "Build");
+  assert.equal(buildStep?.state, "succeeded");
+  assert.match(buildStep.children[0]?.label ?? "", /^elide build /);
+  const buildLog = activity.provideTextDocumentContent(activity.uriOf(opened));
+  assert.match(buildLog, /where the time went:/);
+  assert.match(buildLog, /\$ elide build|Build successful/);
+  log(`activity: ${opened.label} ${opened.durationMs} ms: ${opened.children.map((step) => `${step.label} ${step.durationMs} ms`).join(", ")}`);
+
   // 3. A live edit (unsaved) repaints within the edit budget.
   const editor = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(gallery), { preview: false, viewColumn: vscode.ViewColumn.One });
   mark = paints.length;
