@@ -291,7 +291,7 @@ Enable `kotlin.features.compose`, include Compose `ui-tooling`, sync, and open a
 `@Preview` / `@Composable` functions. The gallery renders the file's compiled previews, including annotation
 configuration, member functions, multi-preview annotations and `@PreviewParameter` providers. Kotlin/Java edits,
 including unsaved changes, use persistent incremental compilers and renderers. Resource/configuration saves
-rebuild the resource context; library previews use a consuming workspace application.
+rebuild the resource context, chosen automatically as the application packaging the file or its library.
 
 The themed gallery retains its last good images through compilation errors and swaps decoded updates without
 blanking the canvas. Enable **Inspect** for measured layout outlines; select a component and open its source,

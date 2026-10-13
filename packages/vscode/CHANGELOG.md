@@ -28,6 +28,19 @@ All notable changes to the Elide extension are documented here. The format follo
 - Dagger/Hilt editor support: run available annotation-processing compile targets during sync and import
   generated Java/kapt sources across workspace libraries without exposing kapt stubs.
 
+### Changed
+
+- Compose previews choose their Android resource context automatically instead of asking: the application packaging
+  the previewed file's source set, or the nearest one depending on its workspace library. Focusing a library's
+  preview file in a workspace with several applications now prewarms too.
+
+### Fixed
+
+- Compose previews render the library versions the APK ships. When workspace members resolve a library at different
+  versions, the newest is used (Maven ordering, a tie going to the application's own copy), as Elide dexes it, instead
+  of the application's older transitive copy. Previews of a workspace library compiled against a newer version, such
+  as Material 3, no longer fail with `NoSuchMethodError`.
+
 ## [0.5.0](https://github.com/elide-dev/vscode/compare/v0.4.0...v0.5.0) (2026-09-24)
 
 

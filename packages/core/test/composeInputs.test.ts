@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { composePreviewBuildTargets, composePreviewInputs, decodeManifest, packagedSourceSets, type AndroidTargetModel, type ModuleModel, type ProjectModel } from "../src/index.js";
+import { composePreviewApplications, composePreviewBuildTargets, composePreviewInputs, decodeManifest, packagedSourceSets, type AndroidTargetModel, type ModuleModel, type ProjectModel } from "../src/index.js";
 
 const directories: string[] = [];
 afterAll(() => { for (const directory of directories) rmSync(directory, { recursive: true, force: true }); });
@@ -57,6 +57,25 @@ describe("host Compose preview inputs", () => {
     ]);
   });
 
+  test("previews use the nearest application compiling the file, without asking", () => {
+    const { app, library, provided, target, models } = fixture();
+    // A shell application declared first, reaching the library only through the app's screen.
+    const shell = project(path.join(path.dirname(app.root), "shell"), "shell", ["main"]);
+    shell.modules[0]!.runtimeModuleDeps = [{ project: app.root, module: app.modules[0]!.name, scope: "compile", exported: false }];
+    const shellTarget: AndroidTargetModel = { ...target, name: "shell", sourceSets: ["main"] };
+    shell.android = { targets: [shellTarget] } as ProjectModel["android"];
+    app.android = { targets: [{ ...target, name: "library-only", kind: "aar" }, target, { ...target, name: "second" }] } as ProjectModel["android"];
+    const all = [shell, ...models];
+    const chosen = (file: string) => composePreviewApplications(file, all).map(({ model, target }) => `${model.name}:${target.name}`);
+    expect(chosen(path.join(library.root, "src/widgets/Card.kt"))).toEqual(["app:demo", "app:second", "shell:shell"]);
+    expect(chosen(path.join(app.root, "src/shared/Theme.kt"))).toEqual(["app:demo", "app:second", "shell:shell"]);
+    expect(chosen(path.join(shell.root, "src/main/Shell.kt"))).toEqual(["shell:shell"]);
+    // Tests, unpackaged sets and compile-only libraries are never rendered by an application.
+    for (const file of [path.join(app.root, "src/test/T.kt"), path.join(app.root, "src/unused/U.kt"), path.join(provided.root, "src/main/P.kt")]) {
+      expect(chosen(file)).toEqual([]);
+    }
+  });
+
   test("reads merged namespace and fresh original classes, excludes stubs and stale AAR versions", async () => {
     const { app, library, target, stage, models } = fixture();
     const kotlin = path.join(app.root, ".dev/jvm/classes/screen/kotlin");
@@ -98,6 +117,35 @@ describe("host Compose preview inputs", () => {
     writeFileSync(target.manifestFile, '<manifest package="source.package"/>');
     writeFileSync(path.join(stage, "AndroidManifest.xml"), '<manifest><application package="not.the.namespace"/></manifest>');
     await expect(composePreviewInputs(app, target, models)).rejects.toThrow("Merged Android manifest has no package");
+  });
+
+  test("renders the library versions that ship: the newest any member resolved, not the consumer's older copy", async () => {
+    const { app, library, target, stage, models } = fixture();
+    const repository = path.join(path.dirname(app.root), ".dev/dependencies/m2");
+    const file = (...parts: string[]) => {
+      const entry = path.join(...parts);
+      mkdirSync(path.dirname(entry), { recursive: true });
+      writeFileSync(entry, "jar fixture");
+      return entry;
+    };
+    // The consumer reached material3 transitively at an older version than the library compiled against.
+    const ownOld = file(app.root, ".dev/android/libraries/androidx.compose.material3/material3-android/1.3.1/classes.jar");
+    const siblingNew = file(library.root, ".dev/android/libraries/androidx.compose.material3/material3-android/1.5.0-alpha22/classes.jar");
+    const ownTie = file(app.root, ".dev/android/libraries/androidx.compose.ui/ui-android/1.12.1/classes.jar");
+    const siblingTie = file(library.root, ".dev/android/libraries/androidx.compose.ui/ui-android/1.12.1/classes.jar");
+    const coroutinesOld = file(repository, "org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.9.0/kotlinx-coroutines-core-jvm-1.9.0.jar");
+    const coroutinesNew = file(repository, "org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.11.0/kotlinx-coroutines-core-jvm-1.11.0.jar");
+    const futures = file(repository, "com/google/guava/listenablefuture/1.0/listenablefuture-1.0.jar");
+    const emptyFutures = file(repository, "com/google/guava/listenablefuture/9999.0-empty-to-avoid-conflict-with-guava/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar");
+    const sources = file(repository, "org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.9.0/kotlinx-coroutines-core-jvm-1.9.0-sources.jar");
+    app.modules[0]!.runtimeClassPath = [ownOld, siblingTie, ownTie, coroutinesOld, futures, sources];
+    library.modules[0]!.runtimeClassPath = [siblingNew, coroutinesNew, emptyFutures];
+    const rClasses = path.join(stage, "r-classes");
+    // Without Guava the empty stand-in would remove ListenableFuture: the real 1.0 ships instead.
+    expect((await composePreviewInputs(app, target, models)).classPath).toEqual([rClasses, siblingNew, ownTie, coroutinesNew, futures, sources]);
+    const guava = file(repository, "com/google/guava/guava/33.4.8-android/guava-33.4.8-android.jar");
+    library.modules[0]!.runtimeClassPath.push(guava);
+    expect((await composePreviewInputs(app, target, models)).classPath).toEqual([rClasses, siblingNew, ownTie, coroutinesNew, emptyFutures, sources, guava]);
   });
 
   test("Android's empty source selection uses all non-test production sets, not hardcoded main", () => {

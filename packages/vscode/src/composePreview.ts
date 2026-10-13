@@ -1,5 +1,5 @@
 import path from "node:path";
-import { composePreviewBuildTargets, resolveElideDistribution, type AndroidTargetModel, type ProjectModel } from "@elide/ide-core";
+import { composePreviewApplications, composePreviewBuildTargets, resolveElideDistribution, type AndroidTargetModel, type ProjectModel } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { ComposeBackends, type ComposeBackend, type PreviewBuild, type PreviewRequest } from "./composeBackend.js";
 import type { PreviewImage } from "./composeRender.js";
@@ -42,11 +42,14 @@ function backendKey(project: ElideProject, artifact: AndroidTargetModel): string
   return `${project.root}\0${artifact.name}`;
 }
 
-/** Android applications that can supply the resource context for previews in `project`'s workspace folder. */
-function previewApps(workspace: ElideWorkspace, project: ElideProject) {
-  return workspace.projects.filter((item) => item.folder.uri.toString() === project.folder.uri.toString())
-    .flatMap((item) => (item.model?.android?.targets ?? []).filter((target) => target.kind === "apk")
-      .map((target) => ({ label: target.name, description: item.model?.name ?? item.root, project: item, target })));
+/** The application supplying the resource context for previews of `file`: its nearest consumer in the same folder. */
+function previewApp(workspace: ElideWorkspace, project: ElideProject, file: string): { project: ElideProject; target: AndroidTargetModel } | undefined {
+  const models = workspace.projects.filter((item) => item.folder.uri.toString() === project.folder.uri.toString()).flatMap((item) => item.model ? [item.model] : []);
+  for (const { model, target } of composePreviewApplications(file, models)) {
+    const app = workspace.projectAt(model.root);
+    if (app) return { project: app, target };
+  }
+  return undefined;
 }
 
 /** A gallery the panel displayed, or the build confirming one it displayed. */
@@ -361,8 +364,6 @@ export function registerComposePreview(workspace: ElideWorkspace, context: vscod
   const paints = new vscode.EventEmitter<ComposePreviewPaint>();
   const prewarmed = new vscode.EventEmitter<string>();
   let session: PreviewSession | undefined;
-  /** Workspace folder → backend key of the application last chosen for its previews. */
-  const chosen = new Map<string, string>();
   let prewarmTimer: NodeJS.Timeout | undefined;
   let prewarming: Promise<void> = Promise.resolve();
 
@@ -374,9 +375,8 @@ export function registerComposePreview(workspace: ElideWorkspace, context: vscod
     if (!editor || editor.document.languageId !== "kotlin" || editor.document.uri.scheme !== "file") return;
     if (!/@\w*Preview\b|androidx\.compose\.ui\.tooling\.preview\./.test(editor.document.getText())) return;
     const project = workspace.projectFor(editor.document.uri.fsPath);
-    if (!project?.model?.android) return;
-    const apps = previewApps(workspace, project);
-    const app = apps.length === 1 ? apps[0] : apps.find((item) => backendKey(item.project, item.target) === chosen.get(project.folder.uri.toString()));
+    if (!project?.model) return;
+    const app = previewApp(workspace, project, editor.document.uri.fsPath);
     const model = app?.project.model;
     if (!app || !model) return;
     const runtime = await installedComposeRuntime(cacheRoot);
@@ -399,12 +399,10 @@ export function registerComposePreview(workspace: ElideWorkspace, context: vscod
       const editor = vscode.window.activeTextEditor;
       if (!editor || editor.document.languageId !== "kotlin" || editor.document.uri.scheme !== "file") throw new Error("Open a Kotlin source file containing @Preview functions.");
       const project = workspace.projectFor(editor.document.uri.fsPath);
-      if (!project?.model?.android) throw new Error("Sync the Android project before opening a Compose preview.");
+      if (!project?.model) throw new Error("Sync the project before opening a Compose preview.");
       if (!await editor.document.save()) return;
-      const apps = previewApps(workspace, project);
-      const app = apps.length === 1 ? apps[0] : await vscode.window.showQuickPick(apps, { placeHolder: "Android resource context for this preview (no APK installation)" });
-      if (!app) { if (!apps.length) throw new Error("Declare an AndroidApk resource context, or open the workspace containing this library's consuming Android application."); return; }
-      chosen.set(project.folder.uri.toString(), backendKey(app.project, app.target));
+      const app = previewApp(workspace, project, editor.document.uri.fsPath);
+      if (!app) throw new Error("No Android application in this workspace folder packages this file. Declare an AndroidApk that includes its source set or depends on its library, then sync.");
       session?.dispose();
       session = new PreviewSession(workspace, context, backends, app.project, app.target, editor.document.uri, paints);
     } catch (error) {

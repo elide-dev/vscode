@@ -1,6 +1,9 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { androidPlatformApiLevel, androidRClasses, androidRTask, explodedAndroidLibrary } from "./android.js";
+import { DEFAULT_LIBRARIES_ROOT } from "./libraries.js";
+import { compareMavenVersions } from "./mavenVersion.js";
+import { normalizePath, sourceSelection } from "./sourceRoots.js";
 import { OUTPUT_DIR } from "./elide.js";
 import type { AndroidTargetModel, ModuleModel, ProjectModel } from "./model.js";
 import { ANDROID_STAGE_DIR } from "./workspace.js";
@@ -55,6 +58,39 @@ export function composePreviewBuildTargets(model: ProjectModel, target: AndroidT
   return [...new Set([`${scope}${androidRTask(target.name)}`, ...modules.flatMap(({ module }) => module.compilationTargets!)])];
 }
 
+/**
+ * Android applications that can supply the resource context for previews of `file`: those whose preview closure
+ * (packaged source sets and their workspace runtime dependencies) compiles it. The nearest consumer comes first, by
+ * dependency distance, then by workspace and artifact declaration order.
+ */
+export function composePreviewApplications(file: string, models: readonly ProjectModel[]): { model: ProjectModel; target: AndroidTargetModel }[] {
+  const owners = new Set(models.flatMap((project) => project.modules.filter((module) => module.kind !== "test"
+    && module.sourcePaths?.some((pattern) => sourceSelection(project.root, pattern).matches(file)))));
+  if (!owners.size) return [];
+  const projects = new Map(models.map((project) => [project.root, project]));
+  const ranked: { model: ProjectModel; target: AndroidTargetModel; distance: number }[] = [];
+  for (const model of models) {
+    for (const target of model.android?.targets ?? []) {
+      if (target.kind !== "apk" || !target.sourceSets) continue;
+      let level = model.modules.filter((module) => module.kind !== "test" && target.sourceSets!.includes(module.sourceSet));
+      const seen = new Set(level);
+      for (let distance = 0; level.length; distance++) {
+        if (level.some((module) => owners.has(module))) {
+          ranked.push({ model, target, distance });
+          break;
+        }
+        level = level.flatMap((module) => (module.runtimeModuleDeps ?? []).flatMap((dependency) => {
+          const next = dependency.scope === "test" ? undefined : projects.get(dependency.project)?.modules.find((candidate) => candidate.name === dependency.module);
+          if (!next || next.kind === "test" || seen.has(next)) return [];
+          seen.add(next);
+          return [next];
+        }));
+      }
+    }
+  }
+  return ranked.sort((a, b) => a.distance - b.distance).map(({ model, target }) => ({ model, target }));
+}
+
 /** Resolve fresh outputs after composePreviewBuildTargets has completed, rather than caching prebuild directories. */
 export async function composePreviewInputs(model: ProjectModel, target: AndroidTargetModel, models: readonly ProjectModel[]): Promise<ComposePreviewInputs> {
   const modules = previewModules(model, target, models);
@@ -88,29 +124,40 @@ export async function composePreviewInputs(model: ProjectModel, target: AndroidT
     }
   }
   const classPath = new Set([rClasses, ...projectClassPath]);
-  const archives = new Map<string, string>();
-  const selected = new Map<string, { directory: string; root: string }>();
   const runtimeEntries = modules.flatMap(({ module }) => module.runtimeClassPath!);
-  for (const entry of runtimeEntries) {
-    if (path.basename(entry) !== "classes.jar") continue;
-    const aar = explodedAndroidLibrary(entry);
-    if (!aar) continue;
-    const identity = `${aar.group}:${aar.artifact}`;
-    const directory = path.dirname(entry);
-    archives.set(directory, identity);
-    // The consumer's resolved copy wins even when the CLI lists a sibling's entry first.
-    if (!selected.has(identity) || aar.root === model.root) selected.set(identity, { directory, root: aar.root });
+  // Each member resolves its own graph, so one library can arrive at several versions. Render what ships: Elide
+  // dexes the newest, a tie going to the consumer's own copy, and never an empty stand-in without its provider.
+  const libraries = runtimeEntries.flatMap((entry) => {
+    const library = publishedLibrary(entry);
+    return library ? [{ entry, ...library, own: library.root === model.root }] : [];
+  });
+  const shippedJars = new Set(libraries.filter((library) => !library.archive).map((library) => library.name));
+  const candidates = Map.groupBy(libraries, (library) => library.identity);
+  const selected = new Map<string, string>();
+  for (const [identity, versions] of candidates) {
+    const eligible = versions.filter((library) => {
+      const provider = STAND_IN_VERSIONS[`${library.name}:${library.version}`];
+      return !provider || shippedJars.has(provider);
+    });
+    const newest = (eligible.length ? eligible : versions).reduce((best, library) => {
+      const relation = compareMavenVersions(library.version, best.version);
+      return relation > 0 || (relation === 0 && library.own && !best.own) ? library : best;
+    });
+    selected.set(identity, newest.location);
   }
+  const archives = new Map(libraries.filter((library) => library.archive).map((library) => [library.location, library.identity]));
   for (const entry of runtimeEntries) {
     if (androidPlatformApiLevel(entry)) continue;
     let canonical = entry;
     let embedded = false;
-    if (explodedAndroidLibrary(entry)) {
+    const jar = publishedLibrary(entry);
+    if (jar && !jar.archive) canonical = selected.get(jar.identity)!;
+    else if (explodedAndroidLibrary(entry)) {
       for (let directory = path.dirname(entry); directory !== path.dirname(directory); directory = path.dirname(directory)) {
         const identity = archives.get(directory);
         if (!identity) continue;
         const member = path.relative(directory, entry);
-        canonical = path.join(selected.get(identity)!.directory, member);
+        canonical = path.join(selected.get(identity)!, member);
         embedded = member !== "classes.jar";
         break;
       }
@@ -126,6 +173,40 @@ export async function composePreviewInputs(model: ProjectModel, target: AndroidT
     classPath.add(canonical);
   }
   return { classPath: [...classPath], projectClassPath: [...new Set(projectClassPath)], sourceSelections, namespace, resourceApkPath, buildTargets: composePreviewBuildTargets(model, target, models) };
+}
+
+/**
+ * Versions published to stand in for a library another artifact provides, mapped to that provider's
+ * `group:artifact`. Guava's empty `listenablefuture` is only correct beside Guava itself.
+ */
+const STAND_IN_VERSIONS: Record<string, string> = {
+  "com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava": "com.google.guava:guava",
+};
+
+const REPOSITORY_MARKER = `/${DEFAULT_LIBRARIES_ROOT.replace(/\/$/, "")}/`;
+
+/**
+ * The published library a runtime entry is a version of: an exploded archive's `classes.jar` (located by its
+ * directory) or a jar in the Maven repository layout, `<group…>/<artifact>/<version>/<artifact>-<version>[-<classifier>].jar`.
+ */
+function publishedLibrary(entry: string): { identity: string; name: string; version: string; location: string; root: string; archive: boolean } | undefined {
+  const aar = path.basename(entry) === "classes.jar" ? explodedAndroidLibrary(entry) : undefined;
+  if (aar) {
+    const name = `${aar.group}:${aar.artifact}`;
+    return { identity: `aar:${name}`, name, version: aar.version, location: path.dirname(entry), root: aar.root, archive: true };
+  }
+  const normalized = normalizePath(path.resolve(entry));
+  const marker = normalized.lastIndexOf(REPOSITORY_MARKER);
+  if (marker < 0) return undefined;
+  const parts = normalized.slice(marker + REPOSITORY_MARKER.length).split("/");
+  if (parts.length < 4) return undefined;
+  const [artifact, version, file] = parts.slice(-3) as [string, string, string];
+  const stem = `${artifact}-${version}`;
+  const extension = path.extname(file);
+  if (!file.startsWith(stem) || (file.length - extension.length > stem.length && file[stem.length] !== "-")) return undefined;
+  const classifier = file.slice(stem.length + 1, file.length - extension.length);
+  const name = `${parts.slice(0, -3).join(".")}:${artifact}`;
+  return { identity: `jar:${name}:${classifier}${extension}`, name, version, location: entry, root: normalized.slice(0, marker), archive: false };
 }
 
 async function isDirectory(directory: string): Promise<boolean> {

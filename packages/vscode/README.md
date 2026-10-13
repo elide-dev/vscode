@@ -220,8 +220,9 @@ host's architecture. **No device, emulator, Android Studio, signing keystore, de
 3. Declare an `AndroidApk` artifact as the resource context. The preview builds only its resource/R-class targets
    and the relevant JVM compilation targets; it does not package, sign, install or launch that APK.
 4. Sync, open a Kotlin file and invoke **Elide: Open Compose Preview** from the Command Palette or editor title.
-   Select a resource context if there are multiple application artifacts. A workspace library can use its consuming
-   application's context.
+   The resource context is chosen automatically: the `AndroidApk` that packages the file's source set, or else the
+   nearest application depending on its workspace library; equally near applications go by workspace and artifact
+   declaration order.
 
 The extension uses [Google's standalone Compose renderer](https://android.googlesource.com/platform/tools/base/+/HEAD/standalone-render/compose-cli/README.md)
 and layoutlib—the host rendering engine used by Android Studio—not a JavaScript approximation.
