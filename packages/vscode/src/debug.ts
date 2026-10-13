@@ -14,7 +14,7 @@ import {
 } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { configuredInvocation, readConfig, type ElideConfig } from "./config.js";
-import { jetBrainsDebuggerType } from "./jetbrains.js";
+import { jetBrainsDebuggerType, notifyKotlinSetupPending, pendingKotlinSetup } from "./jetbrains.js";
 import type { ElideUi } from "./output.js";
 import type { ElideWorkspace } from "./projects.js";
 
@@ -94,6 +94,13 @@ export async function resolveAttachType(settings: ElideConfig): Promise<string |
     const pick = await vscode.window.showErrorMessage("Elide: `elide.debug.adapter` is `java` but Debugger for Java is not installed.", "Install");
     if (pick === "Install") void vscode.commands.executeCommand("workbench.extensions.installExtension", JAVA_DEBUG_EXTENSION);
     return undefined;
+  }
+  if (attachType !== "java") {
+    const steps = await pendingKotlinSetup();
+    if (steps) {
+      notifyKotlinSetupPending(steps);
+      return undefined;
+    }
   }
   return attachType;
 }

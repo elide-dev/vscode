@@ -38,4 +38,5 @@ export * from "./libraries.js";
 export * from "./jdk.js";
 export * from "./model.js";
 export * from "./kotlinLsp.js";
+export * from "./kotlinSetup.js";
 export * from "./workspace.js";
