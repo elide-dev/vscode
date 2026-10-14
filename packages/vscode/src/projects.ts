@@ -29,7 +29,8 @@ import {
 } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { readConfig } from "./config.js";
-import { jetBrainsComposeCompilerPlugin, reloadKotlinLsp } from "./jetbrains.js";
+import { jetBrainsComposeCompilerPlugin, jetBrainsServerDirectory, reloadKotlinLsp } from "./jetbrains.js";
+import { kotlinLspPlugin, withKotlinLspPlugin } from "./kotlinLspPlugin.js";
 import { moduleReaders, projectModules } from "./manifestModules.js";
 import type { ElideUi } from "./output.js";
 
@@ -102,6 +103,10 @@ export class ElideWorkspace implements vscode.Disposable {
   constructor(
     private readonly ui: ElideUi,
     private readonly state: vscode.Memento,
+    /** `media/kotlin-lsp`: sources of the plugin loaded into the Kotlin LSP. */
+    private readonly kotlinLspPluginSources: string,
+    /** Machine-local cache (global storage). */
+    private readonly cacheRoot: string,
   ) {}
 
   get projects(): ElideProject[] {
@@ -560,16 +565,18 @@ export class ElideWorkspace implements vscode.Disposable {
         step.setDetail(`${ws.modules.length} modules · ${ws.libraries.length} libraries`);
         this.ui.log(`wrote ${path.join(folderPath, WORKSPACE_JSON)}: ${ws.modules.length} modules, ${ws.libraries.length} libraries`);
       });
+      let restart = false;
       await sync.run("Configuring the Kotlin LSP", async () => {
         await this.configureJdkForSymbolResolution(state.folder, models);
         await this.pinKotlinLspImporter(state.folder);
+        if (models.some((model) => model.kotlin.compose)) restart = await this.installKotlinLspPlugin(signal);
       });
       // The JetBrains reload command may block for as long as the server's import runs; never let it hold the sync.
-      void reloadKotlinLsp().then(
-        (used) => this.ui.log(used ? `Kotlin LSP reload requested via ${used}` : "Kotlin LSP not running yet; it will import workspace.json on start"),
+      void reloadKotlinLsp(restart).then(
+        (used) => this.ui.log(used ? `Kotlin LSP ${restart ? "restart" : "reload"} requested via ${used}` : "Kotlin LSP not running yet; it will import workspace.json on start"),
         (e) => {
-          this.ui.log(`Kotlin LSP reload failed: ${e instanceof Error ? e.message : String(e)}`);
-          void vscode.window.showWarningMessage("Elide: Kotlin LSP did not reload; run 'IntelliJ: Restart Language Server'.");
+          this.ui.log(`Kotlin LSP ${restart ? "restart" : "reload"} failed: ${e instanceof Error ? e.message : String(e)}`);
+          void vscode.window.showWarningMessage(`Elide: Kotlin LSP did not ${restart ? "restart" : "reload"}; run 'IntelliJ: Restart Language Server'.`);
         },
       );
     }
@@ -666,6 +673,42 @@ export class ElideWorkspace implements vscode.Disposable {
       this.ui.log(`intellij.${JDK_SETTING} = ${jdk.home} (user settings)`);
     } catch (e) {
       this.ui.log(`could not write intellij.${JDK_SETTING}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * Load Elide's plugin into the Kotlin LSP for Compose projects. It suppresses the `FunctionName` inspection on
+   * `@Composable` functions, which are named like types — the rule Android Studio's Compose plugin applies and the
+   * language server lacks.
+   *
+   * The plugin is listed in `intellij.additionalJvmArgs` as `-Dplugin.path`. That setting is window-scoped and the
+   * path is machine-local, so it goes into user settings; the suppressor touches nothing but `@Composable`
+   * functions, so other projects are unaffected. Returns whether the setting changed: JVM arguments apply only to a
+   * newly launched server.
+   */
+  private async installKotlinLspPlugin(signal: AbortSignal): Promise<boolean> {
+    const server = jetBrainsServerDirectory();
+    if (!server) {
+      this.ui.log("Compose function-name suppression needs the JetBrains Kotlin extension's bundled server");
+      return false;
+    }
+    let plugin: string;
+    try {
+      plugin = await kotlinLspPlugin(server, this.kotlinLspPluginSources, this.cacheRoot, signal);
+    } catch (e) {
+      this.ui.log(`could not build the Kotlin LSP plugin: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+    const intellij = vscode.workspace.getConfiguration("intellij");
+    const next = withKotlinLspPlugin(intellij.inspect<string[]>("additionalJvmArgs")?.globalValue ?? [], plugin, this.cacheRoot);
+    if (!next) return false;
+    try {
+      await intellij.update("additionalJvmArgs", next, vscode.ConfigurationTarget.Global);
+      this.ui.log(`intellij.additionalJvmArgs = ${JSON.stringify(next)} (user settings)`);
+      return true;
+    } catch (e) {
+      this.ui.log(`could not write intellij.additionalJvmArgs: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
     }
   }
 

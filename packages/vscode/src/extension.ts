@@ -42,7 +42,7 @@ const DEBOUNCE_MS = 1_000;
 
 export async function activate(context: vscode.ExtensionContext): Promise<ElideExtensionApi> {
   const ui = new ElideUi();
-  const workspace = new ElideWorkspace(ui, context.globalState);
+  const workspace = new ElideWorkspace(ui, context.globalState, context.asAbsolutePath("media/kotlin-lsp"), context.globalStorageUri.fsPath);
   context.subscriptions.push(ui, workspace);
   const composePreview = registerComposePreview(workspace, ui, context);
   const deployments = new AndroidDeploymentController(workspace, context.workspaceState);

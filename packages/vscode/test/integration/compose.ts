@@ -124,5 +124,17 @@ export async function runComposeScenario(): Promise<void> {
   assert.equal(coldEdit.images, GALLERY);
   await vscode.commands.executeCommand("workbench.action.files.revert");
   await closeTab();
+
+  // 6. The Kotlin LSP flags capitalized function names except on @Composable functions (Elide's server plugin).
+  const lspEditor = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(gallery), { preview: false, viewColumn: vscode.ViewColumn.One });
+  await lspEditor.edit((builder) => builder.insert(new vscode.Position(lspEditor.document.lineCount, 0), "\nfun NotComposable() {}\n"));
+  const functionNames = () => vscode.languages.getDiagnostics(gallery)
+    .filter((d) => (typeof d.code === "object" ? d.code.value : d.code) === "FunctionName")
+    .map((d) => lspEditor.document.getText(d.range));
+  // Wait for the analysis of the edited document, which reports the plain function.
+  const flagged = await waitFor("FunctionName on the plain function", () => functionNames().includes("NotComposable") ? functionNames() : undefined, 300_000);
+  log(`FunctionName: ${flagged.join(", ")}`);
+  assert.deepEqual(flagged, ["NotComposable"]);
+  await vscode.commands.executeCommand("workbench.action.files.revert");
   log("compose ok");
 }
