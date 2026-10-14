@@ -1,0 +1,262 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Elide Android Logcat",
+  "scopeName": "source.elide-android-logcat",
+  "patterns": [
+    {
+      "include": "#notice"
+    },
+    {
+      "include": "#separator"
+    },
+    {
+      "include": "#record-verbose"
+    },
+    {
+      "include": "#record-debug"
+    },
+    {
+      "include": "#record-info"
+    },
+    {
+      "include": "#record-warning"
+    },
+    {
+      "include": "#record-error"
+    },
+    {
+      "include": "#record-fatal"
+    }
+  ],
+  "repository": {
+    "notice": {
+      "match": "^(\\[Elide logcat\\])(.*)$",
+      "captures": {
+        "1": {
+          "name": "keyword.control.notice.elide-logcat"
+        },
+        "2": {
+          "name": "comment.line.notice.elide-logcat"
+        }
+      }
+    },
+    "separator": {
+      "match": "^-{9} (?:beginning of|switch to) .*$",
+      "name": "comment.line.separator.elide-logcat"
+    },
+    "message": {
+      "patterns": [
+        {
+          "include": "#frame-framework"
+        },
+        {
+          "include": "#frame"
+        },
+        {
+          "include": "#frames-omitted"
+        },
+        {
+          "include": "#exception-heading"
+        },
+        {
+          "include": "#exception"
+        },
+        {
+          "include": "#url"
+        },
+        {
+          "include": "#string"
+        }
+      ]
+    },
+    "frame-framework": {
+      "comment": "Platform and library frames recede so application frames stand out.",
+      "match": "\\b(at)\\s+((?:android|androidx|com\\.android|com\\.google\\.android|dalvik|java|javax|jdk|kotlin|kotlinx|libcore|org\\.apache|org\\.json|org\\.xml|sun)\\.[\\w$.<>/-]+)(\\([^()]*\\))",
+      "name": "comment.line.frame.framework.elide-logcat"
+    },
+    "frame": {
+      "match": "\\b(at)\\s+((?:[\\w$-]+/)?(?:[\\w$<>-]+\\.)+[\\w$<>-]+)(\\([^()]*\\))",
+      "captures": {
+        "1": {
+          "name": "keyword.control.frame.elide-logcat"
+        },
+        "2": {
+          "name": "entity.name.function.frame.elide-logcat"
+        },
+        "3": {
+          "name": "string.unquoted.location.elide-logcat"
+        }
+      }
+    },
+    "frames-omitted": {
+      "match": "\\.\\.\\. \\d+ more\\b",
+      "name": "comment.line.frame.elide-logcat"
+    },
+    "exception-heading": {
+      "match": "\\b(?:Caused by|Suppressed|FATAL EXCEPTION|Process):",
+      "name": "keyword.control.exception.elide-logcat markup.bold"
+    },
+    "exception": {
+      "match": "\\b(?:[a-z_][\\w$]*\\.)*[A-Z][\\w$]*(?:Exception|Error|Throwable)\\b",
+      "name": "entity.name.type.exception.elide-logcat"
+    },
+    "url": {
+      "match": "\\b(?:https?|wss?|content|file|intent|market)://[^\\s\\\"'<>()]+",
+      "name": "markup.underline.link.elide-logcat"
+    },
+    "string": {
+      "match": "\\\"[^\\\"\\n]*\\\"",
+      "name": "string.quoted.double.elide-logcat"
+    },
+    "record-verbose": {
+      "begin": "^(\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d{3})\\s+(\\d+-\\d+)\\s+(\\S(?:.*?\\S)?)\\s{2,}(V)\\s{2}",
+      "beginCaptures": {
+        "1": {
+          "name": "comment.line.timestamp.elide-logcat"
+        },
+        "2": {
+          "name": "constant.numeric.thread.elide-logcat"
+        },
+        "3": {
+          "name": "entity.name.type.tag.elide-logcat"
+        },
+        "4": {
+          "name": "keyword.other.priority.verbose.elide-logcat token.debug-token"
+        }
+      },
+      "comment": "Continuation lines are indented under the header, so the record ends at the next unindented line.",
+      "end": "^(?=\\S)",
+      "patterns": [
+        {
+          "include": "#message"
+        }
+      ],
+      "contentName": "meta.record.verbose.elide-logcat"
+    },
+    "record-debug": {
+      "begin": "^(\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d{3})\\s+(\\d+-\\d+)\\s+(\\S(?:.*?\\S)?)\\s{2,}(D)\\s{2}",
+      "beginCaptures": {
+        "1": {
+          "name": "comment.line.timestamp.elide-logcat"
+        },
+        "2": {
+          "name": "constant.numeric.thread.elide-logcat"
+        },
+        "3": {
+          "name": "entity.name.type.tag.elide-logcat"
+        },
+        "4": {
+          "name": "keyword.other.priority.debug.elide-logcat token.debug-token"
+        }
+      },
+      "comment": "Continuation lines are indented under the header, so the record ends at the next unindented line.",
+      "end": "^(?=\\S)",
+      "patterns": [
+        {
+          "include": "#message"
+        }
+      ],
+      "contentName": "meta.record.debug.elide-logcat"
+    },
+    "record-info": {
+      "begin": "^(\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d{3})\\s+(\\d+-\\d+)\\s+(\\S(?:.*?\\S)?)\\s{2,}(I)\\s{2}",
+      "beginCaptures": {
+        "1": {
+          "name": "comment.line.timestamp.elide-logcat"
+        },
+        "2": {
+          "name": "constant.numeric.thread.elide-logcat"
+        },
+        "3": {
+          "name": "entity.name.type.tag.elide-logcat"
+        },
+        "4": {
+          "name": "keyword.other.priority.info.elide-logcat markup.inserted token.info-token"
+        }
+      },
+      "comment": "Continuation lines are indented under the header, so the record ends at the next unindented line.",
+      "end": "^(?=\\S)",
+      "patterns": [
+        {
+          "include": "#message"
+        }
+      ],
+      "contentName": "meta.record.info.elide-logcat"
+    },
+    "record-warning": {
+      "begin": "^(\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d{3})\\s+(\\d+-\\d+)\\s+(\\S(?:.*?\\S)?)\\s{2,}(W)\\s{2}",
+      "beginCaptures": {
+        "1": {
+          "name": "comment.line.timestamp.elide-logcat"
+        },
+        "2": {
+          "name": "constant.numeric.thread.elide-logcat"
+        },
+        "3": {
+          "name": "entity.name.type.tag.elide-logcat"
+        },
+        "4": {
+          "name": "keyword.other.priority.warning.elide-logcat markup.changed token.warn-token"
+        }
+      },
+      "comment": "Continuation lines are indented under the header, so the record ends at the next unindented line.",
+      "end": "^(?=\\S)",
+      "patterns": [
+        {
+          "include": "#message"
+        }
+      ],
+      "contentName": "meta.record.warning.elide-logcat markup.changed token.warn-token"
+    },
+    "record-error": {
+      "begin": "^(\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d{3})\\s+(\\d+-\\d+)\\s+(\\S(?:.*?\\S)?)\\s{2,}(E)\\s{2}",
+      "beginCaptures": {
+        "1": {
+          "name": "comment.line.timestamp.elide-logcat"
+        },
+        "2": {
+          "name": "constant.numeric.thread.elide-logcat"
+        },
+        "3": {
+          "name": "entity.name.type.tag.elide-logcat"
+        },
+        "4": {
+          "name": "keyword.other.priority.error.elide-logcat markup.deleted token.error-token"
+        }
+      },
+      "comment": "Continuation lines are indented under the header, so the record ends at the next unindented line.",
+      "end": "^(?=\\S)",
+      "patterns": [
+        {
+          "include": "#message"
+        }
+      ],
+      "contentName": "meta.record.error.elide-logcat markup.deleted token.error-token"
+    },
+    "record-fatal": {
+      "begin": "^(\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d{3})\\s+(\\d+-\\d+)\\s+(\\S(?:.*?\\S)?)\\s{2,}(F)\\s{2}",
+      "beginCaptures": {
+        "1": {
+          "name": "comment.line.timestamp.elide-logcat"
+        },
+        "2": {
+          "name": "constant.numeric.thread.elide-logcat"
+        },
+        "3": {
+          "name": "entity.name.type.tag.elide-logcat"
+        },
+        "4": {
+          "name": "keyword.other.priority.fatal.elide-logcat markup.deleted token.error-token markup.bold"
+        }
+      },
+      "comment": "Continuation lines are indented under the header, so the record ends at the next unindented line.",
+      "end": "^(?=\\S)",
+      "patterns": [
+        {
+          "include": "#message"
+        }
+      ],
+      "contentName": "meta.record.fatal.elide-logcat markup.deleted token.error-token markup.bold"
+    }
+  }
+}

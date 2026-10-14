@@ -45,9 +45,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const workspace = new ElideWorkspace(ui, context.globalState);
   context.subscriptions.push(ui, workspace);
   const composePreview = registerComposePreview(workspace, ui, context);
-  context.subscriptions.push(composePreview.disposable, registerAndroidLogcat(workspace), registerAndroidReadiness(workspace, ui));
   const deployments = new AndroidDeploymentController(workspace, context.workspaceState);
-  context.subscriptions.push(deployments);
+  context.subscriptions.push(
+    composePreview.disposable,
+    registerAndroidLogcat(workspace, () => deployments.target),
+    registerAndroidReadiness(workspace, ui),
+    deployments,
+  );
 
   const debugConfigurations = new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions);
   const nativeDebugConfigurations = new ElideNativeDebugConfigurationProvider(workspace, ui);

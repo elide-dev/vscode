@@ -376,8 +376,14 @@ do not perform Play delivery. These capabilities require the experimental `feat/
 
 ### Logcat
 
-**Elide: Show Android Logcat** selects a device, an application ID (blank means all apps), a minimum priority,
-and an optional case-insensitive literal text filter. The Android tree and device context menu expose it too.
+**Elide: Show Android Logcat** starts streaming without confirming filters: it uses the application being edited or
+the Android deployment target (project, device, application), else the only ready device and the project's
+application, reading the application ID from the built APK so renamed variants match. Several variants pick the one
+installed on the device; only a genuinely ambiguous project, device or application is offered as a choice. New
+streams show Info and above; showing a running stream reveals it without restarting. The Android tree and device
+context menu expose it too.
+Records are aligned into time, PID-TID, tag, priority and message columns, with stack traces and multi-line
+messages indented under one header and priorities, tags, exceptions and application frames color-coded by the theme.
 Each project owns an output channel and adb stream. **Filter**, **Stop**, and **Restart Android Logcat** control
 the stream; **Clear Android Logcat Output** clears only the editor, not the device's shared log buffers.
 Restart and filter changes replay available device logs. Package filtering uses the installed UID, surviving

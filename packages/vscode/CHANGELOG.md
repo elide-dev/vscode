@@ -31,6 +31,11 @@ All notable changes to the Elide extension are documented here. The format follo
   download reports bytes received.
 - Android Logcat output channels with device selection, application UID, priority and literal-text filters,
   and clear, stop and restart commands. Clearing the editor output leaves the device's shared log buffer intact.
+  **Show Android Logcat** starts without confirming filters: it streams the deployed (or only) application, read from
+  the built APK so renamed application IDs match, and reopens a running stream instead of restarting it. Records are
+  aligned into time, PID-TID, tag, priority and message columns, multi-line messages and stack traces are indented
+  under one header, and priorities, tags, exceptions, application versus framework frames, URLs and strings are
+  color-coded through the theme.
 - Host-side Compose previews using Google's standalone renderer and Android layoutlib, with no device, emulator,
   Android Studio, APK installation or signing requirement. Includes verified runtime downloads, compiled annotation
   discovery, preview configurations/multi-previews/parameter providers, overloaded preview functions, a preview gallery,

@@ -378,9 +378,19 @@ does not download on-demand splits. Requires the experimental `feat/android` Eli
 
 #### Logcat
 
-**Elide: Show Android Logcat** (also in the Android tree and device context menu) selects a ready device,
-an installed application ID or all applications, a minimum priority, and an optional case-insensitive literal
-text filter. It streams the SDK's real `adb logcat` into an output channel per project.
+**Elide: Show Android Logcat** (also in the Android tree and device context menu) streams the SDK's real
+`adb logcat` into an output channel per project, without asking to confirm filters. The project is the application
+you are editing, else the Android deployment target's; the device and application are the deployment target's, else
+the only ready device and the application the project builds. The application ID is read from the built APK, so a
+renamed variant (`--rename-manifest-package`) matches what is installed. When several variants exist and none is the
+deployment target, the one installed on the device is used; only a genuinely ambiguous project, device or
+application is offered as a choice. A new stream shows Info and above; showing a running stream again reveals it
+without restarting.
+
+Each record is aligned into time, PID-TID, tag, priority and message columns; lines continuing the same record
+(stack traces, multi-line messages) are indented under one header. The theme colors priorities (errors, warnings,
+info, debug), tags, exception names, `Caused by:` headings, application frames against dimmed framework frames,
+URLs and quoted strings.
 
 **Filter Android Logcat**, **Stop Android Logcat**, and **Restart Android Logcat** control that stream.
 **Clear Android Logcat Output** clears only the editor channel, never the device's shared log buffers.

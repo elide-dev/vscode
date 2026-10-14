@@ -74,6 +74,18 @@
         "aliases": ["Elide Android Logcat"]
       }
     ],
+    "grammars": [
+      {
+        "language": "elide-android-logcat",
+        "scopeName": "source.elide-android-logcat",
+        "path": "./syntaxes/elide-android-logcat.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[elide-android-logcat]": {
+        "editor.guides.indentation": false
+      }
+    },
     "configuration": {
       "title": "Elide",
       "properties": {
