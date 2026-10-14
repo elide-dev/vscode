@@ -127,6 +127,9 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `elide.android.emulatorWindow` | `true` | Boot the emulator with a window; off passes `--no-window`. |
 | `elide.android.composePreview.prewarm` | `true` | Start the Compose preview backend when a file with `@Preview` functions is focused. |
 | `elide.android.composePreview.keepAliveMinutes` | `10` | Minutes an unused Compose preview backend stays warm; `0` stops it with its panel. |
+| `elide.android.composePreview.engine` | `layoutlib` | `komodo` (opt-in, experimental) adds a `komodo-preview` daemon: cards it hosts are live, the rest keep their layoutlib snapshot. |
+| `elide.android.composePreview.komodo.path` | `""` | The `komodo-preview` daemon; empty resolves it beside the Elide binary, then on `PATH`. |
+| `elide.android.composePreview.komodo.fallback` | `true` | Cards Komodo cannot render keep their layoutlib snapshot; off shows the reason on the card. |
 
 The extension also maintains two Kotlin LSP settings: `intellij.buildTool` (pinned to `json` in workspace settings) and
 `intellij.jdkForSymbolResolution` (an absolute path, written to user settings only). Explicit values you set by hand

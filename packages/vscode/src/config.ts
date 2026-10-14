@@ -34,6 +34,12 @@ export interface ElideConfig {
   composePreviewPrewarm: boolean;
   /** Minutes an unused Compose preview backend stays warm; 0 stops it with its panel. */
   composePreviewKeepAlive: number;
+  /** The Compose preview engine: layoutlib snapshots (default) or the opt-in live Komodo engine. */
+  composePreviewEngine: "layoutlib" | "komodo";
+  /** The komodo-preview daemon; undefined resolves it beside the Elide binary, then on PATH. */
+  composePreviewKomodoPath: string | undefined;
+  /** Cards the Komodo engine cannot render keep their layoutlib snapshot (else they show the reason). */
+  composePreviewKomodoFallback: boolean;
   codeLens: boolean;
   /** `-f` build flags added to every Elide invocation (`elide.flags`). */
   flags: string[];
@@ -59,6 +65,9 @@ export function readConfig(scope?: vscode.ConfigurationScope): ElideConfig {
     androidEmulatorWindow: c.get<boolean>("android.emulatorWindow", true),
     composePreviewPrewarm: c.get<boolean>("android.composePreview.prewarm", true),
     composePreviewKeepAlive: Math.max(0, c.get<number>("android.composePreview.keepAliveMinutes", 10)),
+    composePreviewEngine: c.get<string>("android.composePreview.engine", "layoutlib") === "komodo" ? "komodo" : "layoutlib",
+    composePreviewKomodoPath: nonEmpty(c.get<string>("android.composePreview.komodo.path")),
+    composePreviewKomodoFallback: c.get<boolean>("android.composePreview.komodo.fallback", true),
     codeLens: c.get<boolean>("codeLens.enabled", true),
     flags: elideStringArrayFrom(c.get("flags")),
     commandOptions: {

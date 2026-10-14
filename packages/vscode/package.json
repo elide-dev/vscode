@@ -197,6 +197,24 @@
           "minimum": 0,
           "markdownDescription": "Minutes an unused Compose preview backend (render JVMs and compiler workers, several GB of memory) stays warm after its panel closes or after prewarming. `0` stops it with its panel and disables prewarming."
         },
+        "elide.android.composePreview.engine": {
+          "type": "string",
+          "enum": ["layoutlib", "komodo"],
+          "enumDescriptions": ["Design-time snapshots rendered by layoutlib.", "Opt-in, experimental: live cards rendered by a Komodo preview daemon, with layoutlib snapshots for the cards it cannot render."],
+          "default": "layoutlib",
+          "markdownDescription": "Engine of the Compose preview. `komodo` runs `komodo-preview` beside layoutlib: cards it hosts are live (pushed frames, unsaved edits applied in place, compile errors in Problems); the others keep their layoutlib snapshot (see `#elide.android.composePreview.komodo.fallback#`). Takes effect when a preview panel opens."
+        },
+        "elide.android.composePreview.komodo.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "The `komodo-preview` daemon for the `komodo` engine. Empty resolves `komodo-preview` beside the Elide binary, then on `PATH`."
+        },
+        "elide.android.composePreview.komodo.fallback": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "With the `komodo` engine, a card Komodo cannot render keeps its layoutlib snapshot (the reason is in the Elide output). Off shows the reason on the card instead."
+        },
         "elide.flags": {
           "type": "array",
           "items": {

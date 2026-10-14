@@ -13,7 +13,8 @@ import {
   type TimelineLine,
 } from "@elide/ide-core";
 import * as vscode from "vscode";
-import { ComposeBackends, type ComposeBackend, type PreviewBuild, type PreviewRequest } from "./composeBackend.js";
+import { ComposeBackend, ComposeBackends, type CompileMessage, type PreviewBuild, type PreviewRequest } from "./composeBackend.js";
+import { KomodoBackend } from "./composeKomodo.js";
 import type { PreviewImage } from "./composeRender.js";
 import { previewHtml } from "./composePreviewHtml.js";
 import { resolvePreviewSource, type PreviewSourceTarget } from "./composeSource.js";
@@ -153,6 +154,10 @@ class PreviewSession implements vscode.Disposable {
     private readonly paints: vscode.EventEmitter<ComposePreviewPaint>,
   ) {
     this.backend = backends.acquire(backendKey(project, artifact));
+    this.subscriptions.push(
+      new vscode.Disposable(this.backend.onImages((images) => this.pushImages(images))),
+      new vscode.Disposable(this.backend.onCompile((outcome) => this.compiled(outcome.failed, outcome.messages))),
+    );
     this.panel = vscode.window.createWebviewPanel("elide.composePreview", `Compose: ${path.basename(source.fsPath)}`, vscode.ViewColumn.Beside,
       { enableScripts: true, localResourceRoots: [] });
     this.subscriptions.push(
@@ -289,6 +294,44 @@ class PreviewSession implements vscode.Disposable {
     const task = command?.children.findLast((child) => !child.running);
     const progress = [liveStatus(build), command?.detail, task && `last: ${task.label} (${formatDuration(task.durationMs)})`].filter(Boolean).join(" · ");
     this.status(`Building ${this.artifact.name} preview inputs${progress ? ` · ${progress}` : "…"}`, "working", build.startedAt);
+  }
+
+  /** Cards a live engine updated after their gallery was shown: replaced in place within the same revision. */
+  private pushImages(images: PreviewImage[]): void {
+    if (this.closed || this.imageRevision !== this.revision) return;
+    const updated = new Map(images.map((image) => [image.id, image]));
+    let changed = false;
+    this.images = this.images.map((image) => {
+      const next = updated.get(image.id);
+      if (!next) return image;
+      changed = true;
+      return { ...next, nodes: [] };
+    });
+    if (changed) this.publishImages();
+  }
+
+  /** A live engine's compile outcome: its messages in Problems (`elide-compose-preview`), cleared by the next success. */
+  private compiled(failed: boolean, messages: CompileMessage[]): void {
+    const collection = composeDiagnostics;
+    if (!collection || this.closed) return;
+    collection.clear();
+    if (!failed) {
+      this.renderedStatus();
+      return;
+    }
+    const byFile = new Map<string, vscode.Diagnostic[]>();
+    for (const message of messages) {
+      if (!message.file) continue;
+      const line = Math.max(0, (message.line ?? 1) - 1);
+      const column = Math.max(0, (message.column ?? 1) - 1);
+      const diagnostic = new vscode.Diagnostic(new vscode.Range(line, column, line, column + 1), message.text,
+        message.level === "warning" ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error);
+      diagnostic.source = "Komodo";
+      byFile.set(message.file, [...byFile.get(message.file) ?? [], diagnostic]);
+    }
+    for (const [file, diagnostics] of byFile) collection.set(vscode.Uri.file(file), diagnostics);
+    const first = messages.find((message) => message.level === "error") ?? messages[0];
+    this.status(`Live preview does not compile: ${first?.text ?? "see Problems"}`, "error");
   }
 
   private publishImages(replay = false): void {
@@ -500,9 +543,24 @@ class PreviewSession implements vscode.Disposable {
   }
 }
 
+/** Compile messages of the live (Komodo) engine; one collection for the extension. */
+let composeDiagnostics: vscode.DiagnosticCollection | undefined;
+
 export function registerComposePreview(workspace: ElideWorkspace, ui: ElideUi, context: vscode.ExtensionContext): { disposable: vscode.Disposable; api: ElideComposePreviewApi } {
   const cacheRoot = context.globalStorageUri.fsPath;
-  const backends = new ComposeBackends(cacheRoot, context.asAbsolutePath("media/compose"), () => readConfig().composePreviewKeepAlive * 60_000);
+  composeDiagnostics = vscode.languages.createDiagnosticCollection("elide-compose-preview");
+  const elideBin = (): string | undefined => {
+    try { return resolveElideDistribution({ explicitHome: readConfig().home }).bin; } catch { return undefined; }
+  };
+  const backends = new ComposeBackends(cacheRoot, context.asAbsolutePath("media/compose"), () => readConfig().composePreviewKeepAlive * 60_000,
+    (key, root, helpers, store) => readConfig().composePreviewEngine === "komodo"
+      ? new KomodoBackend(key, root, helpers, store, {
+        path: () => readConfig().composePreviewKomodoPath,
+        fallback: () => readConfig().composePreviewKomodoFallback,
+        log: (line) => ui.log(line),
+      }, elideBin)
+      : new ComposeBackend(key, root, helpers, store),
+    () => readConfig().composePreviewEngine);
   const paints = new vscode.EventEmitter<ComposePreviewPaint>();
   const prewarmed = new vscode.EventEmitter<string>();
   let session: PreviewSession | undefined;
@@ -572,6 +630,8 @@ export function registerComposePreview(workspace: ElideWorkspace, ui: ElideUi, c
     clearTimeout(prewarmTimer);
     session?.dispose();
     backends.dispose();
+    composeDiagnostics?.dispose();
+    composeDiagnostics = undefined;
     for (const subscription of subscriptions) subscription.dispose();
   });
   return { disposable, api: { onDidPaint: paints.event, onDidPrewarm: prewarmed.event } };

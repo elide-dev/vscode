@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { composePreviewInputs, type AndroidTargetModel, type ProjectModel, type TimelineNode } from "@elide/ide-core";
 import { ComposeCompiler } from "./composeCompiler.js";
-import { ComposeRenderer, helperDigest, isPreviewImage, type PreviewImage } from "./composeRender.js";
+import { ComposeRenderer, helperDigest, isPreviewImage, type CompiledPreview, type PreviewImage } from "./composeRender.js";
 import type { ComposeRuntime } from "./composeRuntime.js";
 import type { ComposeWorker } from "./composeWorker.js";
 
@@ -69,6 +69,15 @@ export interface PreviewBuild {
   bin: string;
 }
 
+/** A compiler message at a source location (`file` absolute, lines and columns 1-based). */
+export interface CompileMessage {
+  level: "error" | "warning";
+  text: string;
+  file?: string;
+  line?: number;
+  column?: number;
+}
+
 export interface PreviewRequest {
   /** Open editor text of the project's sources, by path. */
   documents: ReadonlyMap<string, string>;
@@ -97,10 +106,21 @@ export class ComposeBackend {
   /** Open preview panels using this backend. */
   users = 0;
   disposed = false;
+  /** The engine rendering this backend's cards (`elide.android.composePreview.engine`). */
+  readonly engine: string = "layoutlib";
 
   constructor(readonly key: string, private readonly cacheRoot: string, private readonly helperDirectory: string, private readonly store: ImageStore) {}
 
   get compiler(): ComposeCompiler | undefined { return this.current; }
+
+  /** The previews the last render discovered (empty before one, or after a stored gallery). */
+  protected get discovery(): readonly CompiledPreview[] { return this.renderer?.discovery ?? []; }
+
+  /** Cards updated after `preview` resolved (live engines push frames); the snapshot engine never pushes. */
+  onImages(_listener: (images: PreviewImage[]) => void): () => void { return () => {}; }
+
+  /** Compile messages for the panel's diagnostics (live engines compile edits themselves); the snapshot engine reports none. */
+  onCompile(_listener: (outcome: { failed: boolean; messages: CompileMessage[] }) => void): () => void { return () => {}; }
 
   /** Start (or keep) the render JVMs for this JDK and runtime. */
   startRenderer(runtime: ComposeRuntime, java: string): Promise<void> {
@@ -292,16 +312,27 @@ export class ComposeBackends {
   private readonly timers = new Map<ComposeBackend, NodeJS.Timeout>();
   private readonly store: ImageStore;
 
-  constructor(private readonly cacheRoot: string, private readonly helperDirectory: string, private readonly keepAlive: () => number) {
+  constructor(
+    private readonly cacheRoot: string,
+    private readonly helperDirectory: string,
+    private readonly keepAlive: () => number,
+    /** Creates the backend for the configured engine; the layoutlib snapshot backend when absent. */
+    private readonly create: (key: string, cacheRoot: string, helperDirectory: string, store: ImageStore) => ComposeBackend =
+      (key, cacheRoot, helperDirectory, store) => new ComposeBackend(key, cacheRoot, helperDirectory, store),
+    private readonly engine: () => string = () => "layoutlib",
+  ) {
     this.store = new ImageStore(path.join(cacheRoot, "compose-images"));
   }
 
-  /** The backend for `key`, created when missing. Creating one releases other idle backends. */
+  /**
+   * The backend for `key`, created when missing. Creating one releases other idle backends. An unused backend of another
+   * engine than the configured one is replaced; a panel keeps its backend until it closes.
+   */
   obtain(key: string): ComposeBackend {
     const existing = this.backends.get(key);
-    if (existing && !existing.disposed) return existing;
+    if (existing && !existing.disposed && (existing.engine === this.engine() || existing.users)) return existing;
     for (const backend of this.backends.values()) if (!backend.users) this.drop(backend);
-    const backend = new ComposeBackend(key, this.cacheRoot, this.helperDirectory, this.store);
+    const backend = this.create(key, this.cacheRoot, this.helperDirectory, this.store);
     this.backends.set(key, backend);
     return backend;
   }

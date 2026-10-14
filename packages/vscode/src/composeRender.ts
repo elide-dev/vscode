@@ -18,7 +18,8 @@ export interface ComposeRenderInputs {
   resourceApkPath: string;
 }
 
-interface CompiledPreview {
+/** One `@Preview` configuration as the render JVM's discovery reports it (`DiscoverPreviews`). */
+export interface CompiledPreview {
   methodFQN: string;
   previewId: string;
   name: string;
@@ -140,6 +141,7 @@ interface PendingResponse {
 interface WorkerResult {
   order: string[];
   images: { previewId: string; image: PreviewImage; weight: number }[];
+  previews: CompiledPreview[];
 }
 
 /** Each worker owns one single-threaded layoutlib; compiled helpers are shared on disk. */
@@ -291,7 +293,7 @@ class RenderWorker {
         } else image.error = "Renderer returned neither an image nor a diagnostic.";
         images.push({ previewId: result.previewId, image, weight });
       }
-      return { order: [...previews.keys()], images };
+      return { order: [...previews.keys()], images, previews: results.previews };
     } catch (error) {
       this.fail(error instanceof Error ? error : new Error(String(error)));
       throw error;
@@ -309,6 +311,8 @@ export class ComposeRenderer {
   private disposed = false;
   private rendering = false;
   private weights: Record<string, number> = {};
+  /** The last render's discovered previews, in gallery order; the Komodo engine names its entries from them. */
+  discovery: readonly CompiledPreview[] = [];
 
   private constructor(private readonly workers: RenderWorker[], private readonly directory: string) {}
 
@@ -365,6 +369,7 @@ export class ComposeRenderer {
       for (const result of images) this.weights[result.previewId] = (this.weights[result.previewId] ?? 0) + result.weight;
       // Stable sorting preserves provider expansion order within each preview configuration.
       images.sort((left, right) => positions.get(left.previewId)! - positions.get(right.previewId)!);
+      this.discovery = shards[0]!.previews;
       return images.map((result) => result.image);
     } catch (error) {
       this.dispose();
