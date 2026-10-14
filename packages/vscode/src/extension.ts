@@ -129,7 +129,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   else {
     ui.setStatus("idle");
     if (readConfig().syncOnStartup) void workspace.syncAll("startup");
-    else workspace.markStaleAll();
+    else workspace.markStaleAll(false);
   }
   return { tests, explorer, composePreview: composePreview.api, activity: ui.activity };
 }
@@ -160,17 +160,15 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
 
   /**
    * The tracked project a changed file belongs to. `rootOf` maps the file to the directory whose manifest owns it;
-   * a path that is not a tracked project root belongs to a nested (ignored) manifest and is not a reason to resync,
-   * and neither is a change a sync of that folder is making itself.
+   * a path that is not a tracked project root belongs to a nested (ignored) manifest and is not a reason to resync.
    */
   const ownerOf = (uri: vscode.Uri, rootOf: (fsPath: string) => string): ElideProject | undefined => {
     const located = workspace.locate(uri);
-    if (!located) return undefined;
-    const project = workspace.projectAt(rootOf(located.fsPath));
-    return project && !workspace.isSelfInflicted(project.folder) ? project : undefined;
+    return located ? workspace.projectAt(rootOf(located.fsPath)) : undefined;
   };
 
   const manifests = vscode.workspace.createFileSystemWatcher(`**/${MANIFEST_NAME}`);
+  // A sync never writes a manifest: an edit made while one runs, or right after, still makes the folder stale.
   manifests.onDidChange((uri) => {
     const project = ownerOf(uri, path.dirname);
     if (project) onStale(project.folder, MANIFEST_NAME, uri.fsPath);
@@ -183,7 +181,7 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
       const located = workspace.locate(uri);
       const owner = located ? workspace.projectFor(path.dirname(located.fsPath)) : undefined;
       const inWorkspace = owner !== undefined && (owner.workspaceRoot !== undefined || (owner.model?.members.length ?? 0) > 0);
-      if (owner && (inWorkspace || workspace.lastError(owner.folder)) && !workspace.isSelfInflicted(owner.folder)) {
+      if (owner && (inWorkspace || workspace.lastError(owner.folder))) {
         onStale(owner.folder, MANIFEST_NAME, uri.fsPath);
       }
       return;
@@ -207,7 +205,7 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
     if (!isLockfileName(path.basename(uri.fsPath))) return;
     // `<project root>/.dev/elide.lock*.bin`: two levels up from the lockfile.
     const project = ownerOf(uri, (p) => path.dirname(path.dirname(p)));
-    if (!project) return;
+    if (!project || workspace.isSelfInflicted(project.folder)) return;
     // Running an entrypoint or the tests rewrites the lockfile with the same content, which is no reason to
     // re-import: let the writes settle, then compare content and keep quiet unless the dependencies moved.
     debounce(`lockfile:${project.root}`, async () => {

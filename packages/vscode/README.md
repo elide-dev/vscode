@@ -35,7 +35,8 @@ Elide's build, run, test, and debug commands are available from the editor.
 - **Activity.** The sidebar's **Activity** view lists every sync and Compose preview build of the window, live
   while it runs: each step (reading the manifest, installing dependencies, resolving classpaths, generating
   resources, writing `workspace.json`), the `elide` commands it ran, and the build tasks those reported, each with
-  its duration and share of the whole. With Elide 1.6.1 or newer, tasks appear as they start, with the progress they
+  its duration and share of the whole; a task Elide skipped is listed with the reason, such as `Up to date`, since its
+  check takes time too. With Elide 1.6.1 or newer, tasks appear as they start, with the progress they
   report, and the status bar says what Elide is doing and how many of the build's tasks are done. Any row opens its
   output, with timestamps, in an editor; a running operation can be cancelled from the row. The status bar tooltip
   shows where the last sync's time went, and the `Elide` output channel ends each sync with the same breakdown.

@@ -92,15 +92,13 @@ export function observeCommands(parent: () => TimelineNode, echo?: (line: string
           const task = parsed.task ? running.get(parsed.task) : undefined;
           if (parsed.task) running.delete(parsed.task);
           if (task && focus === task) focus = [...running.values()].at(-1);
-          if (parsed.outcome === "skipped") {
-            skipped++;
-            task?.node.discard();
-            break;
-          }
-          tasks++;
+          // A skipped task stays a step, with the reason it was skipped: its up-to-date check takes time too.
+          const skip = parsed.outcome === "skipped";
+          if (skip) skipped++;
+          else tasks++;
           const label = parsed.scope ? `[${parsed.scope}] ${parsed.label}` : parsed.label;
-          if (task) task.node.end(parsed.outcome, task.node.label === label ? undefined : parsed.label);
-          else node.record(label, parsed.durationMs, parsed.outcome);
+          if (task) task.node.end(parsed.outcome, skip ? parsed.reason : task.node.label === label ? undefined : parsed.label);
+          else node.record(label, parsed.durationMs, parsed.outcome, skip ? parsed.reason : undefined);
           break;
         }
         case "verdict":

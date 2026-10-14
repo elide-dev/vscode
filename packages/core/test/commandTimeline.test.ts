@@ -43,9 +43,10 @@ describe("observeCommands", () => {
       "0/3 tasks",
     ]);
     expect(snapshots.at(-1)).toBeUndefined();
-    // An up-to-date task is counted, not kept as a step.
+    // An up-to-date task stays a step, with the reason it was skipped.
     expect(command.children.map((task) => [task.label, task.state, task.detail])).toEqual([
       ["[app] Resolving Maven dependencies", "succeeded", "Resolved 21 Maven dependencies"],
+      ["[app] Unpacking Android libraries", "skipped", "Up to date"],
     ]);
     expect(command.state).toBe("succeeded");
     expect(command.detail).toBe("Build successful · 1 task · 1 up to date");
@@ -78,7 +79,7 @@ describe("observeCommands", () => {
     ]);
   });
 
-  test("an older CLI is followed through its text: what it started last, and the tasks it finished", () => {
+  test("an older CLI is followed through its text: what it started last, and the tasks it finished or skipped", () => {
     const { command, snapshots } = run([
       "[ 41ms] > [model] Compiling Kotlin sources",
       "[ 2.6s] ✓ [model] Compiled 3 Kotlin files (2.5s)",
@@ -86,7 +87,20 @@ describe("observeCommands", () => {
       "[ 2.8s] ✓ Build successful in 2.7s",
     ]);
     expect(snapshots).toEqual(["Compiling Kotlin sources", "Compiling Kotlin sources", "Compiling Kotlin sources", undefined]);
-    expect(command.children.map((task) => [task.label, task.durationMs])).toEqual([["[model] Compiled 3 Kotlin files", 2_500]]);
+    expect(command.children.map((task) => [task.label, task.state, task.durationMs, task.detail])).toEqual([
+      ["[model] Compiled 3 Kotlin files", "succeeded", 2_500, undefined],
+      ["[model] android-r-model", "skipped", 0, "Up to date"],
+    ]);
     expect(command.detail).toBe("Build successful · 1 task · 1 up to date");
+  });
+
+  test("a skipped task that never announced itself is recorded with the time Elide measured", () => {
+    const { command } = run([
+      `{"type":"task-finished","task":"ui:maven-dependencies","project":"ui","outcome":"skipped","reason":"Up to date","durationMs":849,"time":1}`,
+      `{"type":"build-finished","outcome":"success","durationMs":900,"message":"Build successful","time":1}`,
+    ]);
+    expect(command.children.map((task) => [task.label, task.state, task.durationMs, task.detail])).toEqual([
+      ["[ui] maven-dependencies", "skipped", 849, "Up to date"],
+    ]);
   });
 });

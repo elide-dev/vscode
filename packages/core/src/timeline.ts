@@ -130,15 +130,6 @@ export class TimelineNode {
     this.changed();
   }
 
-  /** Take this node out of its parent's steps: it turned out to be nothing worth showing. */
-  discard(): void {
-    const siblings = this.parent?.children;
-    const at = siblings?.indexOf(this) ?? -1;
-    if (at < 0) return;
-    siblings!.splice(at, 1);
-    this.parent!.changed();
-  }
-
   /** Run `work` as a child step that fails when it throws. */
   async run<T>(label: string, work: (step: TimelineNode) => Promise<T>): Promise<T> {
     const step = this.start(label);

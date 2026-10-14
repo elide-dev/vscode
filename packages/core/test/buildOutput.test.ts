@@ -78,8 +78,11 @@ describe("progress records", () => {
   test("a finished task maps onto the text form's outcome, scope and duration, keeping its key", () => {
     const done = parseElideRecord(`{"type":"task-finished","task":"android:android-dex-app","project":"android","message":"Dexed 'app'","outcome":"success","durationMs":17700,"time":1}`)!;
     expect(elideRecordOutput(done)).toEqual({ kind: "task", outcome: "succeeded", task: "android:android-dex-app", scope: "android", label: "Dexed 'app'", durationMs: 17_700 });
-    const skipped = parseElideRecord(`{"type":"task-finished","task":"model:android-libraries","project":"model","outcome":"skipped","reason":"Up to date","durationMs":0,"time":1}`)!;
-    expect(elideRecordOutput(skipped)).toEqual({ kind: "task", outcome: "skipped", task: "model:android-libraries", scope: "model", label: "android-libraries", reason: "Up to date" });
+    // A skipped task's duration is the time its up-to-date check took.
+    const skipped = parseElideRecord(`{"type":"task-finished","task":"model:android-libraries","project":"model","outcome":"skipped","reason":"Up to date","durationMs":840,"time":1}`)!;
+    expect(elideRecordOutput(skipped)).toEqual({
+      kind: "task", outcome: "skipped", task: "model:android-libraries", scope: "model", label: "android-libraries", reason: "Up to date", durationMs: 840,
+    });
   });
 
   test("starts, steps and build totals become live progress", () => {
@@ -114,14 +117,16 @@ describe("progress records", () => {
     const records = [
       `{"type":"task-finished","task":"android:android-dex-app","project":"android","message":"Dexed 'app' into 3 dex files","outcome":"success","durationMs":17700,"time":1}`,
       `{"type":"task-finished","task":"compile-kotlin-main","message":"Kotlin main compilation failed","outcome":"failure","durationMs":101,"time":1}`,
-      `{"type":"task-finished","task":"model:android-libraries","project":"model","outcome":"skipped","reason":"Up to date","durationMs":0,"time":1}`,
+      `{"type":"task-finished","task":"model:android-libraries","project":"model","outcome":"skipped","reason":"Up to date","durationMs":12,"time":1}`,
       `{"type":"build-finished","outcome":"failure","exitCode":1,"durationMs":3000,"message":"Build failed","time":1}`,
       `{"type":"build-finished","outcome":"success","durationMs":24700,"time":1}`,
     ].map((line) => parseElideRecord(line)!);
     for (const record of records) {
       const [line, ...rest] = renderElideRecord(record);
       expect(rest).toEqual([]);
-      const { task: _key, ...mapped } = elideRecordOutput(record) as { task?: string };
+      const { task: _key, ...mapped } = elideRecordOutput(record) as { task?: string; outcome?: string; durationMs?: number };
+      // Like Elide's own text, a skipped task's line names the reason, not the time its check took.
+      if (mapped.outcome === "skipped") delete mapped.durationMs;
       expect(parseElideOutputLine(line!)).toEqual(mapped as ElideOutputLine);
     }
   });

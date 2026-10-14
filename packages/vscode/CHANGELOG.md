@@ -73,6 +73,9 @@ All notable changes to the Elide extension are documented here. The format follo
   read concurrently. What their classpaths need built first (unpacking Android libraries, generating `R`) is built
   by one `elide build` at the workspace root; builds never overlap. The Activity view shows each project as a step of
   its own.
+- The Activity view keeps the build tasks Elide skipped as steps of their own, with the reason (`Up to date`, `From
+  cache`) and, on Elide releases that report it, the time their up-to-date check took. Listing the build's tasks
+  (`elide build --inspect`) is a sync step of its own instead of counting towards reading the member manifests.
 - Compose preview build terminals run with `ELIDE_PROGRESS=plain`, so the terminal, the panel's Build log and its
   status line name each task as it starts.
 - Compose previews choose their Android resource context automatically instead of asking: the application packaging
@@ -95,6 +98,12 @@ All notable changes to the Elide extension are documented here. The format follo
   "stopped" without running: it waits for the previous run's terminal to close instead of being handed that run.
 - Editor smoke runs disable updates to the shared extensions directory and keep macOS scratch paths short without
   overriding `TMPDIR`, so the Kotlin client and JVM agree on the daemon port-file location.
+- A manifest edit made while a sync runs, or within three seconds after one ends, is no longer ignored: the folder is
+  marked out of date (and re-synced when `elide.sync.onManifestChange` is `always`) instead of the sync's success
+  clearing it, and the next sync installs dependencies even when another `elide` command, such as the interrupted
+  sync's own, rewrote the lockfile after the edit.
+- A sync installs dependencies when a Pkl module a manifest imports, amends or extends (such as a shared
+  `versions.pkl`) changed since the last install, not only when a manifest itself did.
 
 ## [0.5.0](https://github.com/elide-dev/vscode/compare/v0.4.0...v0.5.0) (2026-09-24)
 

@@ -94,6 +94,10 @@ export async function runAndroidScenario(): Promise<void> {
   assert.ok(runningTasks.size > 0, "build tasks showed in the Activity view while they ran");
   const classpathCalls = descendants(sync).filter((node) => node.label.startsWith("elide classpath"));
   assert.ok(classpathCalls.length > 0 && classpathCalls.every((node) => node.label.startsWith("elide classpath --json ")), `classpaths batched: ${classpathCalls.map((node) => node.label).join(", ")}`);
+  // The classpath queries find dependencies installed: their up-to-date checks stay as steps, with the reason.
+  const skipped = descendants(sync).filter((node) => node.state === "skipped");
+  log(`skipped tasks kept: ${skipped.length}, e.g. ${skipped.slice(0, 3).map((node) => `${node.label} (${node.detail}, ${Math.round(node.durationMs)} ms)`).join(" | ")}`);
+  assert.ok(skipped.length > 0 && skipped.every((node) => node.detail), "skipped tasks stay in the Activity view with the reason");
 
   // 2. Build the APK from its row in the Android section.
   const row = await waitFor("APK row", () => findRow(api.explorer, (r) => r.kind === "androidTarget" && r.artifact === ARTIFACT), 60_000);

@@ -117,6 +117,24 @@ export function pklStrings(text: string, from = 0, to = text.length): string[] {
   return found;
 }
 
+/** `amends "…"`, `extends "…"`, `import "…"`, `import* "…"` and the `import("…")` expression: the URI is group 2. */
+const MODULE_REFERENCE = /\b(amends|extends|import\*?)\s*\(?\s*"((?:[^"\\]|\\.)*)"/g;
+
+/**
+ * The module URIs a Pkl module reads other modules from, in source order: what it amends or extends and what it
+ * imports, whether by clause or by `import(…)` expression. Glob imports (`import*`) are left out: they name a set of
+ * modules, not one.
+ */
+export function pklModuleReferences(text: string): string[] {
+  const found: string[] = [];
+  for (const line of text.split("\n")) {
+    for (const match of stripComment(line).matchAll(MODULE_REFERENCE)) {
+      if (match[1] !== "import*") found.push(match[2]!);
+    }
+  }
+  return found;
+}
+
 /** Offset of the brace closing the one at `open`, or `undefined` when the region holds no match. */
 function matchingBrace(text: string, open: number, to: number): number | undefined {
   let depth = 0;

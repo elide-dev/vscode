@@ -7,6 +7,7 @@ import {
   ElideNotFoundError,
   InvalidElideHomeError,
   distributionAt,
+  isLockfileCurrent,
   lockfileDigest,
   lockfilesIn,
   outermostManifests,
@@ -115,6 +116,55 @@ describe("lockfileDigest", () => {
   test("a project without lockfiles digests to a constant", async () => {
     expect(await lockfileDigest(path.dirname(projectDev()))).toBe(await lockfileDigest(path.dirname(projectDev())));
     expect(await lockfilesIn(path.dirname(projectDev()))).toEqual([]);
+  });
+});
+
+describe("isLockfileCurrent", () => {
+  const roots: string[] = [];
+  afterAll(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+  const at = (file: string, secondsFromNow: number) => {
+    const when = new Date(Date.now() + secondsFromNow * 1000);
+    utimesSync(file, when, when);
+  };
+  /** A workspace installed a minute ago whose member imports a shared `versions.pkl`, itself importing more. */
+  const installed = () => {
+    const root = mkdtempSync(path.join(tmpdir(), "elide-current-"));
+    roots.push(root);
+    const files: Record<string, string> = {
+      "elide.pkl": `amends "elide:project.pkl"\n// import "notes.pkl"\nimport "gone.pkl"\n`,
+      "packages/ui/elide.pkl": `amends "elide:project.pkl"\n\nimport "elide:Android.pkl" as Android\nimport "../../versions.pkl"\n`,
+      "versions.pkl": `import "elide:Android.pkl" as Android\nlocal compose = import("deps/compose.pkl")\n`,
+      "deps/compose.pkl": `bom = "androidx.compose:compose-bom:2026.01.00"\n`,
+      "notes.pkl": `text = "not imported"\n`,
+      ".dev/elide.lock.v2.bin": "lock",
+    };
+    mkdirSync(path.join(root, ".dev", "dependencies"), { recursive: true });
+    for (const [name, text] of Object.entries(files)) {
+      mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
+      writeFileSync(path.join(root, name), text);
+      at(path.join(root, name), name.endsWith(".bin") ? -60 : -120);
+    }
+    return { root, manifests: [path.join(root, "elide.pkl"), path.join(root, "packages/ui/elide.pkl")] };
+  };
+
+  test("a module a manifest imports, directly or through another, counts like the manifest", async () => {
+    const { root, manifests } = installed();
+    expect(await isLockfileCurrent(root, manifests)).toBe(true);
+    at(path.join(root, "deps/compose.pkl"), 0);
+    expect(await isLockfileCurrent(root, manifests)).toBe(false);
+    at(path.join(root, "deps/compose.pkl"), -120);
+    at(path.join(root, "versions.pkl"), 0);
+    expect(await isLockfileCurrent(root, manifests)).toBe(false);
+  });
+
+  test("a commented-out import does not count, and a missing one is the CLI's to report", async () => {
+    const { root, manifests } = installed();
+    at(path.join(root, "notes.pkl"), 0);
+    expect(await isLockfileCurrent(root, manifests)).toBe(true);
+    at(manifests[1]!, 0);
+    expect(await isLockfileCurrent(root, manifests)).toBe(false);
   });
 });
 

@@ -431,6 +431,20 @@ cli
     expect(rWarnings(model!)).toEqual([]);
     expect(rWarnings(cli!)).toEqual([expect.stringContaining("(elide build android-r-cli): elide build android-r-cli failed (exit 1):\ncannot build android-r-cli")]);
   });
+
+  test("listing the build's tasks is a step of its own, also when there is nothing to install", async () => {
+    const { cliAtRoot } = androidWorkspace();
+    let step = "";
+    const commands: string[] = [];
+    await buildProjectModels(cliAtRoot, await cliAtRoot.manifest(), {
+      jdk: { override: "/nonexistent" },
+      exists: () => false,
+      skipInstall: true,
+      onProgress: (label) => (step = label),
+      onCommand: (argv) => void commands.push(`${step}: ${argv.join(" ")}`),
+    });
+    expect(commands.filter((command) => command.includes("--inspect"))).toEqual(["Listing build tasks: build --inspect"]);
+  });
 });
 
 describe("buildProjectModels: published Android libraries", () => {

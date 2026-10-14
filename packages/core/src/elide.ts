@@ -4,12 +4,14 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseElideRecord, renderElideRecord, type ElideRecord } from "./buildOutput.js";
 import { parseBuildInspect, type BuildTaskInfo } from "./buildTasks.js";
 import { ElideCommandFailedError, ElideNotFoundError, InvalidElideHomeError, ManifestParseError } from "./errors.js";
 import { decodeInitTemplates, initArgs, type InitTemplate } from "./init.js";
 import { elideFlagArgs } from "./invocation.js";
 import { decodeManifest, type Manifest } from "./manifest.js";
+import { pklModuleReferences } from "./pkl.js";
 import { isPathUnder, normalizePath } from "./sourceRoots.js";
 import { compareElideVersions, parseElideVersion, supportsProgressRecords, type ElideVersion } from "./version.js";
 
@@ -570,7 +572,8 @@ export async function lockfileDigest(projectRoot: string): Promise<string> {
 
 /**
  * Whether installed dependencies can be trusted without `elide install`: `.dev/dependencies` exists and the
- * newest `.dev/elide.lock*.bin` is at least as recent as every manifest in `manifestPaths`.
+ * newest `.dev/elide.lock*.bin` is at least as recent as every manifest in `manifestPaths` and every local Pkl module
+ * they amend, extend or import, such as a shared `versions.pkl`.
  *
  * A workspace resolves into its root's repository and records one lockfile there, so the manifests of its members
  * count as well, although each member has a `.dev` of its own.
@@ -592,8 +595,42 @@ export async function isLockfileCurrent(
   if (newest === -Infinity) return false;
   try {
     for (const manifestPath of manifestPaths) if ((await stat(manifestPath)).mtimeMs > newest) return false;
-    return true;
   } catch {
     return false;
   }
+  for (const module of await importedModules(manifestPaths)) {
+    // A module that is gone fails the manifest importing it, which the CLI reports; it is no reason to install.
+    const modified = await stat(module).then((s) => s.mtimeMs, () => -Infinity);
+    if (modified > newest) return false;
+  }
+  return true;
+}
+
+/**
+ * The local Pkl modules the files in `modules` read, directly or through each other, without `modules` themselves.
+ * A URI with a scheme other than `file:` (`elide:`, `pkl:`, `package:`, `https:`) names no local file; a module that
+ * cannot be read contributes none of its own.
+ */
+async function importedModules(modules: readonly string[]): Promise<string[]> {
+  const seen = new Set(modules.map((module) => path.resolve(module)));
+  const found: string[] = [];
+  const pending = [...seen];
+  for (let module = pending.pop(); module !== undefined; module = pending.pop()) {
+    let text: string;
+    try {
+      text = await readFile(module, "utf8");
+    } catch {
+      continue;
+    }
+    for (const uri of pklModuleReferences(text)) {
+      const file = uri.startsWith("file:")
+        ? fileURLToPath(uri)
+        : /^[A-Za-z][A-Za-z0-9+.-]*:/.test(uri) ? undefined : path.resolve(path.dirname(module), decodeURI(uri));
+      if (file === undefined || seen.has(file)) continue;
+      seen.add(file);
+      found.push(file);
+      pending.push(file);
+    }
+  }
+  return found;
 }

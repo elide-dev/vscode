@@ -32,7 +32,7 @@ export type ElideOutputLine =
       /** Workspace member or tool the task belongs to: the `[android]` of `✓ [android] Dexed …`. */
       scope?: string;
       label: string;
-      /** How long the task ran; absent for a skipped task. */
+      /** How long the task took by Elide's measure, its up-to-date check included; text output leaves a skipped one's out. */
       durationMs?: number;
       /** Why a task was skipped: `Up to date`, `From cache`. */
       reason?: string;
@@ -200,7 +200,7 @@ export function elideRecordOutput(record: ElideRecord): ElideOutputLine | undefi
         outcome: TASK_OUTCOMES[record.outcome],
         task: record.task,
         label: record.message ?? bareTask(record.task),
-        ...defined({ scope: record.project, reason: record.reason, durationMs: record.outcome === "skipped" ? undefined : record.durationMs }),
+        ...defined({ scope: record.project, reason: record.reason, durationMs: record.durationMs }),
       };
     case "message": {
       if (record.level === "output") return undefined;

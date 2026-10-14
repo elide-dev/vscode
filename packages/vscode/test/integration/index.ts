@@ -79,14 +79,29 @@ export async function run(): Promise<void> {
   assert.deepEqual(errorsOf(testKt).map((d) => d.message), [], "no errors in MainTest.kt");
   log("no diagnostics errors");
 
-  // 3. Manifest change → automatic resync (policy: always) → new dependency resolves.
+  // 3. Manifest change → automatic resync (policy: always) → new dependency resolves. The edit lands while a manual
+  //    sync runs, or right after it ends: either way that sync read the manifest before the edit, and must not
+  //    swallow it.
+  const elide = vscode.extensions.all.find((e) => e.id.endsWith(".elide"));
+  const activity = await waitFor("extension activity api", () => (elide?.exports as ElideApi | undefined)?.activity, 30_000, 500);
+  const previous = activity.getChildren()[0];
+  void vscode.commands.executeCommand("elide.sync");
+  const manual = await waitFor("a manual sync past reading the manifest", () => {
+    const newest = activity.getChildren()[0];
+    if (!newest || newest === previous || !newest.label.startsWith("Sync ")) return undefined;
+    return !newest.running || newest.children.some((step) => step.label.startsWith("Resolving")) ? newest : undefined;
+  }, 60_000, 10);
   const manifest = path.join(sample, "elide.pkl");
   appendFileSync(manifest, `\ndependencies {\n    maven {\n        packages {\n            "com.google.guava:guava:33.4.0-jre"\n        }\n    }\n}\n`);
-  log("edited elide.pkl; waiting for resync with guava");
-  const withGuava = await waitFor("guava in workspace.json", () => {
+  log(`edited elide.pkl ${manual.running ? "while a sync ran" : "right after a sync ended"}; waiting for resync with guava`);
+  // The sync the edit interrupted, or one it raced, may model guava from its classpath query before a sync installs it.
+  const withGuava = await waitFor("guava with its sources in workspace.json", () => {
     const w = JSON.parse(readFileSync(workspaceJson, "utf8"));
-    return w.libraries.some((l: { name: string }) => l.name.includes("com.google.guava:guava")) ? w : undefined;
+    const guava = w.libraries.find((l: { name: string }) => l.name.includes("com.google.guava:guava"));
+    return guava?.roots.some((r: { type: string }) => r.type === "SOURCES") ? w : undefined;
   }, 300_000, 2_000);
+  log("syncs, newest first:", activity.getChildren().filter((op) => op.label.startsWith("Sync ")).slice(0, 4)
+    .map((op) => `${op.state} (${op.detail ?? ""}) ${Math.round(op.durationMs)} ms: ${op.children.map((step) => step.label).join(", ")}`).join(" | "));
   // `elide.install.classifiers` defaults to ["sources"], installed as `--slim --with sources`: the sources jar is
   // attached for Go to Definition and the javadoc jar the CLI would fetch by default is not downloaded.
   const guavaLib = withGuava.libraries.find((l: { name: string }) => l.name.includes("com.google.guava:guava"));

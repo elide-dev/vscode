@@ -55,10 +55,14 @@ interface FolderState {
   folder: vscode.WorkspaceFolder;
   projects: Map<string, ElideProject>;
   stale: boolean;
+  /** How often the folder was marked stale; a sync clears `stale` only if no mark arrived while it ran. */
+  staleMarks: number;
+  /** `staleMarks` when the last successful sync started: a sync after a later mark installs dependencies anew. */
+  installedMarks: number;
   syncing?: AbortController;
   /** Re-run requested while a sync was in flight. */
   rerun: boolean;
-  /** Timestamp until which file-change events are attributed to the sync itself. */
+  /** Timestamp until which lockfile events are attributed to the sync itself. */
   quietUntil: number;
   /** Message of the last failed sync; cleared by the next successful one. */
   lastError?: string;
@@ -260,13 +264,24 @@ export class ElideWorkspace implements vscode.Disposable {
     this.changed.fire();
   }
 
+  /** Mark `folder` out of date after a change to what its projects resolve from; see {@link FolderState.staleMarks}. */
   markStale(folder: vscode.WorkspaceFolder): void {
-    this.folderState(folder).stale = true;
+    const state = this.folderState(folder);
+    state.stale = true;
+    state.staleMarks++;
     this.ui.setStatus("stale");
   }
 
-  markStaleAll(): void {
-    for (const state of this.folders.values()) if (state.projects.size > 0) state.stale = true;
+  /**
+   * Mark every folder with projects out of date: after a change all of them see, such as `elide.flags`, or, with
+   * `changed` false, because none was synced yet.
+   */
+  markStaleAll(changed = true): void {
+    for (const state of this.folders.values()) {
+      if (state.projects.size === 0) continue;
+      state.stale = true;
+      if (changed) state.staleMarks++;
+    }
     this.ui.setStatus("stale");
   }
 
@@ -290,8 +305,9 @@ export class ElideWorkspace implements vscode.Disposable {
   }
 
   /**
-   * Whether file changes under `folder` are the sync's own doing: the CLI rewrites `.dev/elide.lock*.bin` while
-   * resolving, so events during a sync and for a short grace period afterwards must not mark the folder stale.
+   * Whether a lockfile event under `folder` is the sync's own doing: the CLI rewrites `.dev/elide.lock*.bin` while
+   * resolving, so events during a sync and for a short grace period afterwards must not mark the folder stale. A sync
+   * never writes a manifest, so a manifest event is always someone's edit.
    */
   isSelfInflicted(folder: vscode.WorkspaceFolder): boolean {
     const state = this.folders.get(folder.uri.toString());
@@ -338,6 +354,7 @@ export class ElideWorkspace implements vscode.Disposable {
     const controller = new AbortController();
     state.syncing = controller;
     state.rerun = false;
+    const marks = state.staleMarks;
     const cancel = () => controller.abort(new Error("cancelled by user"));
     const sync = this.ui.activity.start(`Sync ${folder.name}`, { detail: reason, cancel });
     this.ui.trackSync(sync);
@@ -345,13 +362,15 @@ export class ElideWorkspace implements vscode.Disposable {
     const notification = this.notifyProgress(folder, sync, cancel);
 
     try {
-      await this.runSync(state, sync, controller.signal);
+      await this.runSync(state, sync, controller.signal, state.installedMarks !== marks);
       sync.end("succeeded");
       this.ui.log(`sync ${folder.name} finished in ${formatDuration(sync.durationMs)}`);
       for (const row of timelineBreakdown(sync)) this.ui.log(`  ${row}`);
-      state.stale = false;
+      // An edit made while the sync ran may have come after the sync read the file: it still needs a sync.
+      state.stale = state.staleMarks !== marks;
+      state.installedMarks = marks;
       state.lastError = undefined;
-      this.ui.setStatus("idle");
+      this.ui.setStatus(state.stale ? "stale" : "idle");
     } catch (e) {
       if (controller.signal.aborted && !state.rerun) {
         sync.end("cancelled", "cancelled");
@@ -408,7 +427,7 @@ export class ElideWorkspace implements vscode.Disposable {
    * Resolve the folder's projects as steps of `sync`: every step the model builder reports, every CLI process it
    * starts, and the build tasks those report, each timed; the Elide output channel gets the same narrative.
    */
-  private async runSync(state: FolderState, sync: TimelineNode, signal: AbortSignal): Promise<void> {
+  private async runSync(state: FolderState, sync: TimelineNode, signal: AbortSignal, changed: boolean): Promise<void> {
     const folderPath = state.folder.uri.fsPath;
     const config = readConfig(state.folder);
     const dist = resolveElideDistribution({ explicitHome: config.home });
@@ -451,7 +470,9 @@ export class ElideWorkspace implements vscode.Disposable {
         const manifest = await cli.manifest({ onCommand, signal });
         const options: BuildModelOptions = { onCommand, onProject, signal, onProgress: begin, jdk: { override: config.jdkHome } };
         // The classifier set is applied by `elide install --slim --with …`, which the lockfile check cannot see:
-        // force an install whenever it differs from the set this project was last resolved with.
+        // force an install whenever it differs from the set this project was last resolved with. So is a change since
+        // the last sync: any `elide` command run after it, such as a superseded sync's classpath query, rewrites the
+        // lockfile, which then looks newer than the edit.
         const key = `${INSTALL_CLASSIFIERS_KEY}:${project.root}`;
         const requested = JSON.stringify(classifiers);
         let resolved: ProjectModel[];
@@ -459,7 +480,7 @@ export class ElideWorkspace implements vscode.Disposable {
           resolved = await buildProjectModels(cli, manifest, {
             ...options,
             installWith: classifiers,
-            forceInstall: this.state.get<string>(key) !== requested,
+            forceInstall: changed || this.state.get<string>(key) !== requested,
           });
         } catch (e) {
           const rejectedClassifiers =
@@ -677,7 +698,7 @@ export class ElideWorkspace implements vscode.Disposable {
     const key = folder.uri.toString();
     let state = this.folders.get(key);
     if (!state) {
-      state = { folder, projects: new Map(), stale: false, rerun: false, quietUntil: 0 };
+      state = { folder, projects: new Map(), stale: false, staleMarks: 0, installedMarks: 0, rerun: false, quietUntil: 0 };
       this.folders.set(key, state);
     }
     return state;

@@ -244,6 +244,12 @@ export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts
     opts.onProgress?.("Installing dependencies");
     await cli.install({ ...run, with: opts.installWith });
   }
+  let previewTasks: BuildTaskInfo[] | undefined;
+  if (projects.some((p) => p.manifest.android)) {
+    // A step of its own: with the install skipped, the listing would otherwise count towards reading the manifests.
+    opts.onProgress?.("Listing build tasks");
+    previewTasks = await cli.buildInspect(run);
+  }
 
   let builds: Promise<unknown> = Promise.resolve();
   const needs = new Map<ProjectSpec, AndroidPreparation>();
@@ -261,9 +267,7 @@ export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts
       opts.exists,
     ),
     artifacts: new ArtifactIndex(projects),
-    ...(projects.some((p) => p.manifest.android)
-      ? { previewTasks: await cli.buildInspect(run) }
-      : {}),
+    ...(previewTasks ? { previewTasks } : {}),
     build: (projectCli, targets, buildRun) => {
       const turn = builds.then(() => projectCli.build(targets, buildRun));
       builds = turn.catch(() => undefined);
