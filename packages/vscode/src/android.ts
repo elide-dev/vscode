@@ -128,15 +128,24 @@ export async function attachedDevices(project: ElideProject): Promise<AndroidDev
   return parseAdbDevices(stdout);
 }
 
-/** Build, install and launch the selected APK without letting adb implicitly choose another device. */
+/**
+ * Build, install and launch the selected APK without letting adb implicitly choose another device. The project
+ * emulator is booted by the run target itself; a pinned emulator that stopped is booted again before the build.
+ */
 export async function runAndroid(workspace: ElideWorkspace, deployments: AndroidDeploymentController, value: unknown): Promise<void> {
   if (!await vscode.workspace.saveAll(false)) return;
   const deployment = await deployments.resolve(value);
   if (!deployment) return;
   const { project, artifact, destination } = deployment;
+  if (destination.kind === "emulator") {
+    await executeElideTask(workspace, project, "build", { args: [androidRunTask(artifact, "emulator")] });
+    return;
+  }
+  const serial = await deployments.readyDevice(deployment);
+  if (!serial) return;
   await executeElideTask(workspace, project, "build", {
-    args: [androidRunTask(artifact, destination.kind === "emulator" ? "emulator" : undefined)],
-    ...(destination.kind === "device" ? { options: { [ANDROID_DEVICE_OPTION]: destination.serial } } : {}),
+    args: [androidRunTask(artifact)],
+    options: { [ANDROID_DEVICE_OPTION]: serial },
   });
 }
 

@@ -3,8 +3,8 @@
  * sync installs every dependency and the build compiles, dexes and packages the APK from scratch.
  *
  * Drives what a user does: the startup sync, watched live through the Activity view the way the status bar shows
- * it; **Build** on the APK's row of the Android section; **Start emulator** when no device is attached; **Run** on
- * the device. The app is running when `adb` finds its process.
+ * it; **Build** on the APK's row of the Android section; **Run** on the attached device, or — when none is — on a
+ * pinned emulator that has stopped, which Run boots by itself. The app is running when `adb` finds its process.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -106,25 +106,17 @@ export async function runAndroidScenario(): Promise<void> {
   log(`built ${apk} in ${Math.round(performance.now() - started)} ms`);
   assert.ok(existsSync(apk), `${apk} published`);
 
-  // 3. A device to run on: the one attached, or the project's emulator, booted from the sidebar action.
+  // 3. Run: install and launch on the attached device, or on an emulator pinned while it ran and stopped since,
+  //    which Run must boot without the user starting it first.
   const sdk = androidSdkRoot();
   assert.ok(sdk, "an Android SDK");
   const ready = async () => (await listAndroidDevices(sdk))?.find((device) => device.ready);
-  let device = await ready();
-  const booted = !device;
-  if (!device) {
-    log("no device attached; starting the emulator");
-    const emulatorExit = taskExit(ANDROID_EMULATOR_TASK);
-    await vscode.commands.executeCommand("elide.androidStartEmulator", { root: member });
-    assert.equal(await emulatorExit, 0, "android-emulator exited 0");
-    device = await waitFor("a ready device", ready, 120_000);
-  }
-  const serial = device.serial;
-  log(`running on ${serial}`);
-
-  // 4. Run: install and launch on that device, as its row in the device list does.
+  const attached = await ready();
+  const booted = !attached;
+  const pinned = attached?.serial ?? "emulator-5554";
+  log(booted ? `no device attached; running on stopped emulator ${pinned}` : `running on ${pinned}`);
   const adb = path.join(sdk, "platform-tools", "adb");
-  const pidOf = () => {
+  const pidOf = (serial: string) => {
     try {
       return execFileSync(adb, ["-s", serial, "shell", "pidof", APPLICATION_ID], { encoding: "utf8" }).trim() || undefined;
     } catch {
@@ -132,21 +124,25 @@ export async function runAndroidScenario(): Promise<void> {
     }
   };
   try {
-    execFileSync(adb, ["-s", serial, "shell", "am", "force-stop", APPLICATION_ID]);
+    if (attached) execFileSync(adb, ["-s", pinned, "shell", "am", "force-stop", APPLICATION_ID]);
   } catch {
     // not installed yet
   }
   started = performance.now();
+  const emulatorExit = booted ? taskExit(ANDROID_EMULATOR_TASK) : undefined;
   const runExit = taskExit(androidRunTask(ARTIFACT));
-  await vscode.commands.executeCommand("elide.androidRun", { root: member, artifact: ARTIFACT, device: serial });
+  await vscode.commands.executeCommand("elide.androidRun", { root: member, artifact: ARTIFACT, device: pinned });
+  if (emulatorExit) assert.equal(await emulatorExit, 0, "Run booted the stopped emulator: android-emulator exited 0");
   assert.equal(await runExit, 0, "android-run exited 0");
-  const pid = await waitFor("app process", pidOf, 60_000, 500);
-  log(`${APPLICATION_ID} running as pid ${pid} after ${Math.round(performance.now() - started)} ms`);
+  const serial = (await ready())?.serial;
+  assert.ok(serial, "a ready device after Run");
+  const pid = await waitFor("app process", () => pidOf(serial), 60_000, 500);
+  log(`${APPLICATION_ID} running on ${serial} as pid ${pid} after ${Math.round(performance.now() - started)} ms`);
 
   // The device and the app outlive the terminal task that started them; an emulator left in the session of the
   // `elide` that booted it shuts itself down 20 s after that pseudo-terminal goes away.
   await sleep(30_000);
-  assert.equal(pidOf(), pid, `${APPLICATION_ID} still running 30 s after the run task ended`);
+  assert.equal(pidOf(serial), pid, `${APPLICATION_ID} still running 30 s after the run task ended`);
 
   if (booted && !process.env.KEEP_EMULATOR) {
     const stopped = taskExit("android-emulator-stop");

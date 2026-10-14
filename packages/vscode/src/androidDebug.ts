@@ -125,7 +125,7 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
       void vscode.window.showErrorMessage(`Elide: ${e instanceof Error ? e.message : String(e)}`);
       return undefined;
     }
-    const device = await this.deployments.debugDevice(deployment);
+    const device = await this.deployments.readyDevice(deployment);
     if (!device) return undefined;
     const invocation = mergeElideInvocationOptions(
       configuredInvocation(settings, "build"),

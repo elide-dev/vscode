@@ -1,9 +1,12 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { ANDROID_EMULATOR_TASK, ANDROID_NO_WINDOW_OPTION, adbExecutable, type AndroidDevice } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { androidSdkFor, attachedDevices, toAndroidTarget } from "./android.js";
-import { androidApks, androidDeviceProblem, preferredAndroidProject, restoredAndroidTarget } from "./androidDeploymentState.js";
+import { androidApks, androidAvdToBoot, androidDeviceProblem, preferredAndroidProject, restoredAndroidTarget } from "./androidDeploymentState.js";
 import type { AndroidDeploymentDestination, AndroidDeploymentTarget } from "./androidDeploymentState.js";
 import { readConfig } from "./config.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
@@ -11,6 +14,8 @@ import { executeElideTask, taskExitCode } from "./tasks.js";
 
 const STATE_KEY = "elide.android.deploymentTarget";
 const SELECT_COMMAND = "elide.androidSelectTarget";
+const BOOT_TIMEOUT_MS = 120_000;
+const BOOT_POLL_MS = 2_000;
 const exec = promisify(execFile);
 
 export interface AndroidDeployment extends AndroidDeploymentTarget {
@@ -101,17 +106,25 @@ export class AndroidDeploymentController implements vscode.Disposable {
     if (!artifact) return undefined;
     const devices = await this.devices(project);
     if (!devices) return undefined;
+    const avd = project.model!.android!.avd;
     let destination: AndroidDeploymentDestination | undefined = explicit?.device
-      ? { kind: "device", serial: explicit.device }
+      ? (remembered?.destination.kind === "device" && remembered.destination.serial === explicit.device ? remembered.destination : { kind: "device", serial: explicit.device })
       : choose ? undefined : remembered?.destination;
-    if (destination?.kind === "device" && !await this.validateDevice(devices, destination.serial)) return undefined;
+    // A stopped emulator is booted at deployment time; only a physical device needs the user to bring it back.
+    if (destination?.kind === "device" && !androidAvdToBoot(devices, destination, avd) && !await this.validateDevice(devices, destination.serial)) return undefined;
     if (!destination) {
-      const items: (vscode.QuickPickItem & { destination: AndroidDeploymentDestination })[] = devices.filter((device) => device.ready).map((device) => ({
-        label: `$(device-mobile) ${device.serial}`,
-        description: device.emulator ? "running emulator" : "connected device",
-        destination: { kind: "device", serial: device.serial },
-      }));
-      items.push({ label: "$(vm) Project emulator", description: project.model!.android!.avd, destination: { kind: "emulator" } });
+      const ready = devices.filter((device) => device.ready);
+      const sdk = androidSdkFor(project);
+      const avds = await Promise.all(ready.map((device) => device.emulator && sdk ? this.avdOf(sdk, device.serial) : undefined));
+      const items: (vscode.QuickPickItem & { destination: AndroidDeploymentDestination })[] = ready.map((device, index) => {
+        const running = avds[index];
+        return {
+          label: `$(device-mobile) ${device.serial}`,
+          description: device.emulator ? `running emulator${running ? ` · ${running}` : ""}` : "connected device",
+          destination: { kind: "device", serial: device.serial, ...(running ? { avd: running } : {}) },
+        };
+      });
+      items.push({ label: "$(vm) Project emulator", description: avd, destination: { kind: "emulator" } });
       const unavailable = devices.filter((device) => !device.ready).map((device) => `${device.serial}: ${device.state}`);
       destination = (await vscode.window.showQuickPick(items, {
         placeHolder: unavailable.length ? `Deploy ${artifact}; unavailable: ${unavailable.join(", ")}. Authorize USB debugging or reconnect.` : `Deploy ${artifact} on`,
@@ -123,73 +136,154 @@ export class AndroidDeploymentController implements vscode.Disposable {
     }
     if (!destination || this.disposed) return undefined;
     const selection = { root: project.root, artifact, destination };
-    await this.state.update(STATE_KEY, selection);
-    if (this.disposed) return undefined;
-    this.selected = selection;
-    this.updateStatus();
+    if (!await this.remember(selection)) return undefined;
     return { ...selection, project };
   }
 
-  /** Resolve the project's AVD by identity, not the first emulator (or a physical device) adb lists. */
-  async debugDevice(deployment: AndroidDeployment): Promise<string | undefined> {
+  /**
+   * The serial a deployment installs on, booting its emulator first when it is not running. A pinned emulator is
+   * resolved again by AVD identity, since a reboot may give it another port; a physical device is never swapped.
+   */
+  async readyDevice(deployment: AndroidDeployment): Promise<string | undefined> {
     if (this.disposed) return undefined;
-    if (deployment.destination.kind === "device") {
-      const devices = await this.devices(deployment.project);
-      return devices && await this.validateDevice(devices, deployment.destination.serial) ? deployment.destination.serial : undefined;
+    const { project, destination } = deployment;
+    const projectAvd = project.model!.android!.avd;
+    if (destination.kind === "emulator") return this.bootAvd(project, projectAvd);
+    const devices = await this.devices(project);
+    if (!devices) return undefined;
+    const avd = androidAvdToBoot(devices, destination, projectAvd);
+    if (!avd) return await this.validateDevice(devices, destination.serial) ? destination.serial : undefined;
+    const serial = await this.bootAvd(project, avd);
+    if (!serial) return undefined;
+    if (serial !== destination.serial || destination.avd !== avd) {
+      const remembered = await this.remember({ root: deployment.root, artifact: deployment.artifact, destination: { kind: "device", serial, avd } });
+      if (!remembered) return undefined;
     }
-    const { project } = deployment;
+    return serial;
+  }
+
+  /**
+   * Boot `avd` unless it already runs, and return its serial once Android finished booting. The project's AVD goes
+   * through Elide, which also creates it; any other AVD is launched with the SDK's emulator, which Elide cannot name.
+   */
+  private async bootAvd(project: ElideProject, avd: string): Promise<string | undefined> {
     const sdk = androidSdkFor(project);
-    if (!sdk) return undefined;
-    const find = async (): Promise<string | undefined> => {
-      const devices = await attachedDevices(project);
-      if (!devices) throw new Error("Android platform-tools are unavailable; install the Android SDK components.");
-      const identities = await Promise.all(devices.filter((device) => device.emulator && device.ready).map(async (device) => {
-        const { stdout } = await exec(adbExecutable(sdk), ["-s", device.serial, "emu", "avd", "name"], { encoding: "utf8", timeout: 10_000 });
-        return { serial: device.serial, avd: stdout.trim().split(/\r?\n/)[0] };
-      }));
-      const matching = identities.filter((device) => device.avd === project.model!.android!.avd);
-      if (matching.length > 1) throw new Error(`Multiple emulators run AVD '${project.model!.android!.avd}'. Select a specific emulator serial instead.`);
-      return matching[0]?.serial;
-    };
+    if (!sdk) {
+      await this.problem("No Android SDK is configured. Set elide.android.sdk or install the Android SDK components, then retry.");
+      return undefined;
+    }
     try {
-      const running = await find();
-      if (running) return running;
-      const booted = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Elide: starting Android emulator", cancellable: true }, async (_progress, token) => {
+      const running = await this.findEmulator(project, sdk, avd);
+      if (running?.ready && await this.bootCompleted(sdk, running.serial)) return running.serial;
+      const windowed = readConfig(project.folder).androidEmulatorWindow;
+      const booted = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Elide: starting Android emulator '${avd}'`, cancellable: true }, async (_progress, token) => {
         if (token.isCancellationRequested || this.disposed) return false;
-        const execution = await executeElideTask(this.workspace, project, "build", {
-          args: [ANDROID_EMULATOR_TASK],
-          ...(readConfig(project.folder).androidEmulatorWindow ? {} : { options: { [ANDROID_NO_WINDOW_OPTION]: true } }),
-        });
-        if (!execution) return false;
-        this.bootTasks.add(execution);
-        let timer: NodeJS.Timeout | undefined;
-        let cancellation: vscode.Disposable | undefined;
-        try {
-          const interrupted = new Promise<false>((resolve) => {
-            const stop = () => { execution.terminate(); resolve(false); };
-            cancellation = token.onCancellationRequested(stop);
-            timer = setTimeout(stop, 120_000);
-            if (token.isCancellationRequested || this.disposed) stop();
-          });
-          return await Promise.race([taskExitCode(execution).then((code) => code === 0), interrupted]);
-        } finally {
-          clearTimeout(timer);
-          cancellation?.dispose();
-          this.bootTasks.delete(execution);
-        }
+        if (avd === project.model!.android!.avd) return this.bootThroughElide(project, windowed, token);
+        return this.bootThroughSdk(project, sdk, avd, windowed, running !== undefined, token);
       });
       if (this.disposed) return undefined;
       if (!booted) {
-        await this.problem("Emulator startup was cancelled, failed, or exceeded two minutes. Check the Elide task terminal; start the emulator and try again.");
+        await this.problem(`Emulator '${avd}' startup was cancelled, failed, or exceeded two minutes. Check the Elide task terminal or the emulator, then retry.`);
         return undefined;
       }
-      const serial = await find();
-      if (!serial) await this.problem(`AVD '${project.model!.android!.avd}' did not appear as a ready device after startup. Check the emulator and select its device serial.`);
-      return serial;
+      const serial = await this.findEmulator(project, sdk, avd);
+      if (!serial?.ready) await this.problem(`AVD '${avd}' did not appear as a ready device after startup. Check the emulator and select its device serial.`);
+      return serial?.ready ? serial.serial : undefined;
     } catch (error) {
-      await this.problem(`Could not resolve the Android emulator: ${error instanceof Error ? error.message : String(error)} Check adb and the emulator, then retry.`);
+      await this.problem(`Could not start Android emulator '${avd}': ${error instanceof Error ? error.message : String(error)} Check adb and the emulator, then retry.`);
       return undefined;
     }
+  }
+
+  /** `android-emulator` creates the AVD when missing, adopts a running instance, and exits once it has booted. */
+  private async bootThroughElide(project: ElideProject, windowed: boolean, token: vscode.CancellationToken): Promise<boolean> {
+    const execution = await executeElideTask(this.workspace, project, "build", {
+      args: [ANDROID_EMULATOR_TASK],
+      ...(windowed ? {} : { options: { [ANDROID_NO_WINDOW_OPTION]: true } }),
+    });
+    if (!execution) return false;
+    this.bootTasks.add(execution);
+    let timer: NodeJS.Timeout | undefined;
+    let cancellation: vscode.Disposable | undefined;
+    try {
+      const interrupted = new Promise<false>((resolve) => {
+        const stop = () => { execution.terminate(); resolve(false); };
+        cancellation = token.onCancellationRequested(stop);
+        timer = setTimeout(stop, BOOT_TIMEOUT_MS);
+        if (token.isCancellationRequested || this.disposed) stop();
+      });
+      return await Promise.race([taskExitCode(execution).then((code) => code === 0), interrupted]);
+    } finally {
+      clearTimeout(timer);
+      cancellation?.dispose();
+      this.bootTasks.delete(execution);
+    }
+  }
+
+  /** Launch `avd` detached (unless an instance is already coming up) and wait for `sys.boot_completed`. */
+  private async bootThroughSdk(project: ElideProject, sdk: string, avd: string, windowed: boolean, starting: boolean, token: vscode.CancellationToken): Promise<boolean> {
+    let failure: Error | undefined;
+    let child: ChildProcess | undefined;
+    if (!starting) {
+      const emulator = path.join(sdk, "emulator", process.platform === "win32" ? "emulator.exe" : "emulator");
+      if (!existsSync(emulator)) throw new Error(`${emulator} is missing; install the Android Emulator SDK component.`);
+      child = spawn(emulator, ["-avd", avd, ...(windowed ? [] : ["-no-window"])], { detached: true, stdio: "ignore" });
+      child.once("error", (error) => { failure = error; });
+      child.once("exit", (code) => { if (code) failure = new Error(`the emulator exited with code ${code}.`); });
+      child.unref();
+    }
+    const deadline = Date.now() + BOOT_TIMEOUT_MS;
+    try {
+      while (!token.isCancellationRequested && !this.disposed && Date.now() < deadline) {
+        if (failure) throw failure;
+        const device = await this.findEmulator(project, sdk, avd);
+        if (device?.ready && await this.bootCompleted(sdk, device.serial)) { child = undefined; return true; }
+        await sleep(BOOT_POLL_MS);
+      }
+      return false;
+    } finally {
+      child?.kill();
+    }
+  }
+
+  /** The emulator running `avd`, in whatever adb state; two instances of one AVD are ambiguous. */
+  private async findEmulator(project: ElideProject, sdk: string, avd: string): Promise<AndroidDevice | undefined> {
+    const devices = await attachedDevices(project);
+    if (!devices) throw new Error("Android platform-tools are unavailable; install the Android SDK components.");
+    const emulators = devices.filter((device) => device.emulator);
+    const names = await Promise.all(emulators.map((device) => this.avdOf(sdk, device.serial)));
+    const matching = emulators.filter((_device, index) => names[index] === avd);
+    if (matching.filter((device) => device.ready).length > 1) throw new Error(`Multiple emulators run AVD '${avd}'. Select a specific emulator serial instead.`);
+    return matching.find((device) => device.ready) ?? matching[0];
+  }
+
+  /** AVD an emulator runs, through its console; undefined when the console does not answer. */
+  private async avdOf(sdk: string, serial: string): Promise<string | undefined> {
+    try {
+      const { stdout } = await exec(adbExecutable(sdk), ["-s", serial, "emu", "avd", "name"], { encoding: "utf8", timeout: 10_000 });
+      return stdout.trim().split(/\r?\n/)[0]?.trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** `adb` reports `device` before Android can take an install; `sys.boot_completed` marks when it can. */
+  private async bootCompleted(sdk: string, serial: string): Promise<boolean> {
+    try {
+      const { stdout } = await exec(adbExecutable(sdk), ["-s", serial, "shell", "getprop", "sys.boot_completed"], { encoding: "utf8", timeout: 10_000 });
+      return stdout.trim() === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  /** Persist the selection; false once disposed, so a late answer never resurrects a torn-down controller. */
+  private async remember(selection: AndroidDeploymentTarget): Promise<boolean> {
+    await this.state.update(STATE_KEY, selection);
+    if (this.disposed) return false;
+    this.selected = selection;
+    this.updateStatus();
+    return true;
   }
 
   private async devices(project: ElideProject): Promise<AndroidDevice[] | undefined> {
@@ -223,7 +317,7 @@ export class AndroidDeploymentController implements vscode.Disposable {
     const project = selected ? this.workspace.projectAt(selected.root) : undefined;
     const valid = project?.model?.android?.targets.some((target) => target.kind === "apk" && target.name === selected?.artifact);
     if (selected && valid) {
-      const destination = selected.destination.kind === "device" ? selected.destination.serial : project!.model!.android!.avd;
+      const destination = selected.destination.kind === "device" ? selected.destination.avd ?? selected.destination.serial : project!.model!.android!.avd;
       this.status.text = `$(device-mobile) ${selected.artifact} → ${destination}`;
       this.status.tooltip = `${project!.model?.name ?? selected.root}\n${selected.root}\nSelect Android Deployment Target (connection checked before deployment)`;
     } else {

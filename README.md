@@ -314,9 +314,11 @@ Explicit artifact/device rows override the remembered choice. With no explicit p
 owning the active file takes precedence; focusing a library does not make that library a run target.
 
 Run and Debug save dirty file-backed documents first and stop if saving fails. Choosing the project emulator
-uses Elide's existing emulator targets; Debug identifies its AVD before attaching, and refuses ambiguous
-instances. `elide-android` launch configurations also validate their APK/device and accept `flags`, `options`
-and `env`, layered over workspace defaults. The selected device takes precedence over build options.
+uses Elide's existing emulator targets. A selected emulator that has stopped is booted before Run or Debug,
+through `android-emulator` for the project's AVD or the SDK emulator for any other, and is found again by AVD
+identity; ambiguous instances are refused. `elide-android` launch configurations also validate their APK/device
+and accept `flags`, `options` and `env`, layered over workspace defaults. The selected device takes precedence
+over build options.
 
 **Check Android Environment** is available from the command palette, Elide menu and project context menu,
 including when sync has failed. It checks Elide, a usable JDK, SDK/platform-tools, devices and Kotlin extension

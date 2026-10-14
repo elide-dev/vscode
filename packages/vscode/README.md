@@ -231,11 +231,12 @@ otherwise a runnable app owning the active file takes precedence over the rememb
 accidentally turn their library into a deployment target.
 
 Each deployment validates the artifact against the synced model and checks fresh adb state. If the selected
-device is disconnected, offline or unauthorized, deployment stops rather than silently choosing another device.
-Run and Debug save dirty file-backed documents before building and stop if saving fails. Project-emulator Debug
-identifies the exact AVD, boots it when necessary with cancellable bounded startup, and rejects ambiguous
-instances. Android launch configurations also validate their target; `flags`, `options` and `env` layer over
-workspace defaults, with the selected device taking precedence.
+physical device is disconnected, offline or unauthorized, deployment stops rather than silently choosing another
+device. A selected emulator that is not running is booted first: the target remembers the AVD it ran, finds it
+again by that identity (its serial may change), and re-pins the new serial. Run and Debug save dirty file-backed
+documents before building and stop if saving fails. Emulator startup identifies the exact AVD, is cancellable and
+bounded, and rejects ambiguous instances. Android launch configurations also validate their target; `flags`,
+`options` and `env` layer over workspace defaults, with the selected device taking precedence.
 
 **Check Android Environment** works before a successful sync. It reports Elide, JDK, SDK/platform-tools,
 connected devices and Kotlin extension availability; synced declarations additionally enable compile-SDK,

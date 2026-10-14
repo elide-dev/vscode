@@ -9,8 +9,9 @@ All notable changes to the Elide extension are documented here. The format follo
 ### Added
 
 - A persistent Android deployment target shared by Run and Debug, visible in the status bar and selectable from
-  the sidebar or command palette. Deployments validate the APK and current device state; disconnected targets
-  never silently fall back to another device. Dirty file-backed documents are saved before building.
+  the sidebar or command palette. Deployments validate the APK and current device state; disconnected physical
+  devices never silently fall back to another device, while a selected emulator that is not running is booted
+  automatically (by AVD identity) before Run or Debug. Dirty file-backed documents are saved before building.
 - **Check Android Environment**: cancellable, read-only diagnostics for Elide, JDK, SDK, compile SDK, devices,
   optional emulator/AVD, Kotlin extension and APK declarations, with explicit remediation actions. Available even
   before sync succeeds; unresolved declarations remain unknown and SDK licenses are never accepted by inspection.

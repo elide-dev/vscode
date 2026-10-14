@@ -57,6 +57,11 @@ export const DEFAULT_AVD_NAME = "elide-android";
 /** Serial prefix `adb` gives every emulator; a physical device carries its own. */
 const EMULATOR_SERIAL_PREFIX = "emulator-";
 
+/** Whether `serial` names an emulator, which holds even after it disappeared from `adb devices`. */
+export function isEmulatorSerial(serial: string): boolean {
+  return serial.startsWith(EMULATOR_SERIAL_PREFIX);
+}
+
 /** The only `adb devices` state that can take an install; `offline` and `unauthorized` are attached but refuse one. */
 const DEVICE_STATE_READY = "device";
 
@@ -324,7 +329,7 @@ export function parseAdbDevices(text: string): AndroidDevice[] {
     const serial = parts[0]?.trim() ?? "";
     const state = parts[1]?.trim() ?? "";
     if (serial.length === 0 || state.length === 0) continue;
-    devices.push({ serial, state, emulator: serial.startsWith(EMULATOR_SERIAL_PREFIX), ready: state === DEVICE_STATE_READY });
+    devices.push({ serial, state, emulator: isEmulatorSerial(serial), ready: state === DEVICE_STATE_READY });
   }
   return devices;
 }

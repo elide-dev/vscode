@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AndroidDevice } from "@elide/ide-core";
-import { androidApks, androidDeviceProblem, preferredAndroidProject, restoredAndroidTarget } from "../src/androidDeploymentState.js";
+import { androidApks, androidAvdToBoot, androidDeviceProblem, preferredAndroidProject, restoredAndroidTarget } from "../src/androidDeploymentState.js";
 import type { ElideProject } from "../src/projects.js";
 
 function project(root: string, kind = "apk"): ElideProject {
@@ -16,6 +16,8 @@ describe("Android deployment decisions", () => {
     expect(restoredAndroidTarget({ root: "/app", artifact: "debug", destination: { kind: "emulator" } })).toEqual({
       root: "/app", artifact: "debug", destination: { kind: "emulator" },
     });
+    const emulator = { root: "/app", artifact: "debug", destination: { kind: "device", serial: "emulator-5554", avd: "pixel" } };
+    expect(restoredAndroidTarget(emulator)).toEqual(emulator);
   });
 
   test("rejects malformed persisted state instead of letting adb implicitly choose a target", () => {
@@ -37,6 +39,16 @@ describe("Android deployment decisions", () => {
     for (const state of ["offline", "unauthorized", "bootloader"]) {
       expect(androidDeviceProblem([phone, { serial: "old", state, ready: false, emulator: false }], "old")).toBe(state);
     }
+  });
+
+  test("a stopped pinned emulator boots its own AVD, a physical device is never booted", () => {
+    const pinned = { serial: "emulator-5554", avd: "pixel" };
+    expect(androidAvdToBoot([], pinned, "project")).toBe("pixel");
+    expect(androidAvdToBoot([{ serial: "emulator-5554", state: "offline", ready: false, emulator: true }], pinned, "project")).toBe("pixel");
+    expect(androidAvdToBoot([{ serial: "emulator-5554", state: "device", ready: true, emulator: true }], pinned, "project")).toBeUndefined();
+    expect(androidAvdToBoot([], { serial: "emulator-5556" }, "project")).toBe("project");
+    expect(androidAvdToBoot([phone], { serial: "old" }, "project")).toBeUndefined();
+    expect(androidAvdToBoot([{ serial: "old", state: "unauthorized", ready: false, emulator: false }], { serial: "old" }, "project")).toBeUndefined();
   });
 
   test("APKs are re-read from the live model, not restored artifact names or library outputs", () => {
