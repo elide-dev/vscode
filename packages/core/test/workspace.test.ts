@@ -185,7 +185,8 @@ describe("findEnclosingWorkspace", () => {
  *
  * A classpath is read from the file named after the source set and the usage, falling back to the set alone, so a
  * fixture declares a `provided` classpath only when the usage matters to it. A `fail-<set>-<usage>` file makes that
- * query fail, which fails a whole `classpath --json` batch the way the real CLI does.
+ * query fail, which fails a whole `classpath --json` batch the way the real CLI does; a `fail-build-<target>` file
+ * fails every build given that target, after it is recorded.
  */
 const FAKE_ELIDE = `#!/bin/sh
 entries() {
@@ -212,7 +213,9 @@ case "$1" in
     if [ "$2" = "--inspect" ]; then
       [ ! -f .fake/build-inspect.txt ] || cat .fake/build-inspect.txt
     else
-      shift; echo "$PWD $*" >> "$FAKE_BUILD_LOG"
+      shift
+      echo "$PWD $*" >> "$FAKE_BUILD_LOG"
+      for t in "$@"; do [ ! -f ".fake/fail-build-$t" ] || { echo "cannot build $t" >&2; exit 1; }; done
     fi ;;
 esac
 `;
@@ -387,6 +390,46 @@ cli
     expect(model!.warnings).toContain(
       `Classpath names an artifact built by ${ws}/model, which is not part of this project's workspace; its sources cannot be resolved.`,
     );
+  });
+
+  /** The workspace with `model` and `cli` as Android libraries whose `R` was never generated. */
+  const androidWorkspace = () => {
+    const fixture = workspace();
+    const { ws } = fixture;
+    for (const member of ["model", "cli"]) {
+      const file = path.join(ws, member, ".fake", "manifest.json");
+      const manifest = JSON.parse(readFileSync(file, "utf8"));
+      manifest.android = { compileSdk: 36 };
+      manifest.artifacts = { ...manifest.artifacts, [member]: { "@type": "elide.android.AndroidApk", sources: ["main"] } };
+      writeFileSync(file, JSON.stringify(manifest));
+    }
+    writeFileSync(path.join(ws, ".fake", "build-inspect.txt"), `2 tasks across 3 projects:
+model
+  model:android-r-model  Compile generated resource identifiers for 'model'
+cli
+  cli:android-r-cli  Compile generated resource identifiers for 'cli'
+`);
+    const builds = path.join(ws, "builds.log");
+    process.env.FAKE_BUILD_LOG = builds;
+    return { ...fixture, built: () => readFileSync(builds, "utf8").trim().split("\n") };
+  };
+  const rWarnings = (model: ProjectModel) => model.warnings.filter((w) => w.startsWith("Could not generate"));
+
+  test("what the members need built is built by one build at the root", async () => {
+    const { ws, cliAtRoot, built } = androidWorkspace();
+    const models = await build(cliAtRoot);
+    expect(built()).toEqual([`${ws} model:android-r-model cli:android-r-cli`]);
+    expect(models.flatMap(rWarnings)).toEqual([]);
+  });
+
+  test("a target that fails the root build is built again in its project, and only that project reports it", async () => {
+    const { ws, cliAtRoot, built } = androidWorkspace();
+    writeFileSync(path.join(ws, ".fake", "fail-build-cli:android-r-cli"), "");
+    writeFileSync(path.join(ws, "cli", ".fake", "fail-build-android-r-cli"), "");
+    const [, model, cli] = await build(cliAtRoot);
+    expect(built()).toEqual([`${ws} model:android-r-model cli:android-r-cli`, `${ws}/model android-r-model`, `${ws}/cli android-r-cli`]);
+    expect(rWarnings(model!)).toEqual([]);
+    expect(rWarnings(cli!)).toEqual([expect.stringContaining("(elide build android-r-cli): elide build android-r-cli failed (exit 1):\ncannot build android-r-cli")]);
   });
 });
 

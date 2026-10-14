@@ -15,7 +15,7 @@ import { buildTasksOf, unqualifiedTaskName, type BuildTaskInfo } from "./buildTa
 import { ElideCli, MANIFEST_NAME, isLockfileCurrent, type ClasspathQuery, type RunOptions } from "./elide.js";
 import { resolveJdk, type Jdk, type ResolveJdkOptions } from "./jdk.js";
 import { DEFAULT_LIBRARIES_ROOT, libraryFor, type LibraryModel } from "./libraries.js";
-import { effectiveType, type AndroidArtifactKind, type Manifest, type SourceSetType } from "./manifest.js";
+import { effectiveType, type AndroidArtifactKind, type Manifest, type SourceSet, type SourceSetType } from "./manifest.js";
 import { collectContentRoots, isPathUnder, normalizePath } from "./sourceRoots.js";
 import {
   ArtifactIndex,
@@ -127,9 +127,16 @@ export interface AndroidTargetModel {
 }
 
 export interface BuildModelOptions {
+  /** The steps the workspace takes as a whole: reading manifests, installing dependencies. */
   onProgress?: (step: string) => void;
   onLine?: (line: string, stderr: boolean) => void;
   onCommand?: RunOptions["onCommand"];
+  /**
+   * Called as each project starts resolving. The projects of a workspace resolve concurrently once its dependencies
+   * are installed, so each one's steps and CLI processes report to what this returns rather than to `onProgress` and
+   * `onCommand`, which see them only when it is absent.
+   */
+  onProject?: (name: string) => ProjectProgress;
   signal?: AbortSignal;
   /** Skip `elide install` even when the lockfile is stale. */
   skipInstall?: boolean;
@@ -144,6 +151,17 @@ export interface BuildModelOptions {
   exists?: (p: string) => boolean;
 }
 
+/** Where the resolution of one project reports while the other projects of its workspace resolve alongside it. */
+export interface ProjectProgress {
+  onProgress?: (step: string) => void;
+  onCommand?: RunOptions["onCommand"];
+  /**
+   * The project is resolved, failed with `error`, or was cancelled: by the caller's signal, or because another
+   * project failed.
+   */
+  end?: (outcome: "succeeded" | "failed" | "cancelled", error?: unknown) => void;
+}
+
 const EXCLUDED_AT_ROOT = [".dev", "node_modules", ".git"];
 
 /** One project a model is built for: where it is, the CLI focused on it, and its decoded manifest. */
@@ -154,6 +172,20 @@ interface ProjectSpec {
   manifest: Manifest;
 }
 
+/** What a project needs built before every entry its classpaths name exists. */
+interface AndroidPreparation {
+  /** `android-libraries`: a classpath names a published Android library that is not unpacked yet. */
+  libraries: boolean;
+  /** The `R` targets of the project's Android artifacts whose identifiers were never generated. */
+  rTasks: string[];
+}
+
+/** Why each step of a project's {@link AndroidPreparation} failed; absent when it did not. */
+interface PreparationFailures {
+  libraries?: unknown;
+  r?: unknown;
+}
+
 /** What the models of one workspace share while they are built. */
 interface BuildContext {
   opts: BuildModelOptions;
@@ -162,6 +194,13 @@ interface BuildContext {
   libraries: LibraryRegistry;
   artifacts: ArtifactIndex;
   previewTasks?: BuildTaskInfo[];
+  /** `elide build` in the directory of `cli`, never while another build of the workspace runs. */
+  build: (cli: ElideCli, targets: readonly string[], run: RunOptions) => Promise<void>;
+  /**
+   * Report what `project` needs built, and wait until it is: the needs of every project are built together, once
+   * each has reported. A project that needs nothing is not held up.
+   */
+  prepare: (project: ProjectSpec, need: AndroidPreparation) => Promise<PreparationFailures>;
 }
 
 /**
@@ -172,24 +211,33 @@ interface BuildContext {
  * the root's repository. Each member's classpath is then resolved by the CLI focused on that member — invoked in its
  * directory — which is the member's own classpath within the workspace. A sibling's JAR on it becomes a dependency
  * on the modules packaged into that JAR, since those are what an editor can compile against and navigate into.
+ *
+ * Once dependencies are installed, the projects resolve concurrently: a classpath query only reads what the install
+ * left behind. What their classpaths need built (unpacking Android libraries, generating `R`) is built by one
+ * `elide build` at the root, which runs a task two members share once; builds never overlap, since two of them could
+ * run such a task at the same time. The first project that fails cancels the others.
  */
 export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts: BuildModelOptions = {}): Promise<ProjectModel[]> {
   const root = normalizePath(path.resolve(cli.projectRoot));
-  const run: RunOptions = { onLine: opts.onLine, onCommand: opts.onCommand, signal: opts.signal };
+  const failure = new AbortController();
+  const signal = opts.signal ? AbortSignal.any([opts.signal, failure.signal]) : failure.signal;
+  const run: RunOptions = { onLine: opts.onLine, onCommand: opts.onCommand, signal };
 
   opts.onProgress?.("Querying Elide version");
   const elideVersion = await cli.version(run);
 
   // The exported project model has already validated the member list at the root: every entry is a directory below
   // it holding a manifest, and no two members share a name.
-  const projects: ProjectSpec[] = [{ name: projectName(manifest, root), root, cli, manifest }];
-  for (const entry of manifest.workspaceMembers) {
-    const memberRoot = normalizePath(path.resolve(root, entry));
-    opts.onProgress?.(`Reading member manifest: ${entry}`);
-    const memberCli = new ElideCli(cli.dist, memberRoot, cli.flags);
-    const memberManifest = await memberCli.manifest(run);
-    projects.push({ name: projectName(memberManifest, memberRoot), root: memberRoot, cli: memberCli, manifest: memberManifest });
-  }
+  if (manifest.workspaceMembers.length > 0) opts.onProgress?.("Reading member manifests");
+  const members = await Promise.all(
+    manifest.workspaceMembers.map(async (entry): Promise<ProjectSpec> => {
+      const memberRoot = normalizePath(path.resolve(root, entry));
+      const memberCli = new ElideCli(cli.dist, memberRoot, cli.flags);
+      const memberManifest = await memberCli.manifest(run);
+      return { name: projectName(memberManifest, memberRoot), root: memberRoot, cli: memberCli, manifest: memberManifest };
+    }),
+  );
+  const projects: ProjectSpec[] = [{ name: projectName(manifest, root), root, cli, manifest }, ...members];
 
   const manifests = projects.map((p) => path.join(p.root, MANIFEST_NAME));
   if (!opts.skipInstall && (opts.forceInstall || !(await isLockfileCurrent(root, manifests)))) {
@@ -197,6 +245,12 @@ export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts
     await cli.install({ ...run, with: opts.installWith });
   }
 
+  let builds: Promise<unknown> = Promise.resolve();
+  const needs = new Map<ProjectSpec, AndroidPreparation>();
+  const prepared = Promise.withResolvers<Map<ProjectSpec, PreparationFailures>>();
+  // Rejected when a project fails before reporting what it needs, which may be after everyone stopped waiting.
+  prepared.promise.catch(() => undefined);
+  signal.addEventListener("abort", () => prepared.reject(signal.reason), { once: true });
   const ctx: BuildContext = {
     opts,
     run,
@@ -210,17 +264,83 @@ export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts
     ...(projects.some((p) => p.manifest.android)
       ? { previewTasks: await cli.buildInspect(run) }
       : {}),
+    build: (projectCli, targets, buildRun) => {
+      const turn = builds.then(() => projectCli.build(targets, buildRun));
+      builds = turn.catch(() => undefined);
+      return turn;
+    },
+    prepare: (project, need) => {
+      needs.set(project, need);
+      if (needs.size === projects.length) prepareProjects(cli, projects, needs, ctx).then(prepared.resolve, prepared.reject);
+      if (!need.libraries && need.rTasks.length === 0) return Promise.resolve({});
+      return prepared.promise.then((failures) => failures.get(project) ?? {});
+    },
   };
-  const resolved: ResolvedProject[] = [];
-  for (const project of projects) resolved.push(await resolveProject(project, ctx));
+  opts.onProgress?.(projects.length === 1 ? "Resolving the project" : `Resolving ${projects.length} projects`);
+  const answers = await Promise.all(projects.map(async (project) => {
+    const progress = opts.onProject?.(project.name);
+    try {
+      const result = await queryProject(project, ctx, progress);
+      progress?.end?.("succeeded");
+      return result;
+    } catch (e) {
+      // Already aborted: by the user, or by another project's failure, which is the one to report.
+      progress?.end?.(signal.aborted ? "cancelled" : "failed", e);
+      failure.abort(e);
+      throw e;
+    }
+  }));
+  // In declaration order, whichever project's answers came first: libraries are named as they are first met.
+  const resolved = projects.map((project, i) => assembleProject(project, answers[i]!, ctx));
 
-  const members = projects.slice(1).map((p) => p.root);
   if (members.length > 0) {
-    resolved[0]!.model.members = members;
+    resolved[0]!.model.members = members.map((p) => p.root);
     for (const r of resolved.slice(1)) r.model.workspaceRoot = root;
   }
   wireProjectDependencies(resolved);
   return resolved.map((r) => r.model);
+}
+
+/**
+ * Build what the projects of a workspace reported they need, as one `elide build` at the root when the root's task
+ * listing names every target. A target that fails fails that build, so it is built again one project and one step at
+ * a time: the rest still build, and each failure is the project's own.
+ */
+async function prepareProjects(
+  cli: ElideCli,
+  projects: readonly ProjectSpec[],
+  needs: ReadonlyMap<ProjectSpec, AndroidPreparation>,
+  ctx: BuildContext,
+): Promise<Map<ProjectSpec, PreparationFailures>> {
+  const failures = new Map<ProjectSpec, PreparationFailures>();
+  const wanted = projects
+    .map((project): [ProjectSpec, AndroidPreparation] => [project, needs.get(project)!])
+    .filter(([, need]) => need.libraries || need.rTasks.length > 0);
+  if (wanted.length === 0) return failures;
+  const aborted = (e: unknown) => {
+    if (ctx.run.signal?.aborted) throw e;
+    return e;
+  };
+  const qualified = wanted.flatMap(([project, need]) => {
+    const tasks = buildTasksOf(ctx.previewTasks ?? [], project.name);
+    return [...(need.libraries ? [ANDROID_LIBRARIES_TASK] : []), ...need.rTasks]
+      .map((target) => tasks.find((task) => unqualifiedTaskName(task) === target)?.name);
+  });
+  if (qualified.every((target) => target !== undefined)) {
+    try {
+      await ctx.build(cli, qualified, ctx.run);
+      return failures;
+    } catch (e) {
+      aborted(e);
+    }
+  }
+  for (const [project, need] of wanted) {
+    const failed: PreparationFailures = {};
+    if (need.libraries) await ctx.build(project.cli, [ANDROID_LIBRARIES_TASK], ctx.run).catch((e: unknown) => (failed.libraries = aborted(e)));
+    if (need.rTasks.length > 0) await ctx.build(project.cli, need.rTasks, ctx.run).catch((e: unknown) => (failed.r = aborted(e)));
+    failures.set(project, failed);
+  }
+  return failures;
 }
 
 /** A project's model, with what the dependency wiring across a workspace needs to know about it. */
@@ -232,36 +352,57 @@ interface ResolvedProject {
   runtimeArtifacts: Map<string, ArtifactOutput[]>;
 }
 
-async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<ResolvedProject> {
+/** What the CLI and the machine said about one project, keyed by source set where it is per set. */
+interface ProjectAnswers {
+  sets: { setName: string; set: SourceSet; kind: Exclude<SourceSetType, "other"> }[];
+  classpaths: Map<string, string[]>;
+  runtimeClasspaths: Map<string, string[]>;
+  provided: Map<string, string[]>;
+  jdk: Jdk | undefined;
+  warnings: string[];
+}
+
+/** Everything about `project` that takes a process or the file system: its classpaths, the builds they need, its JDK. */
+async function queryProject(project: ProjectSpec, ctx: BuildContext, progress?: ProjectProgress): Promise<ProjectAnswers> {
   const { root, cli, manifest, name } = project;
-  const { opts, run } = ctx;
+  const { opts } = ctx;
+  const run: RunOptions = progress?.onCommand ? { ...ctx.run, onCommand: progress.onCommand } : ctx.run;
+  const step = progress ? progress.onProgress : opts.onProgress;
   const warnings: string[] = [];
 
   const sets = Object.entries(manifest.sources)
     .map(([setName, set]) => ({ setName, set, kind: effectiveType(setName, set) }))
     .filter((s): s is typeof s & { kind: Exclude<SourceSetType, "other"> } => s.kind !== "other");
 
-  // `res/` and `assets/` are the artifact's, not a source set's: the manifest declares them per Android artifact,
-  // so each one contributes its directories to the source sets it packages, as resource roots of those modules.
-  const androidContent = new Map<string, string[]>();
-  for (const target of Object.values(manifest.androidTargets)) {
-    const dirs = androidContentDirs(root, target, opts.exists);
-    if (dirs.length === 0) continue;
-    for (const setName of packagedSourceSets(manifest, target)) {
-      androidContent.set(setName, [...(androidContent.get(setName) ?? []), ...dirs]);
-    }
-  }
+  // The Android framework and the generated `R` classes reach a compile only as *provided* entries: the device
+  // carries the framework and the APK's own dex carries `R`, so neither is on the compile or runtime classpath the
+  // model is otherwise built from. Without them an editor resolves no `android.*` import and no resource
+  // identifier, which is most of an Android source file.
+  //
+  // `R` is listed only once the target that compiles it has run, since the classpath is read from its recorded
+  // output. Running it is cheap (it links resources that a build links anyway) and is the difference between a
+  // freshly opened project resolving `R` and reporting it as unknown.
+  const fileExists = opts.exists ?? existsSync;
+  const rTasks = manifest.android
+    ? Object.keys(manifest.androidTargets).filter((artifact) => !fileExists(androidRClasses(root, artifact))).map(androidRTask)
+    : [];
+  const providedQueries = manifest.android ? sets.map(({ setName }): ClasspathQuery => `${setName}:provided`) : [];
 
-  // Resolved before anything reads them: a published `.aar` reaches a classpath as the `classes.jar` of the
-  // directory `android-libraries` explodes it into, and `elide classpath` resolves dependencies without running
-  // that target. Listing those paths before the first build would hand the language server jars that are not
-  // there, so the target is run — once, and only when an entry actually names a directory that is missing.
-  opts.onProgress?.(`Resolving classpaths: ${name}`);
-  const answers = await cli.classpaths(
-    sets.flatMap(({ setName, kind }): ClasspathQuery[] =>
-      ctx.previewTasks && kind !== "test" ? [`${setName}:compile`, `${setName}:runtime`] : [`${setName}:compile`]),
-    run,
-  );
+  step?.(`Resolving classpaths: ${name}`);
+  const queries = sets.flatMap(({ setName, kind }): ClasspathQuery[] =>
+    ctx.previewTasks && kind !== "test" ? [`${setName}:compile`, `${setName}:runtime`] : [`${setName}:compile`]);
+  // Each `elide classpath` resolves the project anew, so with `R` already in place the platform is asked in the
+  // same call. One query that fails fails the batch: the platform is then asked alone, after the rest.
+  const early = rTasks.length === 0 ? providedQueries : [];
+  let answers: Map<ClasspathQuery, string[]>;
+  let providedFailed = false;
+  try {
+    answers = await cli.classpaths([...queries, ...early], run);
+  } catch (e) {
+    if (early.length === 0 || run.signal?.aborted) throw e;
+    answers = await cli.classpaths(queries, run);
+    providedFailed = true;
+  }
   const classpaths = new Map<string, string[]>();
   const runtimeClasspaths = new Map<string, string[]>();
   for (const { setName } of sets) {
@@ -269,49 +410,47 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
     const runtime = answers.get(`${setName}:runtime`);
     if (runtime) runtimeClasspaths.set(setName, runtime);
   }
-  const fileExists = opts.exists ?? existsSync;
-  const missing = [...classpaths.values(), ...runtimeClasspaths.values()].flat().some((entry) => explodedAndroidLibrary(entry) && !fileExists(entry));
-  if (missing) {
-    opts.onProgress?.(`Unpacking Android libraries: ${name}`);
-    try {
-      await cli.build([ANDROID_LIBRARIES_TASK], run);
-    } catch (e) {
-      warnings.push(
-        `Could not unpack the project's published Android libraries (elide build ${ANDROID_LIBRARIES_TASK}): ${e instanceof Error ? e.message : String(e)}. Their classes resolve once the project is built.`,
-      );
-    }
+  // A published `.aar` reaches a classpath as the `classes.jar` of the directory `android-libraries` explodes it into,
+  // and `elide classpath` resolves dependencies without running that target. Listing those paths before the first
+  // build would hand the language server jars that are not there, so the target is run — once, and only when an entry
+  // actually names a directory that is missing.
+  const need: AndroidPreparation = {
+    libraries: [...classpaths.values(), ...runtimeClasspaths.values()].flat().some((entry) => explodedAndroidLibrary(entry) && !fileExists(entry)),
+    rTasks,
+  };
+  if (need.libraries || need.rTasks.length > 0) {
+    step?.(need.libraries && need.rTasks.length > 0
+      ? `Unpacking Android libraries and generating resource identifiers: ${name}`
+      : need.libraries ? `Unpacking Android libraries: ${name}` : `Generating Android resource identifiers: ${name}`);
+  }
+  const failed = await ctx.prepare(project, need);
+  if (failed.libraries !== undefined) {
+    warnings.push(
+      `Could not unpack the project's published Android libraries (elide build ${ANDROID_LIBRARIES_TASK}): ${failed.libraries instanceof Error ? failed.libraries.message : String(failed.libraries)}. Their classes resolve once the project is built.`,
+    );
   }
 
-  // The Android framework and the generated `R` classes reach a compile only as *provided* entries: the device
-  // carries the framework and the APK's own dex carries `R`, so neither is on the compile or runtime classpath the
-  // model is otherwise built from. Without them an editor resolves no `android.*` import and no resource
-  // identifier, which is most of an Android source file.
   const provided = new Map<string, string[]>();
   if (manifest.android) {
-    // `R` is listed only once the target that compiles it has run, since the classpath is read from its recorded
-    // output. Running it is cheap (it links resources that a build links anyway) and is the difference between a
-    // freshly opened project resolving `R` and reporting it as unknown.
-    const rTasks = Object.keys(manifest.androidTargets)
-      .filter((artifact) => !fileExists(androidRClasses(root, artifact)))
-      .map(androidRTask);
-    if (rTasks.length > 0) {
-      opts.onProgress?.(`Generating Android resource identifiers: ${name}`);
-      try {
-        await cli.build(rTasks, run);
-      } catch (e) {
-        warnings.push(
-          `Could not generate the project's Android resource identifiers (elide build ${rTasks.join(" ")}): ${e instanceof Error ? e.message : String(e)}. \`R\` resolves once the project is built.`,
-        );
-      }
+    if (failed.r !== undefined) {
+      warnings.push(
+        `Could not generate the project's Android resource identifiers (elide build ${rTasks.join(" ")}): ${failed.r instanceof Error ? failed.r.message : String(failed.r)}. \`R\` resolves once the project is built.`,
+      );
     }
-    opts.onProgress?.(`Resolving Android platform: ${name}`);
-    // One query that fails fails the batch; asked again one set at a time, the sets that resolve still do.
-    const queries = sets.map(({ setName }): ClasspathQuery => `${setName}:provided`);
-    const batched = await cli.classpaths(queries, run).catch(() => undefined);
+    let batched: Map<ClasspathQuery, string[]> | undefined = early.length > 0 && !providedFailed ? answers : undefined;
+    if (!batched && !providedFailed) {
+      step?.(`Resolving Android platform: ${name}`);
+      batched = await cli.classpaths(providedQueries, run).catch((e: unknown) => {
+        if (run.signal?.aborted) throw e;
+        return undefined;
+      });
+    }
+    // Asked again one set at a time, the sets that resolve still do.
     for (const { setName } of sets) {
       try {
         provided.set(setName, batched?.get(`${setName}:provided`) ?? await cli.classpath(setName, "provided", run));
       } catch (e) {
+        if (run.signal?.aborted) throw e;
         // An unresolvable platform is a reason to resolve less, never to fail the sync: the rest of the model —
         // sources, siblings, Maven libraries — is what it was before the Android pipeline had anything to say.
         warnings.push(
@@ -322,16 +461,40 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
   }
 
   if (manifest.hasAnnotationProcessors || manifest.android?.hilt) {
-    opts.onProgress?.(`Generating annotation processor sources: ${name}`);
+    step?.(`Generating annotation processor sources: ${name}`);
     try {
       // Empty source sets have no compile task; requesting one prevents every target in the build from running.
       const wanted = new Set(sets.map(({ setName }) => `compile-java-${setName}`));
       const targets = buildTasksOf(await cli.buildInspect(run), name)
         .filter((task) => wanted.has(unqualifiedTaskName(task)))
         .map((task) => task.name);
-      if (targets.length > 0) await cli.build(targets, run);
+      if (targets.length > 0) await ctx.build(cli, targets, run);
     } catch (e) {
+      if (run.signal?.aborted) throw e;
       warnings.push(`Could not generate annotation processor sources: ${e instanceof Error ? e.message : String(e)}. Build the project and sync again to resolve generated Dagger/Hilt declarations.`);
+    }
+  }
+
+  step?.(`Resolving JDK: ${name}`);
+  const jdk = await resolveJdk(manifest, cli.dist, opts.jdk);
+  return { sets, classpaths, runtimeClasspaths, provided, jdk, warnings };
+}
+
+/** The model of `project` from what {@link queryProject} found; libraries are named in the registry as they are met. */
+function assembleProject(project: ProjectSpec, answers: ProjectAnswers, ctx: BuildContext): ResolvedProject {
+  const { root, cli, manifest, name } = project;
+  const { opts } = ctx;
+  const { sets, classpaths, runtimeClasspaths, provided, jdk, warnings } = answers;
+  const fileExists = opts.exists ?? existsSync;
+
+  // `res/` and `assets/` are the artifact's, not a source set's: the manifest declares them per Android artifact,
+  // so each one contributes its directories to the source sets it packages, as resource roots of those modules.
+  const androidContent = new Map<string, string[]>();
+  for (const target of Object.values(manifest.androidTargets)) {
+    const dirs = androidContentDirs(root, target, opts.exists);
+    if (dirs.length === 0) continue;
+    for (const setName of packagedSourceSets(manifest, target)) {
+      androidContent.set(setName, [...(androidContent.get(setName) ?? []), ...dirs]);
     }
   }
 
@@ -480,8 +643,6 @@ async function resolveProject(project: ProjectSpec, ctx: BuildContext): Promise<
   if (entrypoints.length === 0 && manifest.jvm?.main) entrypoints.push({ kind: "jvmMain", value: manifest.jvm.main });
   for (const script of Object.keys(manifest.scripts)) entrypoints.push({ kind: "script", value: script });
 
-  opts.onProgress?.(`Resolving JDK: ${name}`);
-  const jdk = await resolveJdk(manifest, cli.dist, opts.jdk);
   if (!jdk) warnings.push("No JDK found for symbol resolution; set `elide.jdk.home` or `JAVA_HOME`.");
 
   let android: AndroidProjectModel | undefined;

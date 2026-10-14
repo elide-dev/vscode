@@ -24,6 +24,7 @@ import {
   type BuildModelOptions,
   type ElideDistribution,
   type ProjectModel,
+  type ProjectProgress,
   type TimelineNode,
 } from "@elide/ide-core";
 import * as vscode from "vscode";
@@ -427,11 +428,28 @@ export class ElideWorkspace implements vscode.Disposable {
         this.ui.log(`  [${rel}] ${label}`);
       };
       const onCommand = observeCommands(() => step, (line) => this.ui.log(`    ${line}`));
+      // Projects resolve side by side, each a step of the phase that resolves them with its own steps and processes.
+      const onProject = (name: string): ProjectProgress => {
+        const node = step.start(name);
+        let phase = node;
+        return {
+          onProgress: (label) => {
+            if (phase !== node) phase.end();
+            phase = node.start(label);
+            this.ui.log(`  [${rel}] ${label}`);
+          },
+          onCommand: observeCommands(() => phase, (line) => this.ui.log(`    [${name}] ${line}`)),
+          end: (outcome, error) => {
+            if (outcome === "succeeded") node.end();
+            else node.end(outcome, outcome === "failed" ? (error instanceof Error ? error.message : String(error)) : undefined);
+          },
+        };
+      };
       try {
         const cli = new ElideCli(dist, project.root, config.flags);
         begin("Reading the project manifest");
         const manifest = await cli.manifest({ onCommand, signal });
-        const options: BuildModelOptions = { onCommand, signal, onProgress: begin, jdk: { override: config.jdkHome } };
+        const options: BuildModelOptions = { onCommand, onProject, signal, onProgress: begin, jdk: { override: config.jdkHome } };
         // The classifier set is applied by `elide install --slim --with …`, which the lockfile check cannot see:
         // force an install whenever it differs from the set this project was last resolved with.
         const key = `${INSTALL_CLASSIFIERS_KEY}:${project.root}`;

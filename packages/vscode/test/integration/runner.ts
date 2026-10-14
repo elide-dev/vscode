@@ -17,6 +17,10 @@
  *
  * Prerequisites: VS Code at /Applications/Visual Studio Code.app, `JetBrains.kotlin-server` installed in
  * ~/.vscode/extensions, `elide` installed. Usage: `bun run test:integration` from packages/vscode.
+ *
+ * `ELIDE_TEST_HOME` runs the scenario against another Elide distribution, such as a local build's
+ * `.dev/artifacts/dist/current`, through the `elide.home` setting: the extension host does not see an `ELIDE_HOME`
+ * set in the shell that starts the run.
  */
 import { existsSync, mkdtempSync, readdirSync, realpathSync, writeFileSync, mkdirSync, rmSync, cpSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -57,6 +61,7 @@ writeFileSync(
       "telemetry.telemetryLevel": "off",
       // An emulator the test boots runs headless.
       ...(scenario === "android" ? { "elide.android.emulatorWindow": false } : {}),
+      ...(process.env.ELIDE_TEST_HOME ? { "elide.home": process.env.ELIDE_TEST_HOME } : {}),
     },
     null,
     2,

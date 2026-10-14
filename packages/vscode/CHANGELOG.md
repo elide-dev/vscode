@@ -66,7 +66,12 @@ All notable changes to the Elide extension are documented here. The format follo
 - The `Elide` output channel no longer echoes the exported project model and resolved classpaths during sync; it shows
   each command line, the output Elide prints for a person, and each command's exit status and duration.
 - Syncs resolve each project's classpaths with one `elide classpath --json` per project on Elide 1.6.1 and newer,
-  instead of one process per source set and usage. Older releases are still asked one query at a time.
+  instead of one process per source set and usage. Older releases are still asked one query at a time. An Android
+  project whose `R` classes are already generated has its platform classpath answered by the same process.
+- The projects of a workspace resolve concurrently once its dependencies are installed, and member manifests are
+  read concurrently. What their classpaths need built first (unpacking Android libraries, generating `R`) is built
+  by one `elide build` at the workspace root; builds never overlap. The Activity view shows each project as a step of
+  its own.
 - Compose preview build terminals run with `ELIDE_PROGRESS=plain`, so the terminal, the panel's Build log and its
   status line name each task as it starts.
 - Compose previews choose their Android resource context automatically instead of asking: the application packaging
