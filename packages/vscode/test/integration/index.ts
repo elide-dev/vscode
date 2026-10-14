@@ -92,7 +92,8 @@ export async function run(): Promise<void> {
     return !newest.running || newest.children.some((step) => step.label.startsWith("Resolving")) ? newest : undefined;
   }, 60_000, 10);
   const manifest = path.join(sample, "elide.pkl");
-  appendFileSync(manifest, `\ndependencies {\n    maven {\n        packages {\n            "com.google.guava:guava:33.4.0-jre"\n        }\n    }\n}\n`);
+  // The version comes from the `versions.pkl` the manifest imports (runner.ts).
+  appendFileSync(manifest, `\ndependencies {\n    maven {\n        packages {\n            "com.google.guava:guava:\\(versions.guava)"\n        }\n    }\n}\n`);
   log(`edited elide.pkl ${manual.running ? "while a sync ran" : "right after a sync ended"}; waiting for resync with guava`);
   // The sync the edit interrupted, or one it raced, may model guava from its classpath query before a sync installs it.
   const withGuava = await waitFor("guava with its sources in workspace.json", () => {
@@ -121,6 +122,21 @@ export async function run(): Promise<void> {
   log("hover(ImmutableList):", guavaHover.slice(0, 160).replace(/\n/g, " "));
   await new Promise((r) => setTimeout(r, 5_000));
   assert.deepEqual(errorsOf(guavaUri).map((d) => d.message), [], "no errors in Guava.kt");
+
+  // 3b. A local module the manifest imports counts like the manifest: editing only `versions.pkl` resyncs, the
+  //     resync installs, and the new version lands in workspace.json.
+  const syncsBefore = new Set(activity.getChildren());
+  writeFileSync(path.join(sample, "versions.pkl"), `guava = "33.3.1-jre"\n`);
+  log("edited versions.pkl; waiting for resync with guava 33.3.1-jre");
+  await waitFor("guava 33.3.1-jre in workspace.json", () => {
+    const names: string[] = JSON.parse(readFileSync(workspaceJson, "utf8")).libraries.map((l: { name: string }) => l.name);
+    return names.some((n) => n.includes("com.google.guava:guava:33.3.1-jre")) && !names.some((n) => n.includes("com.google.guava:guava:33.4.0-jre")) ? true : undefined;
+  }, 300_000, 2_000);
+  const moduleResync = activity.getChildren().find((op) => !syncsBefore.has(op) && op.label.startsWith("Sync ") && op.state === "succeeded");
+  assert.ok(moduleResync, "a sync ran after the versions.pkl edit");
+  assert.equal(moduleResync.detail, "manifest-change", "the module edit triggered a manifest-change resync");
+  assert.ok(moduleResync.children.some((step) => step.label === "Installing dependencies"), "the resync after a module edit installs");
+  log("versions.pkl resync:", `${moduleResync.detail} ${Math.round(moduleResync.durationMs)} ms: ${moduleResync.children.map((step) => step.label).join(", ")}`);
 
   // 4. Tasks.
   const tasks = await vscode.tasks.fetchTasks({ type: "elide" });

@@ -22,7 +22,7 @@
  * `.dev/artifacts/dist/current`, through the `elide.home` setting: the extension host does not see an `ELIDE_HOME`
  * set in the shell that starts the run.
  */
-import { existsSync, mkdtempSync, readdirSync, realpathSync, writeFileSync, mkdirSync, rmSync, cpSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync, mkdirSync, rmSync, cpSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { runTests } from "@vscode/test-electron";
@@ -101,6 +101,11 @@ function prepareWorkspaceSample(): void {
 
 function prepareKtjvmSample(): void {
   cpSync(path.join(repoRoot, "samples", "ktjvm"), sample, { recursive: true, filter: (src) => !src.includes(`${path.sep}.dev`) && !src.endsWith("workspace.json") });
+
+  // The manifest takes its dependency versions from a local module: editing only that module must resync (index.ts 3b).
+  const manifest = path.join(sample, "elide.pkl");
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace(`import "elide:Sources.pkl" as Sources\n`, `$&import "versions.pkl"\n`));
+  writeFileSync(path.join(sample, "versions.pkl"), `guava = "33.4.0-jre"\n`);
 
   // A vendored checkout with its own manifest, nested inside the project: a separate build the sample never invokes,
   // so it must not appear in workspace.json (the module assertion in index.ts covers it).

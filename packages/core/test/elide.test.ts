@@ -7,6 +7,7 @@ import {
   ElideNotFoundError,
   InvalidElideHomeError,
   distributionAt,
+  importedModules,
   isLockfileCurrent,
   lockfileDigest,
   lockfilesIn,
@@ -165,6 +166,12 @@ describe("isLockfileCurrent", () => {
     expect(await isLockfileCurrent(root, manifests)).toBe(true);
     at(manifests[1]!, 0);
     expect(await isLockfileCurrent(root, manifests)).toBe(false);
+  });
+
+  test("importedModules lists every local module read, transitively, and no non-file scheme", async () => {
+    const { root, manifests } = installed();
+    const found = await importedModules(manifests);
+    expect(found.sort()).toEqual(["deps/compose.pkl", "gone.pkl", "versions.pkl"].map((name) => path.join(root, name)));
   });
 });
 

@@ -7,6 +7,7 @@ export {
   OUTPUT_DIR,
   defaultHomeCandidates,
   distributionAt,
+  importedModules,
   isLockfileCurrent,
   isLockfileName,
   isNestedUnder,

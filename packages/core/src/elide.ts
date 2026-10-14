@@ -611,7 +611,7 @@ export async function isLockfileCurrent(
  * A URI with a scheme other than `file:` (`elide:`, `pkl:`, `package:`, `https:`) names no local file; a module that
  * cannot be read contributes none of its own.
  */
-async function importedModules(modules: readonly string[]): Promise<string[]> {
+export async function importedModules(modules: readonly string[]): Promise<string[]> {
   const seen = new Set(modules.map((module) => path.resolve(module)));
   const found: string[] = [];
   const pending = [...seen];

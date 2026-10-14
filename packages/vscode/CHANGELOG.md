@@ -103,7 +103,9 @@ All notable changes to the Elide extension are documented here. The format follo
   clearing it, and the next sync installs dependencies even when another `elide` command, such as the interrupted
   sync's own, rewrote the lockfile after the edit.
 - A sync installs dependencies when a Pkl module a manifest imports, amends or extends (such as a shared
-  `versions.pkl`) changed since the last install, not only when a manifest itself did.
+  `versions.pkl`) changed since the last install, not only when a manifest itself did. Editing such a module, even
+  one outside the workspace folder, also marks the project out of date and applies `elide.sync.onManifestChange`, as
+  an `elide.pkl` edit does.
 
 ## [0.5.0](https://github.com/elide-dev/vscode/compare/v0.4.0...v0.5.0) (2026-09-24)
 

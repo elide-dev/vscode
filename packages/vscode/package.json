@@ -114,7 +114,7 @@
             "never"
           ],
           "default": "prompt",
-          "description": "What to do when elide.pkl changes, or when the lockfile's resolved dependencies do. Rewrites of .dev/elide.lock*.bin that leave the dependencies unchanged (every elide run/test/build does one) are ignored."
+          "description": "What to do when elide.pkl changes, or a local Pkl module it imports, amends or extends (such as a shared versions.pkl), or when the lockfile's resolved dependencies do. Rewrites of .dev/elide.lock*.bin that leave the dependencies unchanged (every elide run/test/build does one) are ignored."
         },
         "elide.sync.showProgressNotification": {
           "type": "boolean",

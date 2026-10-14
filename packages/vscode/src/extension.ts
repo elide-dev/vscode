@@ -216,9 +216,34 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
   lockfiles.onDidChange(onLock);
   lockfiles.onDidCreate(onLock);
 
+  // Local modules the manifests read, e.g. a shared `versions.pkl`: one watcher per file, wherever it lives.
+  const moduleWatchers = new Map<string, vscode.FileSystemWatcher>();
+  const watchModules = () => {
+    const readers = workspace.moduleReaders();
+    for (const [module, watcher] of moduleWatchers) {
+      if (readers.has(module)) continue;
+      watcher.dispose();
+      moduleWatchers.delete(module);
+    }
+    for (const module of readers.keys()) {
+      if (moduleWatchers.has(module)) continue;
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(path.dirname(module)), path.basename(module)));
+      const onModule = (uri: vscode.Uri) => {
+        for (const folder of workspace.moduleReaders().get(module) ?? []) onStale(folder, path.basename(module), uri.fsPath);
+      };
+      watcher.onDidChange(onModule);
+      watcher.onDidCreate(onModule);
+      watcher.onDidDelete(onModule);
+      moduleWatchers.set(module, watcher);
+    }
+  };
+  watchModules();
+
   context.subscriptions.push(
     manifests,
     lockfiles,
+    workspace.onDidChangeModules(watchModules),
+    { dispose: () => moduleWatchers.forEach((w) => w.dispose()) },
     vscode.workspace.onDidChangeConfiguration((e) => {
       // Build flags reach the manifest as `build.flags`, so a model resolved without them describes another build.
       if (!e.affectsConfiguration("elide.flags")) return;

@@ -30,6 +30,7 @@ import {
 import * as vscode from "vscode";
 import { readConfig } from "./config.js";
 import { jetBrainsComposeCompilerPlugin, reloadKotlinLsp } from "./jetbrains.js";
+import { moduleReaders, projectModules } from "./manifestModules.js";
 import type { ElideUi } from "./output.js";
 
 export interface ElideProject {
@@ -49,6 +50,8 @@ export interface ElideProject {
    * project's lockfiles have been read once. See {@link ElideWorkspace.lockfileChanged}.
    */
   lockDigest?: string;
+  /** Local Pkl modules its manifests read, other than manifests; see {@link ElideWorkspace.refreshModules}. */
+  modules?: readonly string[];
 }
 
 interface FolderState {
@@ -91,6 +94,10 @@ export class ElideWorkspace implements vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<void>();
   /** Fires after any sync completes or the project set changes. */
   readonly onDidChange = this.changed.event;
+  private readonly modulesChanged = new vscode.EventEmitter<void>();
+  /** Fires once {@link refreshModules} has recorded what the projects read. */
+  readonly onDidChangeModules = this.modulesChanged.event;
+  private modulesGeneration = 0;
 
   constructor(
     private readonly ui: ElideUi,
@@ -165,7 +172,7 @@ export class ElideWorkspace implements vscode.Disposable {
     for (const [root, project] of [...state.projects]) {
       if (!seen.has(root) && !(project.workspaceRoot && seen.has(project.workspaceRoot))) state.projects.delete(root);
     }
-    this.changed.fire();
+    this.notifyChanged();
     this.updateProjectLabel();
     const projects = [...state.projects.values()];
     for (const project of projects) if (!project.workspaceRoot) this.offerWorkspaceRoot(project);
@@ -239,7 +246,7 @@ export class ElideWorkspace implements vscode.Disposable {
     }
     const project: ElideProject = { root, manifestPath: located.fsPath, folder: located.folder };
     state.projects.set(root, project);
-    this.changed.fire();
+    this.notifyChanged();
     return project;
   }
 
@@ -252,7 +259,7 @@ export class ElideWorkspace implements vscode.Disposable {
     if (state && project) {
       state.projects.delete(root);
       for (const [other, p] of [...state.projects]) if (p.workspaceRoot === root) state.projects.delete(other);
-      this.changed.fire();
+      this.notifyChanged();
     }
     return project;
   }
@@ -261,7 +268,30 @@ export class ElideWorkspace implements vscode.Disposable {
     const state = this.folders.get(folder.uri.toString());
     state?.syncing?.abort();
     this.folders.delete(folder.uri.toString());
+    this.notifyChanged();
+  }
+
+  /**
+   * Re-read the local Pkl modules every project's manifests read: they change with the manifests, which a sync has
+   * just read, or with the project set. Only the latest of overlapping refreshes is recorded.
+   */
+  async refreshModules(): Promise<void> {
+    const generation = ++this.modulesGeneration;
+    const projects = this.projects;
+    const modules = await projectModules(projects);
+    if (generation !== this.modulesGeneration) return;
+    for (const project of projects) project.modules = modules.get(project.root);
+    this.modulesChanged.fire();
+  }
+
+  /** Every module {@link refreshModules} found, with the folders whose projects read it. */
+  moduleReaders(): Map<string, vscode.WorkspaceFolder[]> {
+    return moduleReaders(this.projects);
+  }
+
+  private notifyChanged(): void {
     this.changed.fire();
+    void this.refreshModules();
   }
 
   /** Mark `folder` out of date after a change to what its projects resolve from; see {@link FolderState.staleMarks}. */
@@ -387,7 +417,7 @@ export class ElideWorkspace implements vscode.Disposable {
       state.syncing = undefined;
       state.quietUntil = Date.now() + CHANGE_GRACE_MS;
       this.updateProjectLabel();
-      this.changed.fire();
+      this.notifyChanged();
     }
     if (state.rerun) await this.syncFolder(folder, reason);
   }
@@ -707,6 +737,7 @@ export class ElideWorkspace implements vscode.Disposable {
   dispose(): void {
     for (const f of this.folders.values()) f.syncing?.abort();
     this.changed.dispose();
+    this.modulesChanged.dispose();
   }
 }
 
