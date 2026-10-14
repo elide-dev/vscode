@@ -217,6 +217,8 @@ Two more entries appear there for an Android project: the **Android API `<level>
 every Android source compiles against) and the **Android resources of `<artifact>`** (the generated `R`). Neither
 is on the compile classpath — the device carries the framework and the APK's dex carries `R` — so a sync reads
 them from the provided classpath, and generates the `R` classes it does not find with `android-r-<artifact>`.
+Classes left on disk that Elide's build state no longer records (state lost, or a build stopped mid-way) are
+generated again the same way rather than left out.
 
 An Android application is debugged on the device: an `elide-android` launch configuration builds the APK, installs
 it, launches it waiting for a debugger and attaches to the JDWP socket the target forwards. The APK has to be
@@ -344,6 +346,12 @@ execute project code in a local JVM, not a security sandbox.
 For editor analysis, sync passes the Compose compiler plugin shipped with the installed JetBrains Kotlin LSP,
 not the build compiler's potentially incompatible plugin. If it is missing, update/install that extension and
 sync again; Elide's output channel identifies the missing plugin.
+
+The Kotlin LSP's `FunctionName` inspection ("Function name should start with a lowercase letter") is suppressed on
+`@Composable` functions, as in Android Studio. For Compose projects, sync builds a small language-server plugin
+against the installed JetBrains Kotlin LSP (cached in Elide's global storage), lists it as `-Dplugin.path` in the
+user setting `intellij.additionalJvmArgs` (other entries are kept) and relaunches the server once so it applies.
+Other functions with capitalized names are still reported.
 
 #### Dagger and Hilt
 

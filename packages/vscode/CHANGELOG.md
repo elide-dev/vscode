@@ -8,6 +8,9 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ### Added
 
+- Compose projects: the Kotlin LSP no longer warns that `@Composable` function names should start with a lowercase
+  letter. Sync loads a small Elide plugin into the language server (`-Dplugin.path` in `intellij.additionalJvmArgs`)
+  and relaunches it once; other capitalized function names are still reported.
 - A persistent Android deployment target shared by Run and Debug, visible in the status bar and selectable from
   the sidebar or command palette. Deployments validate the APK and current device state; disconnected physical
   devices never silently fall back to another device, while a selected emulator that is not running is booted
@@ -84,6 +87,9 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ### Fixed
 
+- Android resource identifiers (`R.string.*`, `R.drawable.*`, …) no longer show as unresolved when generated `R`
+  classes remain on disk but Elide's build state no longer records them: sync regenerates them (a cached no-op when
+  current) and lists them for the Kotlin LSP.
 - Android debug launches use the same validated deployment selection as Run, resolve the project's emulator by
   AVD identity, and honor launch-configuration build flags, options and environment variables.
 - Environment checks use the Android platform jar from the resolved classpath, including minor-version SDK
