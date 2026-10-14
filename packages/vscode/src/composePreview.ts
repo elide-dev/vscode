@@ -171,6 +171,11 @@ class PreviewSession implements vscode.Disposable {
           void this.panel.webview.postMessage({ type: "invalidate", revision: this.revision });
         }
         if (message.type === "refresh") this.schedule(true);
+        if (message.type === "pointer" && "imageId" in message && "action" in message && "x" in message && "y" in message
+          && typeof message.imageId === "string" && (message.action === "down" || message.action === "up" || message.action === "move")
+          && typeof message.x === "number" && typeof message.y === "number") {
+          this.backend.pointer(message.imageId, message.action, message.x, message.y);
+        }
         if (message.type === "openLog") void this.ui.activity.openLog(this.buildStep ?? this.trace);
         if (message.type === "showActivity") void vscode.commands.executeCommand("elide.showActivity");
         if (message.type === "navigate" && "revision" in message && message.revision === this.revision

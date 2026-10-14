@@ -4,6 +4,7 @@ import path from "node:path";
 import type { TimelineNode } from "@elide/ide-core";
 import { ComposeBackend, type CompileMessage, type ImageStore, type PreviewRequest } from "./composeBackend.js";
 import type { CompiledPreview, PreviewImage } from "./composeRender.js";
+import type { ComposeRuntime } from "./composeRuntime.js";
 
 /** The daemon protocol this client speaks (Komodo's docs/VSCODE_PREVIEW.md, protocol 2). */
 export const KOMODO_PROTOCOL = 2;
@@ -143,7 +144,7 @@ export function komodoEntries(images: readonly PreviewImage[], previews: readonl
     }
     const provider = preview.methodParams[0];
     entries.push({
-      id: image.id, previewId, method: preview.methodFQN, parameters,
+      id: image.id, previewId, method: preview.methodFQN, parameters, previewParams: preview.previewParams,
       methodParameter: provider ? { ...provider, index } : null,
     });
   }
@@ -196,6 +197,12 @@ export class KomodoBackend extends ComposeBackend {
     super(key, cacheRoot, helperDirectory, store);
   }
 
+  override pointer(imageId: string, action: "down" | "up" | "move", x: number, y: number): boolean {
+    if (!this.daemon?.alive || !this.hosted.has(imageId)) return false;
+    this.daemon.send({ command: "pointer", entry: imageId, action, x, y });
+    return true;
+  }
+
   override onImages(listener: (images: PreviewImage[]) => void): () => void {
     this.imageListeners.add(listener);
     return () => this.imageListeners.delete(listener);
@@ -243,9 +250,15 @@ export class KomodoBackend extends ComposeBackend {
     const daemon = await this.start();
     if (!daemon) return this.fallback(images, () => this.refusal ?? "komodo-preview is unavailable");
     if (!this.entriesSent) {
+      const runtime = this.runtime;
+      if (!runtime) return this.fallback(images, () => "the layoutlib runtime is not installed yet");
+      // The renderer's class path without the project's kotlinc classes: Komodo's own classes of the program take their place.
+      const own = new Set(compiler.inputs.projectClassPath);
       daemon.send({
-        command: "configure", host: "layoutlib", ...compiler.inputs,
+        command: "configure", host: "layoutlib", ...compiler.inputs, classPath: compiler.inputs.classPath.filter((entry) => !own.has(entry)),
+        layoutlib: runtime.layoutlibPath, rendererClassPath: runtime.rendererClassPath,
         sources: [...new Set(Object.values(compiler.inputs.sourceSelections).flat())],
+        compile: { classPath: compiler.compileClassPath },
       });
       const answer = await daemon.next((event) => event.event === "configured" || (event.event === "error" && event.kind === "configure"), 300_000);
       if (answer.event === "error") {
@@ -336,7 +349,7 @@ export class KomodoBackend extends ComposeBackend {
   private card(image: PreviewImage | undefined, frame: KomodoEvent): PreviewImage {
     const base = image ?? { id: String(frame.entry), name: String(frame.entry), detail: "" };
     if (typeof frame.png !== "string") return base;
-    return { ...base, data: frame.png, error: undefined, nodes: undefined,
+    return { ...base, data: frame.png, error: undefined, nodes: undefined, live: true,
       width: typeof frame.width === "number" ? frame.width : base.width, height: typeof frame.height === "number" ? frame.height : base.height };
   }
 

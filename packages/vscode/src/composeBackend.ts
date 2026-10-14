@@ -113,8 +113,14 @@ export class ComposeBackend {
 
   get compiler(): ComposeCompiler | undefined { return this.current; }
 
+  /** The layoutlib runtime the render JVMs run (once started), which the Komodo engine's layoutlib host uses too. */
+  protected get runtime(): ComposeRuntime | undefined { return this.rendererSetup?.runtime; }
+
   /** The previews the last render discovered (empty before one, or after a stored gallery). */
   protected get discovery(): readonly CompiledPreview[] { return this.renderer?.discovery ?? []; }
+
+  /** Pointer input on a live card (image pixels); false when this backend renders the card as a snapshot. */
+  pointer(_imageId: string, _action: "down" | "up" | "move", _x: number, _y: number): boolean { return false; }
 
   /** Cards updated after `preview` resolved (live engines push frames); the snapshot engine never pushes. */
   onImages(_listener: (images: PreviewImage[]) => void): () => void { return () => {}; }

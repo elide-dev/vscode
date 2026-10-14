@@ -348,6 +348,17 @@ export class ComposeCompiler {
   /** Source key the render-facing classes hold. */
   get publishedSources(): string | undefined { return this.publishedKey; }
 
+  /**
+   * What the build compiled the Kotlin sources against (`kotlinc.args` class paths: libraries and the Android platform jar), the
+   * project's own outputs excluded: another compiler of the same sources (the Komodo engine's) needs exactly this.
+   */
+  get compileClassPath(): string[] {
+    const own = new Set([...this.inputs.projectClassPath, ...this.units.flatMap((unit) => [unit.original, unit.output, unit.published])]);
+    const entries = new Set<string>();
+    for (const unit of this.units) if (unit.tool === "kotlinc") for (const entry of pathArguments(unit.args)) if (entry && !own.has(entry)) entries.add(entry);
+    return [...entries];
+  }
+
   /** Some units still hold build classes and have not primed their incremental compiler. */
   get seeded(): boolean { return this.units.some((unit) => unit.seeded); }
 

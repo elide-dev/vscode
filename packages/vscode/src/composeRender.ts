@@ -49,6 +49,8 @@ export interface PreviewImage {
   detail: string;
   data?: string;
   error?: string;
+  /** Rendered live (the Komodo engine): the card takes pointer input and updates by push. */
+  live?: boolean;
   width?: number;
   height?: number;
   nodes?: PreviewLayoutNode[];

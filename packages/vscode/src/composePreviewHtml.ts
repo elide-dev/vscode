@@ -296,6 +296,17 @@ function createCard(id) {
     canvas.focus({ preventScroll: true });
   });
   canvas.addEventListener('dblclick', event => { if (inspecting) navigate(card, hitNode(card, event)); });
+  // A live card (the Komodo engine) takes pointer input while not inspecting, in the image's pixels.
+  const forward = (action, event) => {
+    if (inspecting || !card.live || !card.image) return;
+    const bounds = card.image.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return;
+    api.postMessage({ type: 'pointer', imageId: card.id, action,
+      x: Math.round((event.clientX - bounds.left) * card.width / bounds.width), y: Math.round((event.clientY - bounds.top) * card.height / bounds.height) });
+  };
+  canvas.addEventListener('pointerdown', event => { if (card.live && !inspecting) { canvas.setPointerCapture(event.pointerId); forward('down', event); } });
+  canvas.addEventListener('pointerup', event => forward('up', event));
+  canvas.addEventListener('pointermove', event => { if (event.buttons) forward('move', event); });
   canvas.addEventListener('keydown', event => inspectKey(card, event));
   return card;
 }
@@ -451,6 +462,7 @@ async function receiveImages(message) {
       card.width = !retainedPixels && preview.width > 0 ? preview.width : card.image.naturalWidth;
       card.height = !retainedPixels && preview.height > 0 ? preview.height : card.image.naturalHeight;
       card.dimensions = card.image.naturalWidth + ' × ' + card.image.naturalHeight + ' px';
+      card.live = preview.live === true;
       card.overlay.setAttribute('viewBox', '0 0 ' + card.width + ' ' + card.height);
       installNodes(card, retainedPixels ? [] : Array.isArray(preview.nodes) ? preview.nodes : []);
     } else installNodes(card, []);

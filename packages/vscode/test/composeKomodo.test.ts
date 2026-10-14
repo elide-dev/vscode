@@ -43,9 +43,9 @@ describe("Komodo engine", () => {
       { id: "unknown:0", name: "?", detail: "" },
     ];
     expect(komodoEntries(images, previews)).toEqual([
-      { id: "p0:0", previewId: "p0", method: "app.MainKt.Card", parameters: { widthDp: 240, name: "light", showBackground: true }, methodParameter: null },
-      { id: "p1:0", previewId: "p1", method: "app.MainKt.Names", parameters: {}, methodParameter: { provider: "app.NamesProvider", index: 0 } },
-      { id: "p1:1", previewId: "p1", method: "app.MainKt.Names", parameters: {}, methodParameter: { provider: "app.NamesProvider", index: 1 } },
+      { id: "p0:0", previewId: "p0", method: "app.MainKt.Card", parameters: { widthDp: 240, name: "light", showBackground: true }, previewParams: previews[0]!.previewParams, methodParameter: null },
+      { id: "p1:0", previewId: "p1", method: "app.MainKt.Names", parameters: {}, previewParams: {}, methodParameter: { provider: "app.NamesProvider", index: 0 } },
+      { id: "p1:1", previewId: "p1", method: "app.MainKt.Names", parameters: {}, previewParams: {}, methodParameter: { provider: "app.NamesProvider", index: 1 } },
     ]);
   });
 
