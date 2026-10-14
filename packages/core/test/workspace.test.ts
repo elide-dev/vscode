@@ -186,7 +186,8 @@ describe("findEnclosingWorkspace", () => {
  * A classpath is read from the file named after the source set and the usage, falling back to the set alone, so a
  * fixture declares a `provided` classpath only when the usage matters to it. A `fail-<set>-<usage>` file makes that
  * query fail, which fails a whole `classpath --json` batch the way the real CLI does; a `fail-build-<target>` file
- * fails every build given that target, after it is recorded.
+ * fails every build given that target, after it is recorded. A `build-<target>` directory holds what building the
+ * target records: its files replace those of `.fake` once it is built.
  */
 const FAKE_ELIDE = `#!/bin/sh
 entries() {
@@ -216,6 +217,7 @@ case "$1" in
       shift
       echo "$PWD $*" >> "$FAKE_BUILD_LOG"
       for t in "$@"; do [ ! -f ".fake/fail-build-$t" ] || { echo "cannot build $t" >&2; exit 1; }; done
+      for t in "$@"; do [ ! -d ".fake/build-$t" ] || cp .fake/build-$t/* .fake/; done
     fi ;;
 esac
 `;
@@ -565,5 +567,16 @@ describe("buildProjectModels: published Android libraries", () => {
 
     await model((p) => p === exploded || p === rClasses);
     expect(built()).toEqual([`${root} android-libraries`, `${root} android-r-app`]);
+  });
+
+  test("R on disk that the build no longer records is generated again, then resolves", async () => {
+    const { root, exploded, platform, rClasses, built, model } = androidProject();
+    writeFileSync(path.join(root, ".fake", "classpath-main-provided.txt"), platform);
+    mkdirSync(path.join(root, ".fake", "build-android-r-app"));
+    writeFileSync(path.join(root, ".fake", "build-android-r-app", "classpath-main-provided.txt"), [platform, rClasses].join(path.delimiter));
+    const [app] = await model((p) => p === exploded || p === rClasses);
+    expect(built()).toEqual([`${root} android-r-app`]);
+    expect(app!.modules[0]!.libraries.map((l) => l.name)).toContain("Elide: Android resources of app");
+    expect(app!.warnings).toEqual([]);
   });
 });

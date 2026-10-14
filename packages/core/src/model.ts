@@ -7,6 +7,7 @@ import {
   androidContentDirs,
   androidMappingFile,
   androidRClasses,
+  androidRClassesArtifact,
   androidRTask,
   androidSdkRoot,
   explodedAndroidLibrary,
@@ -176,7 +177,7 @@ interface ProjectSpec {
 interface AndroidPreparation {
   /** `android-libraries`: a classpath names a published Android library that is not unpacked yet. */
   libraries: boolean;
-  /** The `R` targets of the project's Android artifacts whose identifiers were never generated. */
+  /** The `R` targets of the project's Android artifacts whose identifiers were never generated, or not recorded. */
   rTasks: string[];
 }
 
@@ -414,6 +415,13 @@ async function queryProject(project: ProjectSpec, ctx: BuildContext, progress?: 
     const runtime = answers.get(`${setName}:runtime`);
     if (runtime) runtimeClasspaths.set(setName, runtime);
   }
+  // `R` on disk is not `R` recorded: a build stopped after compiling it, or build state lost since, leaves the classes
+  // in place while the platform query lists none of them. An artifact whose `R` no source set was given is generated
+  // again (a cached no-op when the classes are current), and the platform asked anew once it has been.
+  const reused = early.length > 0 && !providedFailed;
+  const listed = new Set(reused ? providedQueries.flatMap((query) => answers.get(query) ?? []).map(androidRClassesArtifact) : []);
+  const unrecorded = reused ? Object.keys(manifest.androidTargets).filter((artifact) => !listed.has(artifact)) : [];
+  rTasks.push(...unrecorded.map(androidRTask));
   // A published `.aar` reaches a classpath as the `classes.jar` of the directory `android-libraries` explodes it into,
   // and `elide classpath` resolves dependencies without running that target. Listing those paths before the first
   // build would hand the language server jars that are not there, so the target is run — once, and only when an entry
@@ -441,7 +449,7 @@ async function queryProject(project: ProjectSpec, ctx: BuildContext, progress?: 
         `Could not generate the project's Android resource identifiers (elide build ${rTasks.join(" ")}): ${failed.r instanceof Error ? failed.r.message : String(failed.r)}. \`R\` resolves once the project is built.`,
       );
     }
-    let batched: Map<ClasspathQuery, string[]> | undefined = early.length > 0 && !providedFailed ? answers : undefined;
+    let batched: Map<ClasspathQuery, string[]> | undefined = reused && unrecorded.length === 0 ? answers : undefined;
     if (!batched && !providedFailed) {
       step?.(`Resolving Android platform: ${name}`);
       batched = await cli.classpaths(providedQueries, run).catch((e: unknown) => {
