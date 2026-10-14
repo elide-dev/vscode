@@ -105,11 +105,10 @@ if (args.includes("shell")) {
   fs.watch(root, () => {});
 } else {
   const euro = Buffer.from("€");
-  process.stdout.write("unrelated\\nNEEDLE ");
-  process.stdout.write(euro.subarray(0, 1));
+  // Each write also carries whole characters: under Bun, a stdout read holding only part of one can stall the pipe.
+  process.stdout.write(Buffer.concat([Buffer.from("unrelated\\nNEEDLE "), euro.subarray(0, 1)]));
   setImmediate(() => {
-    process.stdout.write(euro.subarray(1));
-    process.stdout.write("\\r\\nNeed");
+    process.stdout.write(Buffer.concat([euro.subarray(1), Buffer.from("\\r\\nNeed")]));
     setImmediate(() => process.stdout.write("le final"));
   });
 }

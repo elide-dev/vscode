@@ -2,8 +2,8 @@
  * Launches the locally installed VS Code with this extension under development, the installed JetBrains Kotlin
  * extension, and the `samples/ktjvm` project, then runs `./index.ts` inside the extension host.
  *
- * `ELIDE_TEST_SCENARIO=workspace` opens a copy of the Elide workspace sample instead — the `elide-workspaces-sample`
- * checkout beside this repository, or the directory `ELIDE_WORKSPACE_SAMPLE` names — and runs the checks of
+ * `ELIDE_TEST_SCENARIO=workspace` opens a copy of the Elide workspace sample instead — `samples/workspace`, or the
+ * directory `ELIDE_WORKSPACE_SAMPLE` names — and runs the checks of
  * `./workspace.ts` against it.
  *
  * `ELIDE_TEST_SCENARIO=compose` opens the `elide-android-sample` checkout beside this repository (or
@@ -92,7 +92,7 @@ function prepareAndroidSample(): void {
 }
 
 function prepareWorkspaceSample(): void {
-  const source = process.env.ELIDE_WORKSPACE_SAMPLE ?? path.resolve(repoRoot, "..", "elide-workspaces-sample");
+  const source = process.env.ELIDE_WORKSPACE_SAMPLE ?? path.join(repoRoot, "samples", "workspace");
   if (!existsSync(path.join(source, "elide.pkl"))) throw new Error(`no Elide workspace sample at ${source}; set ELIDE_WORKSPACE_SAMPLE`);
   // Build outputs, IDE state and a previously generated workspace.json would stand in for what the sync must produce.
   const skipped = new Set([".dev", ".idea", "workspace.json"]);

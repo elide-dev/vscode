@@ -42,8 +42,7 @@ bun run test:integration
 ```
 
 The default scenario drives `samples/ktjvm`. `ELIDE_TEST_SCENARIO=workspace` runs the Elide-workspace
-scenario instead, against the `elide-workspaces-sample` checkout beside this repository or the directory
-`ELIDE_WORKSPACE_SAMPLE` names:
+scenario instead, against `samples/workspace` or the directory `ELIDE_WORKSPACE_SAMPLE` names:
 
 ```sh
 cd packages/vscode
