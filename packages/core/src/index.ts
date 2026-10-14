@@ -26,6 +26,7 @@ export {
   type RunResult,
 } from "./elide.js";
 export * from "./android.js";
+export * from "./androidBinaryXml.js";
 export * from "./androidLogcat.js";
 export * from "./composeInputs.js";
 export * from "./artifacts.js";

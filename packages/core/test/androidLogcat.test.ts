@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { AndroidLogcatSession, androidLogcatArgs, parseAndroidPackageUid, type AndroidLogcatOptions } from "../src/androidLogcat.js";
+import { AndroidLogcatFormatter, AndroidLogcatSession, androidLogcatArgs, parseAndroidLogcatLine, parseAndroidPackageUid, type AndroidLogcatOptions } from "../src/androidLogcat.js";
 
 const defaults: AndroidLogcatOptions = { adb: "/sdk with spaces/platform-tools/adb", device: "emulator-5554", priority: "I", text: "" };
 
@@ -27,6 +27,42 @@ describe("logcat arguments and package identity", () => {
     expect(parseAndroidPackageUid(output, "com.example")).toBeUndefined();
     expect(parseAndroidPackageUid("package:com.example.app uid:garbage", "com.example.app")).toBeUndefined();
     expect(parseAndroidPackageUid("package:com.example.app uid:9007199254740992", "com.example.app")).toBeUndefined();
+  });
+});
+
+describe("logcat formatting", () => {
+  const record = (pid: string, tid: string, priority: string, tag: string, message: string) =>
+    `10-13 12:00:00.123 ${pid.padStart(5)} ${tid.padStart(5)} ${priority} ${tag.padEnd(8)}: ${message}`;
+
+  test("threadtime fields survive tags with colons and empty messages", () => {
+    expect(parseAndroidLogcatLine(record("1", "2", "W", "a:b", "x: y"))).toEqual({ time: "10-13 12:00:00.123", pid: "1", tid: "2", priority: "W", tag: "a:b", message: "x: y" });
+    expect(parseAndroidLogcatLine("10-13 12:00:00.123   1   2 I Tag     :")?.message).toBe("");
+    expect(parseAndroidLogcatLine("--------- beginning of main")).toBeUndefined();
+  });
+
+  test("messages share one column across tag and ID lengths", () => {
+    const formatter = new AndroidLogcatFormatter();
+    const lines = [
+      formatter.format(record("1", "2", "I", "A", "short")),
+      formatter.format(record("12345", "12367", "E", "AVeryLongTagThatExceedsTheLimit", "long")),
+    ];
+    expect(lines[1]).toContain("AVeryLongTagThatExceed…  E  long");
+    expect(lines[0]!.indexOf("short")).toBe(lines[1]!.indexOf("long"));
+    // Wider IDs widen later rows only; rows after them stay aligned with each other.
+    const wide = formatter.format(record("1234567", "2", "I", "A", "wide"));
+    expect(formatter.format(record("1", "2", "D", "A", "after")).indexOf("after")).toBe(wide.indexOf("wide"));
+  });
+
+  test("continuations indent under their record until the header or stream changes", () => {
+    const formatter = new AndroidLogcatFormatter();
+    const first = formatter.format(record("10", "11", "E", "AndroidRuntime", "FATAL EXCEPTION: main"));
+    const frame = formatter.format(record("10", "11", "E", "AndroidRuntime", "\tat app.Main.run(Main.kt:12)"));
+    expect(frame).toBe(`${" ".repeat(first.indexOf("FATAL"))}\tat app.Main.run(Main.kt:12)`);
+    expect(formatter.format(record("10", "11", "W", "AndroidRuntime", "next"))).toStartWith("10-13 ");
+    expect(formatter.format("--------- beginning of crash")).toBe("--------- beginning of crash");
+    expect(formatter.format(record("10", "11", "W", "AndroidRuntime", "again"))).toStartWith("10-13 ");
+    formatter.reset();
+    expect(formatter.format(record("10", "11", "W", "AndroidRuntime", "again"))).toStartWith("10-13 ");
   });
 });
 
