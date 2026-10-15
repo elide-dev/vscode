@@ -24,9 +24,9 @@ import * as vscode from "vscode";
 import type { ElideExtensionApi as ElideApi } from "../../src/extension.js";
 import { log, waitFor } from "./helpers.js";
 
-const MEMBER = process.env.ELIDE_ANDROID_APP_MEMBER ?? "apps/android";
-const ARTIFACT = process.env.ELIDE_ANDROID_APP_ARTIFACT ?? "sample-dev";
-const APPLICATION_ID = process.env.ELIDE_ANDROID_APP_ID ?? "app.sample.android.dev";
+const MEMBER = process.env.ELIDE_ANDROID_APP_MEMBER!;
+const ARTIFACT = process.env.ELIDE_ANDROID_APP_ARTIFACT!;
+const APPLICATION_ID = process.env.ELIDE_ANDROID_APP_ID!;
 
 interface Row {
   kind: string;

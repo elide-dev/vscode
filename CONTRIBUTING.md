@@ -49,6 +49,22 @@ cd packages/vscode
 ELIDE_TEST_SCENARIO=workspace bun run test:integration
 ```
 
+Android app verification has no default fixture. Select an Elide Android application explicitly, including its
+workspace-relative member directory, APK artifact name, and application ID:
+
+```sh
+ELIDE_TEST_SCENARIO=android \
+ELIDE_ANDROID_APP_SAMPLE=/path/to/android-workspace \
+ELIDE_ANDROID_APP_MEMBER=app \
+ELIDE_ANDROID_APP_ARTIFACT=app-debug \
+ELIDE_ANDROID_APP_ID=com.example.app \
+bun run test:integration
+```
+
+The runner builds a clean temporary copy, then installs and launches it on an attached device or headless emulator.
+Compose verification separately uses `ELIDE_TEST_SCENARIO=compose` with `ELIDE_ANDROID_SAMPLE` pointing to a built
+Compose sample; its default is the sibling `elide-android-sample` checkout.
+
 ## Code style
 
 - Formatting and whitespace rules are defined in `.editorconfig` (2-space indent, LF line endings,

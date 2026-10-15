@@ -11,9 +11,9 @@
  * `./compose.ts`. That sample must have been built once with an Android-capable Elide. The Compose renderer
  * runtime is reused from the regular VS Code profile when present, otherwise downloaded.
  *
- * `ELIDE_TEST_SCENARIO=android` opens a clean copy (no `.dev`, so nothing prebuilt) of the `sample-android`
- * checkout beside this repository, or of `ELIDE_ANDROID_APP_SAMPLE`, and runs `./android.ts`: sync, build the APK,
- * and install and launch it on the attached device or a headless emulator.
+ * `ELIDE_TEST_SCENARIO=android` opens a clean copy (no `.dev`, so nothing prebuilt) of `ELIDE_ANDROID_APP_SAMPLE`
+ * and runs `./android.ts`: sync, build the APK, and install and launch it on the attached device or a headless
+ * emulator. Set `ELIDE_ANDROID_APP_MEMBER`, `ELIDE_ANDROID_APP_ARTIFACT`, and `ELIDE_ANDROID_APP_ID` for that app.
  *
  * Prerequisites: VS Code at /Applications/Visual Studio Code.app, `JetBrains.kotlin-server` installed in
  * ~/.vscode/extensions, `elide` installed. Usage: `bun run test:integration` from packages/vscode.
@@ -34,12 +34,17 @@ const extensionTestsPath = path.resolve(extensionDevelopmentPath, "dist-test", "
 
 const vscodeExecutablePath = process.env.VSCODE_EXECUTABLE ?? "/Applications/Visual Studio Code.app/Contents/MacOS/Code";
 
+const scenarios = ["workspace", "compose", "android"] as const;
+const scenario = scenarios.find((name) => name === process.env.ELIDE_TEST_SCENARIO) ?? "ktjvm";
+if (scenario === "android") {
+  const missing = ["ELIDE_ANDROID_APP_SAMPLE", "ELIDE_ANDROID_APP_MEMBER", "ELIDE_ANDROID_APP_ARTIFACT", "ELIDE_ANDROID_APP_ID"]
+    .filter((name) => !process.env[name]);
+  if (missing.length) throw new Error(`Android verification requires an explicit fixture; set ${missing.join(", ")}`);
+}
+
 // The user's extensions dir is used as-is so the already-installed JetBrains extension (1.2 GB) is reused.
 const extensionsDir = path.join(homedir(), ".vscode", "extensions");
 if (!readdirSync(extensionsDir).some((d) => d.startsWith("jetbrains.kotlin-server-"))) throw new Error(`JetBrains.kotlin-server is not installed in ${extensionsDir}`);
-
-const scenarios = ["workspace", "compose", "android"] as const;
-const scenario = scenarios.find((name) => name === process.env.ELIDE_TEST_SCENARIO) ?? "ktjvm";
 
 // Keep macOS IPC paths short without overriding TMPDIR: the Kotlin client and JVM must agree on their port-file directory.
 const scratchRoot = process.platform === "darwin" ? "/tmp" : tmpdir();
@@ -84,7 +89,7 @@ function prepareComposeSample(): void {
 }
 
 function prepareAndroidSample(): void {
-  const source = process.env.ELIDE_ANDROID_APP_SAMPLE ?? path.resolve(repoRoot, "..", "sample-android");
+  const source = path.resolve(process.env.ELIDE_ANDROID_APP_SAMPLE!);
   if (!existsSync(path.join(source, "elide.pkl"))) throw new Error(`no Elide Android application at ${source}; set ELIDE_ANDROID_APP_SAMPLE`);
   // Build outputs, editor state and the generated workspace.json would stand in for what the sync and build produce.
   const skipped = new Set([".dev", ".git", ".idea", ".vscode", "node_modules", "workspace.json"]);
