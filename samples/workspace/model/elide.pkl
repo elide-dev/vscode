@@ -1,0 +1,29 @@
+amends "elide:project.pkl"
+import "elide:Jvm.pkl" as Jvm
+import "elide:Sources.pkl" as Sources
+
+name = "model"
+description = "Log record types shared by every other project"
+
+sources {
+  ["main"] = new Sources.SourceSetSpec {
+    paths {
+      "src/main/kotlin/**/*.kt"
+    }
+  }
+}
+
+dependencies {
+  maven {
+    packages {
+      // No version: the workspace root pins Guava at 33.4.8-jre.
+      "com.google.guava:guava"
+    }
+  }
+}
+
+artifacts {
+  ["model"] = new Jvm.Jar {
+    sources { "main" }
+  }
+}

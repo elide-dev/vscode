@@ -1,0 +1,17 @@
+<!--
+  Loaded by JetBrains.kotlin-server through `-Dplugin.path`. The server only wires plugins declaring
+  `<dependencies>` (descriptor v2); a legacy `<depends>` plugin is discovered but its extensions never register.
+-->
+<idea-plugin>
+  <id>dev.elide.vscode.kotlin-lsp</id>
+  <name>Elide (Kotlin language server)</name>
+  <vendor>Elide</vendor>
+  <version>1</version>
+  <dependencies>
+    <plugin id="org.jetbrains.ls.core"/>
+    <plugin id="org.jetbrains.ls.plugin.kotlin"/>
+  </dependencies>
+  <extensions defaultExtensionNs="com.intellij">
+    <lang.inspectionSuppressor language="kotlin" implementationClass="dev.elide.vscode.kotlinlsp.ComposableFunctionNameSuppressor"/>
+  </extensions>
+</idea-plugin>

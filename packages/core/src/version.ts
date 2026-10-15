@@ -32,3 +32,15 @@ export function isSupportedElideVersion(display: string): boolean {
   const version = parseElideVersion(display);
   return version === undefined || compareElideVersions(version, MIN_ELIDE_VERSION) >= 0;
 }
+
+/** First release that reports `ELIDE_PROGRESS=json` records and answers `elide classpath --json`. */
+export const PROGRESS_RECORDS_VERSION: ElideVersion = { major: 1, minor: 6, patch: 1 };
+
+/**
+ * Whether a version display string names a release that reports progress records and batches classpath queries:
+ * `true` or `false` when the version says so, `undefined` when it cannot be read and only trying will tell.
+ */
+export function supportsProgressRecords(display: string): boolean | undefined {
+  const version = parseElideVersion(display);
+  return version === undefined ? undefined : compareElideVersions(version, PROGRESS_RECORDS_VERSION) >= 0;
+}

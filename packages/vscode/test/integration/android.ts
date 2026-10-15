@@ -1,0 +1,156 @@
+/**
+ * The `android` scenario (see runner.ts), on a clean copy of an Android application workspace: no `.dev`, so the
+ * sync installs every dependency and the build compiles, dexes and packages the APK from scratch.
+ *
+ * Drives what a user does: the startup sync, watched live through the Activity view the way the status bar shows
+ * it; **Build** on the APK's row of the Android section; **Run** on the attached device, or — when none is — on a
+ * pinned emulator that has stopped, which Run boots by itself. The app is running when `adb` finds its process.
+ */
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import {
+  ANDROID_EMULATOR_TASK,
+  androidArtifactFile,
+  androidRunTask,
+  androidSdkRoot,
+  listAndroidDevices,
+  liveStatus,
+  type TimelineNode,
+} from "@elide/ide-core";
+import * as vscode from "vscode";
+import type { ElideExtensionApi as ElideApi } from "../../src/extension.js";
+import { log, waitFor } from "./helpers.js";
+
+const MEMBER = process.env.ELIDE_ANDROID_APP_MEMBER!;
+const ARTIFACT = process.env.ELIDE_ANDROID_APP_ARTIFACT!;
+const APPLICATION_ID = process.env.ELIDE_ANDROID_APP_ID!;
+
+interface Row {
+  kind: string;
+  artifact?: string;
+  root?: string;
+}
+
+/** Breadth-first through the Elide sidebar until `match` finds a row. */
+async function findRow(explorer: ElideApi["explorer"], match: (row: Row) => boolean): Promise<Row | undefined> {
+  const queue: (Row | undefined)[] = [undefined];
+  for (let depth = 0; queue.length > 0 && depth < 200; depth++) {
+    const parent = queue.shift();
+    for (const child of (await explorer.getChildren(parent)) as Row[]) {
+      if (match(child)) return child;
+      queue.push(child);
+    }
+  }
+  return undefined;
+}
+
+/** The exit code of the next `elide` task process whose arguments include `arg`. */
+function taskExit(arg: string): Promise<number | undefined> {
+  const { promise, resolve } = Promise.withResolvers<number | undefined>();
+  const subscription = vscode.tasks.onDidEndTaskProcess((event) => {
+    const args: unknown = event.execution.task.definition.args;
+    if (!Array.isArray(args) || !args.includes(arg)) return;
+    subscription.dispose();
+    resolve(event.exitCode);
+  });
+  return promise;
+}
+
+function descendants(node: TimelineNode): TimelineNode[] {
+  return node.children.flatMap((child) => [child, ...descendants(child)]);
+}
+
+export async function runAndroidScenario(): Promise<void> {
+  const sample = process.env.ELIDE_TEST_SAMPLE!;
+  const member = path.join(sample, MEMBER);
+  const extension = vscode.extensions.all.find((e) => e.id.endsWith(".elide"));
+  assert.ok(extension, "elide extension found");
+  const api = await waitFor("extension api", () => extension.exports as ElideApi | undefined, 60_000, 200);
+
+  // 1. The startup sync, from a checkout that has never been built: what the status bar and the Activity view show
+  //    while it runs, sampled the way they render.
+  const statuses = new Set<string>();
+  const runningTasks = new Set<string>();
+  const watch = setInterval(() => {
+    for (const operation of api.activity.getChildren()) {
+      if (!operation.running) continue;
+      const status = liveStatus(operation);
+      if (status) statuses.add(status);
+      for (const node of descendants(operation)) {
+        if (node.running && node.parent?.label.startsWith("elide ")) runningTasks.add(node.label);
+      }
+    }
+  }, 50);
+  log("waiting for the startup sync");
+  const sync = await waitFor("startup sync", () => api.activity.getChildren().find((operation) => operation.label.startsWith("Sync ") && !operation.running), 1_200_000, 500);
+  clearInterval(watch);
+  assert.equal(sync.state, "succeeded", `sync ${sync.state}: ${sync.detail}`);
+  log(`sync: ${Math.round(sync.durationMs)} ms; ${statuses.size} live statuses, e.g.`, [...statuses].slice(0, 8));
+  log(`tasks seen running: ${[...runningTasks].slice(0, 12).join(" | ")}`);
+  assert.ok(statuses.size > 0, "the sync reported what Elide was doing while it ran");
+  assert.ok(runningTasks.size > 0, "build tasks showed in the Activity view while they ran");
+  const classpathCalls = descendants(sync).filter((node) => node.label.startsWith("elide classpath"));
+  assert.ok(classpathCalls.length > 0 && classpathCalls.every((node) => node.label.startsWith("elide classpath --json ")), `classpaths batched: ${classpathCalls.map((node) => node.label).join(", ")}`);
+  // The classpath queries find dependencies installed: their up-to-date checks stay as steps, with the reason.
+  const skipped = descendants(sync).filter((node) => node.state === "skipped");
+  log(`skipped tasks kept: ${skipped.length}, e.g. ${skipped.slice(0, 3).map((node) => `${node.label} (${node.detail}, ${Math.round(node.durationMs)} ms)`).join(" | ")}`);
+  assert.ok(skipped.length > 0 && skipped.every((node) => node.detail), "skipped tasks stay in the Activity view with the reason");
+
+  // 2. Build the APK from its row in the Android section.
+  const row = await waitFor("APK row", () => findRow(api.explorer, (r) => r.kind === "androidTarget" && r.artifact === ARTIFACT), 60_000);
+  assert.equal(row.root, member);
+  const apk = androidArtifactFile(member, ARTIFACT, "apk", `${ARTIFACT}.apk`);
+  const built = taskExit(ARTIFACT);
+  let started = performance.now();
+  await vscode.commands.executeCommand("elide.build", row);
+  assert.equal(await waitFor("APK build", () => built, 1_800_000), 0, "elide build exited 0");
+  log(`built ${apk} in ${Math.round(performance.now() - started)} ms`);
+  assert.ok(existsSync(apk), `${apk} published`);
+
+  // 3. Run: install and launch on the attached device, or on an emulator pinned while it ran and stopped since,
+  //    which Run must boot without the user starting it first.
+  const sdk = androidSdkRoot();
+  assert.ok(sdk, "an Android SDK");
+  const ready = async () => (await listAndroidDevices(sdk))?.find((device) => device.ready);
+  const attached = await ready();
+  const booted = !attached;
+  const pinned = attached?.serial ?? "emulator-5554";
+  log(booted ? `no device attached; running on stopped emulator ${pinned}` : `running on ${pinned}`);
+  const adb = path.join(sdk, "platform-tools", "adb");
+  const pidOf = (serial: string) => {
+    try {
+      return execFileSync(adb, ["-s", serial, "shell", "pidof", APPLICATION_ID], { encoding: "utf8" }).trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  try {
+    if (attached) execFileSync(adb, ["-s", pinned, "shell", "am", "force-stop", APPLICATION_ID]);
+  } catch {
+    // not installed yet
+  }
+  started = performance.now();
+  const emulatorExit = booted ? taskExit(ANDROID_EMULATOR_TASK) : undefined;
+  const runExit = taskExit(androidRunTask(ARTIFACT));
+  await vscode.commands.executeCommand("elide.androidRun", { root: member, artifact: ARTIFACT, device: pinned });
+  if (emulatorExit) assert.equal(await emulatorExit, 0, "Run booted the stopped emulator: android-emulator exited 0");
+  assert.equal(await runExit, 0, "android-run exited 0");
+  const serial = (await ready())?.serial;
+  assert.ok(serial, "a ready device after Run");
+  const pid = await waitFor("app process", () => pidOf(serial), 60_000, 500);
+  log(`${APPLICATION_ID} running on ${serial} as pid ${pid} after ${Math.round(performance.now() - started)} ms`);
+
+  // The device and the app outlive the terminal task that started them; an emulator left in the session of the
+  // `elide` that booted it shuts itself down 20 s after that pseudo-terminal goes away.
+  await sleep(30_000);
+  assert.equal(pidOf(serial), pid, `${APPLICATION_ID} still running 30 s after the run task ended`);
+
+  if (booted && !process.env.KEEP_EMULATOR) {
+    const stopped = taskExit("android-emulator-stop");
+    await vscode.commands.executeCommand("elide.androidStopEmulator", { root: member });
+    await waitFor("emulator stop", () => stopped, 120_000);
+  }
+}

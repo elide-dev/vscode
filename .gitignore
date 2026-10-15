@@ -7,3 +7,4 @@ workspace.json
 .DS_Store
 dist-test/
 .claude/
+.idea/

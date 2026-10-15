@@ -4,6 +4,115 @@ All notable changes to the Elide extension are documented here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Compose projects: the Kotlin LSP no longer warns that `@Composable` function names should start with a lowercase
+  letter. Sync loads a small Elide plugin into the language server (`-Dplugin.path` in `intellij.additionalJvmArgs`)
+  and relaunches it once; other capitalized function names are still reported.
+- A persistent Android deployment target shared by Run and Debug, visible in the status bar and selectable from
+  the sidebar or command palette. Deployments validate the APK and current device state; disconnected physical
+  devices never silently fall back to another device, while a selected emulator that is not running is booted
+  automatically (by AVD identity) before Run or Debug. Dirty file-backed documents are saved before building.
+- **Check Android Environment**: cancellable, read-only diagnostics for Elide, JDK, SDK, compile SDK, devices,
+  optional emulator/AVD, Kotlin extension and APK declarations, with explicit remediation actions. Available even
+  before sync succeeds; unresolved declarations remain unknown and SDK licenses are never accepted by inspection.
+- Clickable Kotlin/Java application stack frames in Android Logcat, resolving across synced workspace source
+  roots. Ambiguous, native, unknown and out-of-range frames remain unlinked.
+- **Refresh Android Devices**, device refresh after Elide tasks, and Android actions in the Elide menu and
+  getting-started walkthrough.
+- An **Activity** view in the Elide sidebar recording each sync and Compose preview build of the window as it runs:
+  its steps, every `elide` command they ran and the build tasks Elide reported finishing, each with its duration and
+  share of the whole. Rows open the step's output, with timestamps, in an editor; running operations can be cancelled.
+- Sync progress that stays visible: the status bar names the step in progress with the elapsed time, a sync running
+  longer than two seconds shows a cancellable notification (`elide.sync.showProgressNotification`), the status bar
+  tooltip and the `Elide` output channel break the last sync down by step, and a failed sync names the step that
+  failed and offers its log.
+- Compose preview builds report their progress in the panel: finished tasks, the latest task's duration and an
+  elapsed-time counter on the status line, a live **Build log** drawer, the compiler errors of a failed build under
+  **Details**, and a per-phase time breakdown (build, compile, render) once the gallery paints. The first-run renderer
+  download reports bytes received.
+- Android Logcat output channels with device selection, application UID, priority and literal-text filters,
+  and clear, stop and restart commands. Clearing the editor output leaves the device's shared log buffer intact.
+  **Show Android Logcat** starts without confirming filters: it streams the deployed (or only) application, read from
+  the built APK so renamed application IDs match, and reopens a running stream instead of restarting it. Records are
+  aligned into time, PID-TID, tag, priority and message columns, multi-line messages and stack traces are indented
+  under one header, and priorities, tags, exceptions, application versus framework frames, URLs and strings are
+  color-coded through the theme.
+- Host-side Compose previews using Google's standalone renderer and Android layoutlib, with no device, emulator,
+  Android Studio, APK installation or signing requirement. Includes verified runtime downloads, compiled annotation
+  discovery, preview configurations/multi-previews/parameter providers, overloaded preview functions, a preview gallery,
+  live unsaved Kotlin/Java updates, warmed persistent incremental compilers and renderers, detection-to-paint timing, and
+  correct Compose compiler configuration for the Kotlin LSP. Opening a preview paints without waiting for its build:
+  focusing a preview file prewarms the renderer and compilers (`elide.android.composePreview.prewarm`), closed
+  panels keep them warm (`elide.android.composePreview.keepAliveMinutes`), the last build's classes stand in for the
+  cold first compile, and galleries are stored by their exact inputs for instant reopen.
+- Compose layout inspection with real measured component outlines, source navigation across workspace modules,
+  keyboard selection and enclosing-component controls. A theme-aware preview toolbar, responsive cards,
+  fit/actual-size controls and a diagnostics drawer replace the plain gallery controls. Compilation and rendering
+  failures retain last-good images; decoded updates preserve unchanged image elements and scroll position,
+  and stale source locations cannot navigate.
+- Android app bundles and dynamic-feature modules in the project model and sidebar, including delivery mode,
+  base/feature relationships, module build targets and isolated feature source/resource roots.
+- Dagger/Hilt editor support: run available annotation-processing compile targets during sync and import
+  generated Java/kapt sources across workspace libraries without exposing kapt stubs.
+- Live build progress from Elide 1.6.1's progress records (`ELIDE_PROGRESS=json`): the Activity view shows each
+  build task while it runs, with the progress it and its steps report, and the status bar and sync notification say
+  what Elide is doing now and how many of the build's tasks are done (`Resolving Maven dependencies: 40% (1/3)`).
+  Compiler diagnostics from these records carry absolute locations. Older releases keep the text-based view.
+
+### Changed
+
+- Kotlin by JetBrains is installed as a companion extension instead of a hard activation dependency. Elide's CLI
+  features remain available independently of language-server startup; Kotlin and Java source documents activate
+  the companion on demand, including Java-first projects.
+- The `Elide` output channel no longer echoes the exported project model and resolved classpaths during sync; it shows
+  each command line, the output Elide prints for a person, and each command's exit status and duration.
+- Syncs resolve each project's classpaths with one `elide classpath --json` per project on Elide 1.6.1 and newer,
+  instead of one process per source set and usage. Older releases are still asked one query at a time. An Android
+  project whose `R` classes are already generated has its platform classpath answered by the same process.
+- The projects of a workspace resolve concurrently once its dependencies are installed, and member manifests are
+  read concurrently. What their classpaths need built first (unpacking Android libraries, generating `R`) is built
+  by one `elide build` at the workspace root; builds never overlap. The Activity view shows each project as a step of
+  its own.
+- The Activity view keeps the build tasks Elide skipped as steps of their own, with the reason (`Up to date`, `From
+  cache`) and, on Elide releases that report it, the time their up-to-date check took. Listing the build's tasks
+  (`elide build --inspect`) is a sync step of its own instead of counting towards reading the member manifests.
+- Compose preview build terminals run with `ELIDE_PROGRESS=plain`, so the terminal, the panel's Build log and its
+  status line name each task as it starts.
+- Compose previews choose their Android resource context automatically instead of asking: the application packaging
+  the previewed file's source set, or the nearest one depending on its workspace library. Focusing a library's
+  preview file in a workspace with several applications now prewarms too.
+
+### Fixed
+
+- Android resource identifiers (`R.string.*`, `R.drawable.*`, …) no longer show as unresolved when generated `R`
+  classes remain on disk but Elide's build state no longer records them: sync regenerates them (a cached no-op when
+  current) and lists them for the Kotlin LSP.
+- Android debug launches use the same validated deployment selection as Run, resolve the project's emulator by
+  AVD identity, and honor launch-configuration build flags, options and environment variables.
+- Environment checks use the Android platform jar from the resolved classpath, including minor-version SDK
+  directories, and flag symlinked workspace paths that prevent JetBrains source breakpoints from resolving.
+- Logcat source navigation includes legitimate package directories named `build`, `out`, `dist` or `generated`
+  beneath the declared source roots.
+- Compose previews render the library versions the APK ships. When workspace members resolve a library at different
+  versions, the newest is used (Maven ordering, a tie going to the application's own copy), as Elide dexes it, instead
+  of the application's older transitive copy. Previews of a workspace library compiled against a newer version, such
+  as Material 3, no longer fail with `NoSuchMethodError`.
+- A Compose preview rebuild started within half a second of the previous build finishing is no longer reported as
+  "stopped" without running: it waits for the previous run's terminal to close instead of being handed that run.
+- Editor smoke runs disable updates to the shared extensions directory and keep macOS scratch paths short without
+  overriding `TMPDIR`, so the Kotlin client and JVM agree on the daemon port-file location.
+- A manifest edit made while a sync runs, or within three seconds after one ends, is no longer ignored: the folder is
+  marked out of date (and re-synced when `elide.sync.onManifestChange` is `always`) instead of the sync's success
+  clearing it, and the next sync installs dependencies even when another `elide` command, such as the interrupted
+  sync's own, rewrote the lockfile after the edit.
+- A sync installs dependencies when a Pkl module a manifest imports, amends or extends (such as a shared
+  `versions.pkl`) changed since the last install, not only when a manifest itself did. Editing such a module, even
+  one outside the workspace folder, also marks the project out of date and applies `elide.sync.onManifestChange`, as
+  an `elide.pkl` edit does.
+
 ## [0.6.1](https://github.com/elide-dev/vscode/compare/v0.6.0...v0.6.1) (2026-10-13)
 
 

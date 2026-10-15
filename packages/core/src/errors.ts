@@ -26,7 +26,7 @@ export class ElideCommandFailedError extends Error {
   }
 }
 
-/** `elide project export` printed something the decoder does not understand. */
+/** The CLI printed a project model the decoder does not understand. */
 export class ManifestParseError extends Error {
   constructor(message: string, override readonly cause?: unknown) {
     super(`Failed to parse Elide project manifest: ${message}`);

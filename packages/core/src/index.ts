@@ -7,6 +7,7 @@ export {
   OUTPUT_DIR,
   defaultHomeCandidates,
   distributionAt,
+  importedModules,
   isLockfileCurrent,
   isLockfileName,
   isNestedUnder,
@@ -18,12 +19,18 @@ export {
   parseClasspath,
   resolveElideDistribution,
   whichExecutable,
+  type ClasspathQuery,
   type ClasspathUsage,
   type ElideDistribution,
+  type CommandObserver,
   type ResolveElideOptions,
   type RunOptions,
   type RunResult,
 } from "./elide.js";
+export * from "./android.js";
+export * from "./androidBinaryXml.js";
+export * from "./androidLogcat.js";
+export * from "./composeInputs.js";
 export * from "./artifacts.js";
 export * from "./buildTasks.js";
 export * from "./coverage.js";
@@ -40,3 +47,6 @@ export * from "./model.js";
 export * from "./kotlinLsp.js";
 export * from "./kotlinSetup.js";
 export * from "./workspace.js";
+export * from "./timeline.js";
+export * from "./buildOutput.js";
+export * from "./commandTimeline.js";

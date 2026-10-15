@@ -80,7 +80,7 @@ export interface KotlinLspKotlinSettings {
   isHmppEnabled: boolean;
   pureKotlinSourceFolders: string[];
   kind: "default";
-  compilerArguments: null;
+  compilerArguments: string | null;
   additionalArguments: string | null;
   scriptTemplates: null;
   scriptTemplatesClasspath: null;
@@ -108,6 +108,8 @@ export interface EmitOptions {
   workspaceRoot: string;
   /** User home; paths beneath it are written as `<HOME>/…`. Defaults to `os.homedir()`. */
   userHome?: string;
+  /** Compose plugin bundled with the target language server, not the project's build compiler plugin. */
+  composeCompilerPlugin?: string;
 }
 
 /** Portable spelling of an absolute path, mirroring kotlin-lsp's `toRelativePath`. */
@@ -193,7 +195,8 @@ export function emitKotlinLspWorkspace(models: readonly ProjectModel[], opts: Em
         isHmppEnabled: false,
         pureKotlinSourceFolders: [],
         kind: "default",
-        compilerArguments: null,
+        compilerArguments: model.kotlin.compose && opts.composeCompilerPlugin
+          ? `J${JSON.stringify({ pluginClasspaths: [opts.composeCompilerPlugin] })}` : null,
         additionalArguments: kotlinAdditionalArguments(model.kotlin),
         scriptTemplates: null,
         scriptTemplatesClasspath: null,
@@ -253,8 +256,13 @@ export function serializeKotlinLspWorkspace(workspace: KotlinLspWorkspace): stri
 }
 
 /** Atomically write `workspace.json` (temp file + rename) so a failed write never leaves a truncated file. */
-export async function writeKotlinLspWorkspace(models: readonly ProjectModel[], workspaceRoot: string, outFile: string = path.join(workspaceRoot, WORKSPACE_JSON)): Promise<KotlinLspWorkspace> {
-  const workspace = emitKotlinLspWorkspace(models, { workspaceRoot });
+export async function writeKotlinLspWorkspace(
+  models: readonly ProjectModel[],
+  workspaceRoot: string,
+  opts: Omit<EmitOptions, "workspaceRoot"> & { outFile?: string } = {},
+): Promise<KotlinLspWorkspace> {
+  const outFile = opts.outFile ?? path.join(workspaceRoot, WORKSPACE_JSON);
+  const workspace = emitKotlinLspWorkspace(models, { ...opts, workspaceRoot });
   await mkdir(path.dirname(outFile), { recursive: true });
   const tmp = `${outFile}.${process.pid}.tmp`;
   await writeFile(tmp, serializeKotlinLspWorkspace(workspace), "utf8");

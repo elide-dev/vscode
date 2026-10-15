@@ -1,7 +1,7 @@
 {
   "name": "elide",
   "displayName": "Elide",
-  "description": "Elide build tool integration: Kotlin/Java classpath for the Kotlin LSP, build/run/test tasks, and JDWP debugging.",
+  "description": "Elide for Kotlin, Java and Android: project sync, build/run/debug, device-free Compose previews, deployment targets, Logcat and tests.",
   "version": "0.6.1",
   "preview": true,
   "publisher": "elide",
@@ -38,6 +38,9 @@
     "build",
     "build tool",
     "kotlin lsp",
+    "android",
+    "compose",
+    "logcat",
     "pkl"
   ],
   "capabilities": {
@@ -54,16 +57,35 @@
     "workspace"
   ],
   "main": "./dist/extension.js",
-  "extensionDependencies": [
+  "extensionPack": [
     "JetBrains.kotlin-server"
   ],
   "activationEvents": [
     "workspaceContains:**/elide.pkl",
     "onDebugResolve:elide",
     "onTaskType:elide",
-    "onView:elide.projects"
+    "onView:elide.projects",
+    "onView:elide.activity"
   ],
   "contributes": {
+    "languages": [
+      {
+        "id": "elide-android-logcat",
+        "aliases": ["Elide Android Logcat"]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "elide-android-logcat",
+        "scopeName": "source.elide-android-logcat",
+        "path": "./syntaxes/elide-android-logcat.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[elide-android-logcat]": {
+        "editor.guides.indentation": false
+      }
+    },
     "configuration": {
       "title": "Elide",
       "properties": {
@@ -92,7 +114,12 @@
             "never"
           ],
           "default": "prompt",
-          "description": "What to do when elide.pkl changes, or when the lockfile's resolved dependencies do. Rewrites of .dev/elide.lock*.bin that leave the dependencies unchanged (every elide run/test/build does one) are ignored."
+          "description": "What to do when elide.pkl changes, or a local Pkl module it imports, amends or extends (such as a shared versions.pkl), or when the lockfile's resolved dependencies do. Rewrites of .dev/elide.lock*.bin that leave the dependencies unchanged (every elide run/test/build does one) are ignored."
+        },
+        "elide.sync.showProgressNotification": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show a notification with the step in progress, and a Cancel button, while a sync runs for more than a couple of seconds. The status bar and the **Elide › Activity** view show progress either way."
         },
         "elide.kotlinLsp.writeWorkspaceJson": {
           "type": "boolean",
@@ -147,6 +174,46 @@
           ],
           "uniqueItems": true,
           "markdownDescription": "Classifier jars installed for the manifest's declared Maven packages. `sources` lets Go to Definition open library code in the Kotlin LSP; `docs` adds javadoc jars; an empty list installs classes only. Elide's own Kotlin and JUnit jars are published without classifiers."
+        },
+        "elide.android.sdk": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Android SDK root used to list attached devices. Empty resolves the SDK an Elide build would use: the manifest's `android.sdk`, then `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then the location the SDK installs itself in on this platform."
+        },
+        "elide.android.emulatorWindow": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Boot the Android emulator with a window. Off passes `--no-window`, which runs it headless."
+        },
+        "elide.android.composePreview.prewarm": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Start the Compose preview renderer and compiler in the background when a Kotlin file with `@Preview` functions is focused in a trusted Android project, so **Elide: Open Compose Preview** opens in about a second. Runs the file's previews from the last build's classes; never builds, and never downloads the renderer runtime. Requires `#elide.android.composePreview.keepAliveMinutes#` above 0."
+        },
+        "elide.android.composePreview.keepAliveMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "markdownDescription": "Minutes an unused Compose preview backend (render JVMs and compiler workers, several GB of memory) stays warm after its panel closes or after prewarming. `0` stops it with its panel and disables prewarming."
+        },
+        "elide.android.composePreview.engine": {
+          "type": "string",
+          "enum": ["layoutlib", "komodo"],
+          "enumDescriptions": ["Design-time snapshots rendered by layoutlib.", "Opt-in, experimental: live cards rendered by a Komodo preview daemon, with layoutlib snapshots for the cards it cannot render."],
+          "default": "layoutlib",
+          "markdownDescription": "Engine of the Compose preview. `komodo` runs `komodo-preview` beside layoutlib: cards it hosts are live (pushed frames, unsaved edits applied in place, compile errors in Problems); the others keep their layoutlib snapshot (see `#elide.android.composePreview.komodo.fallback#`). Takes effect when a preview panel opens."
+        },
+        "elide.android.composePreview.komodo.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "The `komodo-preview` daemon for the `komodo` engine. Empty resolves `komodo-preview` beside the Elide binary, then on `PATH`."
+        },
+        "elide.android.composePreview.komodo.fallback": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "With the `komodo` engine, a card Komodo cannot render keeps its layoutlib snapshot (the reason is in the Elide output). Off shows the reason on the card instead."
         },
         "elide.flags": {
           "type": "array",
@@ -252,6 +319,30 @@
         "title": "Show Output"
       },
       {
+        "command": "elide.showActivity",
+        "category": "Elide",
+        "title": "Show Activity",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "elide.openActivityLog",
+        "category": "Elide",
+        "title": "Open Activity Log",
+        "icon": "$(output)"
+      },
+      {
+        "command": "elide.cancelActivity",
+        "category": "Elide",
+        "title": "Cancel",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "elide.clearActivity",
+        "category": "Elide",
+        "title": "Clear Finished Activity",
+        "icon": "$(clear-all)"
+      },
+      {
         "command": "elide.showMenu",
         "category": "Elide",
         "title": "Show Menu",
@@ -323,12 +414,117 @@
         "icon": "$(file-code)"
       },
       {
+        "command": "elide.androidSelectTarget",
+        "category": "Elide",
+        "title": "Select Android Deployment Target…",
+        "icon": "$(device-mobile)"
+      },
+      {
+        "command": "elide.androidDoctor",
+        "category": "Elide",
+        "title": "Check Android Environment",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "elide.androidRefreshDevices",
+        "category": "Elide",
+        "title": "Refresh Android Devices",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "elide.androidRun",
+        "category": "Elide",
+        "title": "Run Android App…",
+        "icon": "$(play)"
+      },
+      {
+        "command": "elide.androidDebug",
+        "category": "Elide",
+        "title": "Debug Android App…",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "elide.androidStartEmulator",
+        "category": "Elide",
+        "title": "Start Android Emulator",
+        "icon": "$(vm-running)"
+      },
+      {
+        "command": "elide.androidStopEmulator",
+        "category": "Elide",
+        "title": "Stop Android Emulators",
+        "icon": "$(vm-outline)"
+      },
+      {
+        "command": "elide.androidCreateAvd",
+        "category": "Elide",
+        "title": "Create Android Virtual Device",
+        "icon": "$(vm-connect)"
+      },
+      {
+        "command": "elide.androidInstallSdk",
+        "category": "Elide",
+        "title": "Install Android SDK Components",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "elide.androidCreateKeystore",
+        "category": "Elide",
+        "title": "Create Android Signing Keystore",
+        "icon": "$(key)"
+      },
+      {
+        "command": "elide.androidOpenMapping",
+        "category": "Elide",
+        "title": "Open Android Obfuscation Mapping",
+        "icon": "$(references)"
+      },
+      {
+        "command": "elide.androidComposePreview",
+        "category": "Elide",
+        "title": "Open Compose Preview",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "elide.androidLogcat",
+        "category": "Elide",
+        "title": "Show Android Logcat",
+        "icon": "$(output)"
+      },
+      {
+        "command": "elide.androidLogcatFilter",
+        "category": "Elide",
+        "title": "Filter Android Logcat"
+      },
+      {
+        "command": "elide.androidLogcatClear",
+        "category": "Elide",
+        "title": "Clear Android Logcat Output"
+      },
+      {
+        "command": "elide.androidLogcatStop",
+        "category": "Elide",
+        "title": "Stop Android Logcat"
+      },
+      {
+        "command": "elide.androidLogcatRestart",
+        "category": "Elide",
+        "title": "Restart Android Logcat"
+      },
+      {
         "command": "elide.revealLibrary",
         "category": "Elide",
         "title": "Reveal in Finder/Explorer"
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "elide.androidComposePreview",
+          "when": "editorLangId == kotlin && elide.hasProjects",
+          "group": "navigation"
+        }
+      ],
       "commandPalette": [
         {
           "command": "elide.run",
@@ -357,6 +553,42 @@
         {
           "command": "elide.revealLibrary",
           "when": "false"
+        },
+        {
+          "command": "elide.androidRun",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidDebug",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidStartEmulator",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidStopEmulator",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidCreateAvd",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidInstallSdk",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidCreateKeystore",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidOpenMapping",
+          "when": "false"
+        },
+        {
+          "command": "elide.cancelActivity",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -374,6 +606,11 @@
           "command": "elide.newProject",
           "when": "view == elide.projects",
           "group": "navigation@3"
+        },
+        {
+          "command": "elide.clearActivity",
+          "when": "view == elide.activity",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
@@ -428,6 +665,45 @@
           "group": "inline@3"
         },
         {
+          "command": "elide.androidRun",
+          "when": "view == elide.projects && viewItem == androidApk",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.androidDebug",
+          "when": "view == elide.projects && viewItem == androidApk",
+          "group": "inline@2"
+        },
+        {
+          "command": "elide.build",
+          "when": "view == elide.projects && viewItem == androidApk",
+          "group": "inline@3"
+        },
+        {
+          "command": "elide.androidCreateKeystore",
+          "when": "view == elide.projects && viewItem == androidApk"
+        },
+        {
+          "command": "elide.build",
+          "when": "view == elide.projects && viewItem == androidAab",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.build",
+          "when": "view == elide.projects && viewItem =~ /^(androidAar|androidFeature)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.androidLogcat",
+          "when": "view == elide.projects && viewItem =~ /^(androidDevice|androidApk|android)$/",
+          "group": "android@3"
+        },
+        {
+          "command": "elide.androidRun",
+          "when": "view == elide.projects && viewItem == androidDevice",
+          "group": "inline@1"
+        },
+        {
           "command": "elide.sync",
           "when": "view == elide.projects && viewItem =~ /^project/",
           "group": "inline@1"
@@ -443,8 +719,23 @@
           "group": "inline@3"
         },
         {
+          "command": "elide.androidDoctor",
+          "when": "view == elide.projects && viewItem =~ /^project/",
+          "group": "android@1"
+        },
+        {
           "command": "elide.revealLibrary",
           "when": "view == elide.projects && viewItem == library"
+        },
+        {
+          "command": "elide.cancelActivity",
+          "when": "view == elide.activity && viewItem =~ /Cancellable$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.openActivityLog",
+          "when": "view == elide.activity && viewItem =~ /^activity/",
+          "group": "inline@2"
         }
       ]
     },
@@ -464,6 +755,12 @@
           "name": "Projects",
           "contextualTitle": "Elide",
           "icon": "media/elide.svg"
+        },
+        {
+          "id": "elide.activity",
+          "name": "Activity",
+          "contextualTitle": "Elide",
+          "icon": "media/elide.svg"
         }
       ]
     },
@@ -472,6 +769,10 @@
         "view": "elide.projects",
         "when": "!elide.hasProjects",
         "contents": "No Elide project (`elide.pkl`) in this workspace.\n[New Project…](command:elide.newProject)\n[Open Folder](command:vscode.openFolder)\n[Elide documentation](https://docs.elide.dev)"
+      },
+      {
+        "view": "elide.activity",
+        "contents": "Nothing has run yet. Syncs and Compose preview builds appear here while they run, step by step, with the time each step took and its output.\n[Sync Project(s)](command:elide.sync)"
       }
     ],
     "problemMatchers": [
@@ -793,13 +1094,81 @@
             }
           }
         ]
+      },
+      {
+        "type": "elide-android",
+        "label": "Elide Android",
+        "languages": [
+          "kotlin",
+          "java"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "artifact": {
+                "type": "string",
+                "markdownDescription": "Android application package to build, install and debug: the key of its entry in the `artifacts` block of `elide.pkl`."
+              },
+              "device": {
+                "type": "string",
+                "markdownDescription": "Device serial to pin the debug launch to (`--device=<serial>`). Empty uses the remembered deployment target or offers a device selection; a disconnected selection never silently deploys elsewhere."
+              },
+              "flags": {
+                "type": "array",
+                "items": { "type": "string" },
+                "markdownDescription": "Build flags (`-f NAME[=VALUE]`) layered over `elide.flags`."
+              },
+              "options": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": ["string", "number", "boolean", "array"],
+                  "items": { "type": ["string", "number"] }
+                },
+                "markdownDescription": "CLI build options layered over `elide.build.options`. Use `device`, not an option, to select the deployment device."
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": { "type": "string" },
+                "description": "Extra environment variables for the Elide build process."
+              },
+              "port": {
+                "type": "number",
+                "markdownDescription": "Local port of a JDWP socket already forwarded off a device: attach to it, building and installing nothing."
+              },
+              "project": {
+                "type": "string",
+                "description": "Project root relative to the workspace folder; in an Elide workspace, the member's directory."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "elide-android",
+            "request": "launch",
+            "name": "Elide: Debug Android App",
+            "artifact": ""
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Elide: Android app (debug)",
+            "description": "Build an APK, install and launch it waiting for a debugger, and attach over JDWP.",
+            "body": {
+              "type": "elide-android",
+              "request": "launch",
+              "name": "Elide: Debug Android App",
+              "artifact": "${1:artifact}"
+            }
+          }
+        ]
       }
     ],
     "walkthroughs": [
       {
         "id": "elide.gettingStarted",
         "title": "Get started with Elide",
-        "description": "Build, run, test and debug Kotlin/JVM projects with the Elide build tool.",
+        "description": "Build, run, test and debug Kotlin/JVM and Android projects with the Elide build tool.",
         "steps": [
           {
             "id": "install",
@@ -846,6 +1215,17 @@
             ]
           },
           {
+            "id": "android",
+            "title": "Prepare Android development",
+            "description": "Check your SDK and devices even before sync succeeds. Then choose a persistent APK and device for Run and Debug.\n[Check Android Environment](command:elide.androidDoctor)\n[Select Deployment Target…](command:elide.androidSelectTarget)\n[Open Compose Preview](command:elide.androidComposePreview)",
+            "media": {
+              "markdown": "media/walkthrough/run.md"
+            },
+            "completionEvents": [
+              "onCommand:elide.androidSelectTarget"
+            ]
+          },
+          {
             "id": "run",
             "title": "Run and debug",
             "description": "Code lenses run or debug a `main` function and the targets of `elide.pkl`.\n[Run Elide Command…](command:elide.runTask)",
@@ -880,11 +1260,13 @@
     "package": "vsce package --no-dependencies"
   },
   "dependencies": {
-    "@elide/ide-core": "workspace:*"
+    "@elide/ide-core": "workspace:*",
+    "yauzl": "^3.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
     "@types/vscode": "^1.105.0",
+    "@types/yauzl": "^2.10.3",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.6.0",
     "esbuild": "^0.25.0",

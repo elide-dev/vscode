@@ -1,0 +1,28 @@
+amends "elide:project.pkl"
+
+name = "logstat"
+description = "Access-log reporting CLI, built as an Elide workspace"
+version = "1.0.0"
+
+// The root declares its members explicitly; each is a directory with its own `elide.pkl`.
+// `elide build` and `elide test` run here cover every member as one task graph.
+workspace {
+  members {
+    "model"
+    "parser"
+    "report"
+    "cli"
+  }
+}
+
+// Versions declared here are the workspace's pins. Members depend on these coordinates without
+// a version; a member that names a *different* version fails the build rather than being aligned
+// silently.
+dependencies {
+  maven {
+    packages {
+      "com.google.guava:guava:33.4.8-jre"
+      "org.apache.commons:commons-lang3:3.17.0"
+    }
+  }
+}

@@ -1,0 +1,42 @@
+amends "elide:project.pkl"
+import "elide:Jvm.pkl" as Jvm
+import "elide:Sources.pkl" as Sources
+
+name = "cli"
+description = "Command-line front end"
+
+jvm {
+  main = "logstat.cli.MainKt"
+}
+
+sources {
+  ["main"] = new Sources.SourceSetSpec {
+    paths {
+      "src/main/kotlin/**/*.kt"
+    }
+  }
+  ["test"] = new Sources.SourceSetSpec {
+    paths {
+      "src/test/kotlin/**/*.kt"
+    }
+  }
+}
+
+dependencies {
+  maven {
+    packages {
+      // Neither `model` nor Guava is declared here, yet both are on this project's classpath:
+      // a workspace artifact carries its own project's classpath transitively.
+      module.project("parser")
+      // The long form names the artifact explicitly; needed when a project publishes more than
+      // one JAR, and harmless when it publishes exactly one.
+      module.project("report").artifact("report")
+    }
+  }
+}
+
+artifacts {
+  ["cli"] = new Jvm.Jar {
+    sources { "main" }
+  }
+}

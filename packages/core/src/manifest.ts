@@ -1,7 +1,7 @@
 import { ManifestParseError } from "./errors.js";
 
 /**
- * Decoded `elide project export` output.
+ * Decoded `elide project export` output (`elide manifest` before 1.6).
  *
  * The CLI serializes its Pkl-derived project model with kotlinx.serialization (`encodeDefaults=false`,
  * `explicitNulls=false`, discriminator `"@type"`), so absent keys mean schema defaults and unions arrive as objects
@@ -14,6 +14,8 @@ export interface Manifest {
   scripts: Record<string, string>;
   jvm?: JvmSettings;
   kotlin?: KotlinSettings;
+  /** The `android` block, when the project declares one; its presence is what makes a project an Android one. */
+  android?: AndroidSettings;
   sources: Record<string, SourceSet>;
   dependencies: { maven?: { localRepository?: string } };
   toolchain: { engines: Record<string, string> };
@@ -27,6 +29,10 @@ export interface Manifest {
   projectReferences: ProjectReference[];
   /** JAR artifacts, keyed by the name they are declared under. */
   jars: Record<string, JarArtifact>;
+  /** Android application, bundle, library and dynamic-feature artifacts. */
+  androidTargets: Record<string, AndroidArtifact>;
+  /** Compile tasks must run during sync to expose annotation-processor generated declarations. */
+  hasAnnotationProcessors?: boolean;
 }
 
 /**
@@ -50,6 +56,68 @@ export interface JarArtifact {
   sources: string[];
 }
 
+/**
+ * The `android` block: which SDK the project builds against, and the virtual device its run targets boot.
+ *
+ * A manifest declaring this block builds for Android — the pipeline is keyed off its presence, not off the artifact
+ * kinds — so a project may declare it and no Android artifact at all, which compiles against the platform.
+ */
+export interface AndroidSettings {
+  /** Declared SDK root, read against the project root; absent falls back to the environment and the conventional location. */
+  sdk?: string;
+  /** API level the project compiles, links and dexes against. */
+  compileSdk: number;
+  /** Oldest API level the dex output runs on; absent dexes for {@link compileSdk}. */
+  minSdk?: number;
+  /** Build-tools release supplying `aapt2`, `d8`, `zipalign` and `apksigner`; absent resolves one from the installation. */
+  buildTools?: string;
+  hilt?: boolean;
+  device: AndroidDeviceSettings;
+}
+
+/** An ABI an emulator system image is built for. */
+export type AndroidAbi = "arm64-v8a" | "x86_64" | "armeabi-v7a" | "x86";
+
+/** The `android.device` block: the virtual device `android-avd`, `android-emulator` and `android-run-*` drive. */
+export interface AndroidDeviceSettings {
+  /** AVD name; absent takes the project's own name. */
+  avd?: string;
+  /** System image in `sdkmanager` package form; absent derives one from the compile SDK and the host ABI. */
+  systemImage?: string;
+  /** ABI of the derived system image; ignored when {@link systemImage} is declared. */
+  abi?: AndroidAbi;
+  /** Hardware profile the AVD is cut from, as `avdmanager list device` names it. */
+  deviceProfile: string;
+}
+
+/** An installable APK, application bundle, library archive, or bundle feature module. */
+export type AndroidArtifactKind = "apk" | "aab" | "aar" | "feature";
+
+/** An Android artifact entry in the manifest. */
+export interface AndroidArtifact {
+  kind: AndroidArtifactKind;
+  /** Output file name, which overrides the `<key>.apk` / `<key>.aab` / `<key>.aar` Elide derives. */
+  name?: string;
+  /** Source sets packaged into the artifact; empty selects every production source set. */
+  sources: string[];
+  /** Android manifest of the artifact, relative to the project root. */
+  manifestFile: string;
+  /** Resource directories `aapt2` compiles; empty means `src/main/res` when it exists. */
+  resources: string[];
+  /** Directories packaged verbatim under `assets/`; empty means `src/main/assets` when it exists. */
+  assets: string[];
+  /** Native-library roots laid out as `<abi>/lib<name>.so`; empty means `src/main/jniLibs` when it exists. */
+  jniLibs: string[];
+  /** `minify`: the artifact is shrunk and obfuscated by R8, which also publishes an obfuscation mapping. */
+  minify: boolean;
+  /** Dynamic feature artifact keys included by an app bundle. */
+  features?: string[];
+  /** Base app bundle artifact for a dynamic feature. */
+  base?: string;
+  delivery?: "install-time" | "on-demand";
+  featureDependencies?: string[];
+}
+
 export interface JvmSettings {
   main?: string;
   target: JvmTarget;
@@ -60,6 +128,8 @@ export interface JvmSettings {
 export interface KotlinSettings {
   apiLevel: KotlinLevel;
   languageLevel: KotlinLevel;
+  /** Enable the language server's matching Compose compiler plugin. */
+  compose?: boolean;
   compilerOptions?: { apiVersion: KotlinLevel; languageVersion: KotlinLevel; freeCompilerArgs: string[] };
 }
 
@@ -156,6 +226,70 @@ function decodeJars(v: unknown): Record<string, JarArtifact> {
   return jars;
 }
 
+/** `@type` of each Android artifact entry, and the archive each publishes. */
+const ANDROID_TAGS: Record<string, AndroidArtifactKind> = {
+  "elide.android.AndroidApk": "apk",
+  "elide.android.AndroidAab": "aab",
+  "elide.android.AndroidAar": "aar",
+  "elide.android.AndroidFeature": "feature",
+};
+
+/** Android manifest an artifact declaring none is built from, and the hardware profile its AVD is cut from. */
+const DEFAULT_ANDROID_MANIFEST = "src/main/AndroidManifest.xml";
+const DEFAULT_DEVICE_PROFILE = "pixel_6";
+
+const ANDROID_ABIS: readonly AndroidAbi[] = ["arm64-v8a", "x86_64", "armeabi-v7a", "x86"];
+
+function decodeAndroidTargets(v: unknown): Record<string, AndroidArtifact> {
+  const targets: Record<string, AndroidArtifact> = {};
+  if (!isObject(v)) return targets;
+  for (const [key, artifact] of Object.entries(v)) {
+    if (!isObject(artifact)) continue;
+    const kind = ANDROID_TAGS[typeTag(artifact)];
+    if (!kind) continue;
+    targets[key] = {
+      kind,
+      ...(typeof artifact.name === "string" ? { name: artifact.name } : {}),
+      sources: strings(artifact.sources),
+      manifestFile: typeof artifact.manifestFile === "string" ? artifact.manifestFile : DEFAULT_ANDROID_MANIFEST,
+      resources: strings(artifact.resources),
+      assets: strings(artifact.assets),
+      jniLibs: strings(artifact.jniLibs),
+      minify: artifact.minify === true,
+      ...(kind === "aab" ? { features: strings(artifact.features) } : {}),
+      ...(kind === "feature" ? {
+        ...(typeof artifact.base === "string" ? { base: artifact.base } : {}),
+        delivery: artifact.delivery === "install-time" ? "install-time" as const : "on-demand" as const,
+        featureDependencies: strings(artifact.featureDependencies),
+      } : {}),
+    };
+  }
+  return targets;
+}
+
+/**
+ * The `android` block. `compileSdk` is the one field the schema requires, so a block without it is not one the CLI
+ * would have accepted and is read as no block at all.
+ */
+function decodeAndroid(v: unknown): AndroidSettings | undefined {
+  if (!isObject(v) || typeof v.compileSdk !== "number") return undefined;
+  const device = isObject(v.device) ? v.device : {};
+  const abi = typeof device.abi === "string" ? ANDROID_ABIS.find((a) => a === device.abi) : undefined;
+  return {
+    ...(typeof v.sdk === "string" ? { sdk: v.sdk } : {}),
+    ...(v.hilt === true ? { hilt: true } : {}),
+    compileSdk: v.compileSdk,
+    ...(typeof v.minSdk === "number" ? { minSdk: v.minSdk } : {}),
+    ...(typeof v.buildTools === "string" ? { buildTools: v.buildTools } : {}),
+    device: {
+      ...(typeof device.avd === "string" ? { avd: device.avd } : {}),
+      ...(typeof device.systemImage === "string" ? { systemImage: device.systemImage } : {}),
+      ...(abi ? { abi } : {}),
+      deviceProfile: typeof device.deviceProfile === "string" ? device.deviceProfile : DEFAULT_DEVICE_PROFILE,
+    },
+  };
+}
+
 function decodeSourceSet(v: unknown): SourceSet | undefined {
   if (typeof v === "string") return { type: "source", paths: [v], dependsOn: [], resources: {} };
   if (!isObject(v)) return undefined;
@@ -209,7 +343,7 @@ function decodeEngine(v: unknown): string | undefined {
   return undefined;
 }
 
-/** Decode the JSON printed by `elide project export` (`elide manifest` before Elide 1.6). Throws {@link ManifestParseError} on malformed input. */
+/** Decode the JSON the CLI exports for a project. Throws {@link ManifestParseError} on malformed input. */
 export function decodeManifest(text: string): Manifest {
   let raw: unknown;
   try {
@@ -251,6 +385,7 @@ export function decodeManifest(text: string): Manifest {
     kotlin = {
       apiLevel: decodeKotlinLevel(raw.kotlin.apiLevel),
       languageLevel: decodeKotlinLevel(raw.kotlin.languageLevel),
+      ...(isObject(raw.kotlin.features) && raw.kotlin.features.compose === true ? { compose: true } : {}),
       compilerOptions: co
         ? {
             apiVersion: decodeKotlinLevel(co.apiVersion),
@@ -278,6 +413,7 @@ export function decodeManifest(text: string): Manifest {
     scripts: stringMap(raw.scripts),
     jvm,
     kotlin,
+    android: decodeAndroid(raw.android),
     sources,
     dependencies: {
       maven: maven ? { localRepository: typeof maven.localRepository === "string" ? maven.localRepository : undefined } : undefined,
@@ -286,5 +422,7 @@ export function decodeManifest(text: string): Manifest {
     workspaceMembers: isObject(raw.workspace) ? strings(raw.workspace.members) : [],
     projectReferences: decodeProjectReferences(maven),
     jars: decodeJars(raw.artifacts),
+    androidTargets: decodeAndroidTargets(raw.artifacts),
+    ...(Array.isArray(maven?.processors) && maven.processors.length > 0 ? { hasAnnotationProcessors: true } : {}),
   };
 }

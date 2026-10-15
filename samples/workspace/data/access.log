@@ -1,0 +1,31 @@
+# Sample access log. Format: <client> [<timestamp>] "<METHOD> <path>" <status> <bytes>
+# Blank lines and comments are ignored; unparseable lines are counted, not fatal.
+
+10.0.0.7 [2026-02-11T08:15:04Z] "GET /" 200 5120
+10.0.0.7 [2026-02-11T08:15:05Z] "GET /assets/app.css" 200 18244
+10.0.0.7 [2026-02-11T08:15:05Z] "GET /assets/app.js" 200 96110
+10.0.0.9 [2026-02-11T08:15:11Z] "GET /" 200 5120
+10.0.0.9 [2026-02-11T08:15:12Z] "GET /api/projects" 200 2048
+10.0.0.9 [2026-02-11T08:15:12Z] "GET /assets/app.css" 304 0
+10.0.0.4 [2026-02-11T08:16:02Z] "POST /api/projects" 201 512
+10.0.0.4 [2026-02-11T08:16:03Z] "GET /api/projects/17" 200 1024
+10.0.0.4 [2026-02-11T08:16:09Z] "PUT /api/projects/17" 204 0
+10.0.0.4 [2026-02-11T08:16:14Z] "DELETE /api/projects/17" 204 0
+10.0.0.21 [2026-02-11T08:17:00Z] "GET /admin" 403 91
+10.0.0.21 [2026-02-11T08:17:01Z] "GET /admin/users" 403 91
+10.0.0.21 [2026-02-11T08:17:02Z] "GET /.env" 404 74
+10.0.0.21 [2026-02-11T08:17:02Z] "GET /wp-login.php" 404 74
+10.0.0.21 [2026-02-11T08:17:03Z] "GET /.git/config" 404 74
+10.0.0.7 [2026-02-11T08:18:30Z] "GET /api/reports/daily" 500 168
+10.0.0.9 [2026-02-11T08:18:31Z] "GET /api/reports/daily" 500 168
+10.0.0.9 [2026-02-11T08:18:44Z] "GET /api/reports/daily" 503 168
+this line is not in the log format
+10.0.0.9 [2026-02-11T08:19:02Z] "GET /api/reports/daily" 200 40961
+10.0.0.4 [2026-02-11T08:19:30Z] "GET /" 200 5120
+10.0.0.4 [2026-02-11T08:19:31Z] "GET /assets/app.js" 304 0
+10.0.0.33 [2026-02-11T08:20:00Z] "GET /healthz" 200 2
+10.0.0.33 [2026-02-11T08:21:00Z] "GET /healthz" 200 2
+10.0.0.33 [2026-02-11T08:22:00Z] "GET /healthz" 200 2
+10.0.0.33 [2026-02-11T08:23:00Z] "GET /healthz" 200 2
+10.0.0.7 [2026-02-11T08:23:18Z] "GET /api/projects?page=2" 200 2048
+10.0.0.7 [2026-02-11T08:23:40Z] "POST /api/projects" 422 240

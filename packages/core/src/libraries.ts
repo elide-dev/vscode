@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { androidPlatformApiLevel, androidRClassesArtifact, explodedAndroidLibrary } from "./android.js";
 import { normalizePath } from "./sourceRoots.js";
 
 export const DEFAULT_LIBRARIES_ROOT = ".dev/dependencies/m2/";
@@ -12,6 +13,13 @@ export interface LibraryModel {
   classes: string;
   sources?: string;
   javadoc?: string;
+  /**
+   * Maven coordinate the entry resolved from, when its path names one.
+   *
+   * Two entries carrying the same coordinate are the same library however they reach a classpath: a published
+   * `.aar` is exploded once per project, so a workspace with two Android projects holds two copies of one archive.
+   */
+  coordinate?: string;
 }
 
 /**
@@ -52,9 +60,32 @@ export function fallbackLibraryName(entry: string): string {
   return `${LIBRARY_NAME_PREFIX}${stem.length > 0 ? stem : "library"}`;
 }
 
-/** Build a library from a classpath entry, attaching sibling `-sources.jar` / `-javadoc.jar` when present. */
+/**
+ * Build a library from a classpath entry, attaching sibling `-sources.jar` / `-javadoc.jar` when present.
+ *
+ * A published `.aar` reaches a classpath as the `classes.jar` of the directory the build exploded it into, which
+ * carries neither the archive's name nor anything beside it. It is therefore named from the coordinate its path
+ * spells out, and its sources and javadoc are looked up in the Maven repository the archive itself came from.
+ *
+ * The two entries an Android build provides — the platform jar and the compiled `R` classes — are named from what
+ * they are: neither carries a coordinate, and `android.jar` and `r-classes` say nothing on their own.
+ */
 export function libraryFor(entry: string, librariesRoot?: string, exists: (p: string) => boolean = existsSync): LibraryModel {
   const classes = path.resolve(entry);
+  const apiLevel = androidPlatformApiLevel(classes);
+  if (apiLevel) return { name: `${LIBRARY_NAME_PREFIX}Android API ${apiLevel} platform`, classes };
+  const rClasses = androidRClassesArtifact(classes);
+  if (rClasses) return { name: `${LIBRARY_NAME_PREFIX}Android resources of ${rClasses}`, classes };
+  const exploded = explodedAndroidLibrary(classes);
+  if (exploded) {
+    const { group, artifact, version, coordinate } = exploded;
+    const repository = path.resolve(exploded.root, librariesRoot ?? DEFAULT_LIBRARIES_ROOT);
+    const stem = path.join(repository, ...group.split("."), artifact, version, `${artifact}-${version}`);
+    const lib: LibraryModel = { name: `${LIBRARY_NAME_PREFIX}${coordinate}`, classes, coordinate };
+    if (exists(`${stem}-sources.jar`)) lib.sources = `${stem}-sources.jar`;
+    if (exists(`${stem}-javadoc.jar`)) lib.javadoc = `${stem}-javadoc.jar`;
+    return lib;
+  }
   const lib: LibraryModel = { name: parseLibraryName(classes, librariesRoot), classes };
   if (/\.jar$/i.test(classes)) {
     const stem = classes.slice(0, -4);

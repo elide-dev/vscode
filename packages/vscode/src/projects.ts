@@ -11,19 +11,27 @@ import {
   WORKSPACE_JSON,
   buildProjectModels,
   findEnclosingWorkspace,
+  formatDuration,
   isNestedUnder,
   isSupportedElideVersion,
+  liveStatus,
   lockfileDigest,
+  observeCommands,
   outermostManifests,
   resolveElideDistribution,
+  timelineBreakdown,
   writeKotlinLspWorkspace,
   type BuildModelOptions,
   type ElideDistribution,
   type ProjectModel,
+  type ProjectProgress,
+  type TimelineNode,
 } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { readConfig } from "./config.js";
-import { KotlinSetupPendingError, notifyKotlinSetupPending, reloadKotlinLsp } from "./jetbrains.js";
+import { KotlinSetupPendingError, jetBrainsComposeCompilerPlugin, jetBrainsServerDirectory, notifyKotlinSetupPending, reloadKotlinLsp } from "./jetbrains.js";
+import { kotlinLspPlugin, withKotlinLspPlugin } from "./kotlinLspPlugin.js";
+import { moduleReaders, projectModules } from "./manifestModules.js";
 import type { ElideUi } from "./output.js";
 
 export interface ElideProject {
@@ -43,16 +51,22 @@ export interface ElideProject {
    * project's lockfiles have been read once. See {@link ElideWorkspace.lockfileChanged}.
    */
   lockDigest?: string;
+  /** Local Pkl modules its manifests read, other than manifests; see {@link ElideWorkspace.refreshModules}. */
+  modules?: readonly string[];
 }
 
 interface FolderState {
   folder: vscode.WorkspaceFolder;
   projects: Map<string, ElideProject>;
   stale: boolean;
+  /** How often the folder was marked stale; a sync clears `stale` only if no mark arrived while it ran. */
+  staleMarks: number;
+  /** `staleMarks` when the last successful sync started: a sync after a later mark installs dependencies anew. */
+  installedMarks: number;
   syncing?: AbortController;
   /** Re-run requested while a sync was in flight. */
   rerun: boolean;
-  /** Timestamp until which file-change events are attributed to the sync itself. */
+  /** Timestamp until which lockfile events are attributed to the sync itself. */
   quietUntil: number;
   /** Message of the last failed sync; cleared by the next successful one. */
   lastError?: string;
@@ -62,6 +76,8 @@ export type SyncReason = "startup" | "manual" | "manifest-change" | "project-add
 
 const DISCOVERY_EXCLUDE = "{**/.dev/**,**/node_modules/**}";
 const CHANGE_GRACE_MS = 3_000;
+/** How long a sync runs before its progress notification appears; quicker ones only touch the status bar. */
+const NOTIFICATION_DELAY_MS = 2_000;
 const JDK_SETTING = "jdkForSymbolResolution";
 /** Remembers the JDK path this extension wrote to user settings, so a value the user chose is never clobbered. */
 const JDK_STATE_KEY = "elide.intellij.jdkForSymbolResolution";
@@ -79,10 +95,18 @@ export class ElideWorkspace implements vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<void>();
   /** Fires after any sync completes or the project set changes. */
   readonly onDidChange = this.changed.event;
+  private readonly modulesChanged = new vscode.EventEmitter<void>();
+  /** Fires once {@link refreshModules} has recorded what the projects read. */
+  readonly onDidChangeModules = this.modulesChanged.event;
+  private modulesGeneration = 0;
 
   constructor(
     private readonly ui: ElideUi,
     private readonly state: vscode.Memento,
+    /** `media/kotlin-lsp`: sources of the plugin loaded into the Kotlin LSP. */
+    private readonly kotlinLspPluginSources: string,
+    /** Machine-local cache (global storage). */
+    private readonly cacheRoot: string,
   ) {}
 
   get projects(): ElideProject[] {
@@ -153,7 +177,7 @@ export class ElideWorkspace implements vscode.Disposable {
     for (const [root, project] of [...state.projects]) {
       if (!seen.has(root) && !(project.workspaceRoot && seen.has(project.workspaceRoot))) state.projects.delete(root);
     }
-    this.changed.fire();
+    this.notifyChanged();
     this.updateProjectLabel();
     const projects = [...state.projects.values()];
     for (const project of projects) if (!project.workspaceRoot) this.offerWorkspaceRoot(project);
@@ -227,7 +251,7 @@ export class ElideWorkspace implements vscode.Disposable {
     }
     const project: ElideProject = { root, manifestPath: located.fsPath, folder: located.folder };
     state.projects.set(root, project);
-    this.changed.fire();
+    this.notifyChanged();
     return project;
   }
 
@@ -240,7 +264,7 @@ export class ElideWorkspace implements vscode.Disposable {
     if (state && project) {
       state.projects.delete(root);
       for (const [other, p] of [...state.projects]) if (p.workspaceRoot === root) state.projects.delete(other);
-      this.changed.fire();
+      this.notifyChanged();
     }
     return project;
   }
@@ -249,16 +273,50 @@ export class ElideWorkspace implements vscode.Disposable {
     const state = this.folders.get(folder.uri.toString());
     state?.syncing?.abort();
     this.folders.delete(folder.uri.toString());
-    this.changed.fire();
+    this.notifyChanged();
   }
 
+  /**
+   * Re-read the local Pkl modules every project's manifests read: they change with the manifests, which a sync has
+   * just read, or with the project set. Only the latest of overlapping refreshes is recorded.
+   */
+  async refreshModules(): Promise<void> {
+    const generation = ++this.modulesGeneration;
+    const projects = this.projects;
+    const modules = await projectModules(projects);
+    if (generation !== this.modulesGeneration) return;
+    for (const project of projects) project.modules = modules.get(project.root);
+    this.modulesChanged.fire();
+  }
+
+  /** Every module {@link refreshModules} found, with the folders whose projects read it. */
+  moduleReaders(): Map<string, vscode.WorkspaceFolder[]> {
+    return moduleReaders(this.projects);
+  }
+
+  private notifyChanged(): void {
+    this.changed.fire();
+    void this.refreshModules();
+  }
+
+  /** Mark `folder` out of date after a change to what its projects resolve from; see {@link FolderState.staleMarks}. */
   markStale(folder: vscode.WorkspaceFolder): void {
-    this.folderState(folder).stale = true;
+    const state = this.folderState(folder);
+    state.stale = true;
+    state.staleMarks++;
     this.ui.setStatus("stale");
   }
 
-  markStaleAll(): void {
-    for (const state of this.folders.values()) if (state.projects.size > 0) state.stale = true;
+  /**
+   * Mark every folder with projects out of date: after a change all of them see, such as `elide.flags`, or, with
+   * `changed` false, because none was synced yet.
+   */
+  markStaleAll(changed = true): void {
+    for (const state of this.folders.values()) {
+      if (state.projects.size === 0) continue;
+      state.stale = true;
+      if (changed) state.staleMarks++;
+    }
     this.ui.setStatus("stale");
   }
 
@@ -282,8 +340,9 @@ export class ElideWorkspace implements vscode.Disposable {
   }
 
   /**
-   * Whether file changes under `folder` are the sync's own doing: the CLI rewrites `.dev/elide.lock*.bin` while
-   * resolving, so events during a sync and for a short grace period afterwards must not mark the folder stale.
+   * Whether a lockfile event under `folder` is the sync's own doing: the CLI rewrites `.dev/elide.lock*.bin` while
+   * resolving, so events during a sync and for a short grace period afterwards must not mark the folder stale. A sync
+   * never writes a manifest, so a manifest event is always someone's edit.
    */
   isSelfInflicted(folder: vscode.WorkspaceFolder): boolean {
     const state = this.folders.get(folder.uri.toString());
@@ -330,113 +389,199 @@ export class ElideWorkspace implements vscode.Disposable {
     const controller = new AbortController();
     state.syncing = controller;
     state.rerun = false;
-    this.ui.setStatus("syncing", `Syncing Elide projects in ${folder.name} (${reason})`);
+    const marks = state.staleMarks;
+    const cancel = () => controller.abort(new Error("cancelled by user"));
+    const sync = this.ui.activity.start(`Sync ${folder.name}`, { detail: reason, cancel });
+    this.ui.trackSync(sync);
     this.ui.log(`[${new Date().toISOString()}] sync ${folder.name}: ${reason}`);
+    const notification = this.notifyProgress(folder, sync, cancel);
 
     try {
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Window, title: `Elide: syncing ${folder.name}`, cancellable: true },
-        async (progress, token) => {
-          token.onCancellationRequested(() => controller.abort(new Error("cancelled by user")));
-          await this.runSync(state, progress, controller.signal);
-        },
-      );
-      state.stale = false;
+      await this.runSync(state, sync, controller.signal, state.installedMarks !== marks);
+      sync.end("succeeded");
+      this.ui.log(`sync ${folder.name} finished in ${formatDuration(sync.durationMs)}`);
+      for (const row of timelineBreakdown(sync)) this.ui.log(`  ${row}`);
+      // An edit made while the sync ran may have come after the sync read the file: it still needs a sync.
+      state.stale = state.staleMarks !== marks;
+      state.installedMarks = marks;
       state.lastError = undefined;
-      this.ui.setStatus("idle");
+      this.ui.setStatus(state.stale ? "stale" : "idle");
     } catch (e) {
       if (controller.signal.aborted && !state.rerun) {
+        sync.end("cancelled", "cancelled");
         this.ui.log("sync cancelled");
         this.ui.setStatus(state.stale ? "stale" : "idle");
       } else if (!controller.signal.aborted) {
         state.lastError = e instanceof Error ? e.message : String(e);
+        sync.end("failed", state.lastError);
         this.ui.setStatus("error", state.lastError);
-        this.reportError(e);
-      }
+        this.reportError(e, sync);
+      } else sync.end("cancelled", "superseded by a newer sync");
     } finally {
+      notification.dispose();
       state.syncing = undefined;
       state.quietUntil = Date.now() + CHANGE_GRACE_MS;
       this.updateProjectLabel();
-      this.changed.fire();
+      this.notifyChanged();
     }
     if (state.rerun) await this.syncFolder(folder, reason);
   }
 
-  private async runSync(state: FolderState, progress: vscode.Progress<{ message?: string }>, signal: AbortSignal): Promise<void> {
+  /**
+   * A notification naming the step in progress, with Cancel, for a sync still running after a moment: VS Code keeps
+   * window progress to a spinner, and a sync that installs dependencies or builds can take minutes.
+   */
+  private notifyProgress(folder: vscode.WorkspaceFolder, sync: TimelineNode, cancel: () => void): vscode.Disposable {
+    if (!readConfig(folder).syncNotification) return new vscode.Disposable(() => {});
+    const finished = Promise.withResolvers<void>();
+    const timer = setTimeout(() => {
+      void vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Elide: syncing ${folder.name}`, cancellable: true },
+        async (progress, token) => {
+          token.onCancellationRequested(cancel);
+          const report = () => {
+            const now = liveStatus(sync);
+            progress.report({ message: `${sync.phase?.label ?? "starting"}${now ? ` — ${now}` : ""} (${formatDuration(sync.durationMs)})` });
+          };
+          report();
+          const subscription = this.ui.activity.onDidChangeOperation((operation) => {
+            if (operation === sync) report();
+          });
+          await finished.promise;
+          subscription.dispose();
+        },
+      );
+    }, NOTIFICATION_DELAY_MS);
+    return new vscode.Disposable(() => {
+      clearTimeout(timer);
+      finished.resolve();
+    });
+  }
+
+  /**
+   * Resolve the folder's projects as steps of `sync`: every step the model builder reports, every CLI process it
+   * starts, and the build tasks those report, each timed; the Elide output channel gets the same narrative.
+   */
+  private async runSync(state: FolderState, sync: TimelineNode, signal: AbortSignal, changed: boolean): Promise<void> {
     const folderPath = state.folder.uri.fsPath;
     const config = readConfig(state.folder);
     const dist = resolveElideDistribution({ explicitHome: config.home });
     this.ui.log(`elide: ${dist.bin}`);
 
     const models: ProjectModel[] = [];
-    const onLine = (line: string) => this.ui.log(`  ${line}`);
     const classifiers = [...config.installClassifiers].sort();
-    for (const project of [...state.projects.values()].filter((p) => !p.workspaceRoot)) {
+    const roots = [...state.projects.values()].filter((p) => !p.workspaceRoot);
+    for (const project of roots) {
       const rel = path.relative(folderPath, project.root) || ".";
-      progress.report({ message: rel });
-      const cli = new ElideCli(dist, project.root, config.flags);
-      const manifest = await cli.manifest({ onLine, signal });
-      const options: BuildModelOptions = {
-        onLine,
-        signal,
-        onProgress: (step) => {
-          progress.report({ message: `${rel}: ${step}` });
-          this.ui.log(`  [${rel}] ${step}`);
-        },
-        jdk: { override: config.jdkHome },
+      // Several projects in one folder each get a step of their own; a lone project's steps are the sync's.
+      const parent = roots.length > 1 ? sync.start(rel) : sync;
+      let step = parent;
+      const begin = (label: string) => {
+        if (step !== parent) step.end();
+        step = parent.start(label);
+        this.ui.log(`  [${rel}] ${label}`);
       };
-      // The classifier set is applied by `elide install --slim --with …`, which the lockfile check cannot see:
-      // force an install whenever it differs from the set this project was last resolved with.
-      const key = `${INSTALL_CLASSIFIERS_KEY}:${project.root}`;
-      const requested = JSON.stringify(classifiers);
-      let resolved: ProjectModel[];
+      const onCommand = observeCommands(() => step, (line) => this.ui.log(`    ${line}`));
+      // Projects resolve side by side, each a step of the phase that resolves them with its own steps and processes.
+      const onProject = (name: string): ProjectProgress => {
+        const node = step.start(name);
+        let phase = node;
+        return {
+          onProgress: (label) => {
+            if (phase !== node) phase.end();
+            phase = node.start(label);
+            this.ui.log(`  [${rel}] ${label}`);
+          },
+          onCommand: observeCommands(() => phase, (line) => this.ui.log(`    [${name}] ${line}`)),
+          end: (outcome, error) => {
+            if (outcome === "succeeded") node.end();
+            else node.end(outcome, outcome === "failed" ? (error instanceof Error ? error.message : String(error)) : undefined);
+          },
+        };
+      };
       try {
-        resolved = await buildProjectModels(cli, manifest, {
-          ...options,
-          installWith: classifiers,
-          forceInstall: this.state.get<string>(key) !== requested,
-        });
+        const cli = new ElideCli(dist, project.root, config.flags);
+        begin("Reading the project manifest");
+        const manifest = await cli.manifest({ onCommand, signal });
+        const options: BuildModelOptions = { onCommand, onProject, signal, onProgress: begin, jdk: { override: config.jdkHome } };
+        // The classifier set is applied by `elide install --slim --with …`, which the lockfile check cannot see:
+        // force an install whenever it differs from the set this project was last resolved with. So is a change since
+        // the last sync: any `elide` command run after it, such as a superseded sync's classpath query, rewrites the
+        // lockfile, which then looks newer than the edit.
+        const key = `${INSTALL_CLASSIFIERS_KEY}:${project.root}`;
+        const requested = JSON.stringify(classifiers);
+        let resolved: ProjectModel[];
+        try {
+          resolved = await buildProjectModels(cli, manifest, {
+            ...options,
+            installWith: classifiers,
+            forceInstall: changed || this.state.get<string>(key) !== requested,
+          });
+        } catch (e) {
+          const rejectedClassifiers =
+            e instanceof ElideCommandFailedError && e.args[0] === "install" && e.args.some((a) => a === "--with" || a === "--slim");
+          if (!rejectedClassifiers) throw e;
+          this.ui.log(`  [${rel}] elide install rejected the classifier flags; retrying with the CLI defaults`);
+          step.end("failed", "classifier flags rejected; retrying with the CLI defaults");
+          step = parent;
+          resolved = await buildProjectModels(cli, manifest, { ...options, forceInstall: false });
+        }
+        if (step !== parent) step.end();
+        step = parent;
+        await this.state.update(key, requested);
+        for (const model of resolved) {
+          const where = path.relative(folderPath, model.root) || ".";
+          for (const w of model.warnings) {
+            this.ui.log(`  [${where}] warning: ${w}`);
+            parent.log(`[${where}] warning: ${w}`);
+          }
+        }
+        const [model, ...members] = resolved;
+        if (parent !== sync) parent.end("succeeded", members.length > 0 ? `${members.length} member${members.length === 1 ? "" : "s"}` : undefined);
+        if (!model) continue;
+        project.model = model;
+        await this.attachMembers(state, project, members);
+        // The model was resolved from whatever `elide install` left behind: that content is now the baseline. A
+        // workspace records its one lockfile at the root.
+        project.lockDigest = await lockfileDigest(project.root);
+        models.push(...resolved);
       } catch (e) {
-        const rejectedClassifiers =
-          e instanceof ElideCommandFailedError && e.args[0] === "install" && e.args.some((a) => a === "--with" || a === "--slim");
-        if (!rejectedClassifiers) throw e;
-        this.ui.log(`  [${rel}] elide install rejected the classifier flags; retrying with the CLI defaults`);
-        resolved = await buildProjectModels(cli, manifest, { ...options, forceInstall: false });
+        const message = e instanceof Error ? e.message : String(e);
+        if (step !== parent) step.end(signal.aborted ? "cancelled" : "failed", message);
+        if (parent !== sync) parent.end(signal.aborted ? "cancelled" : "failed", message);
+        throw e;
       }
-      await this.state.update(key, requested);
-      for (const model of resolved) {
-        const where = path.relative(folderPath, model.root) || ".";
-        for (const w of model.warnings) this.ui.log(`  [${where}] warning: ${w}`);
-      }
-      const [model, ...members] = resolved;
-      if (!model) continue;
-      project.model = model;
-      await this.attachMembers(state, project, members);
-      // The model was resolved from whatever `elide install` left behind: that content is now the baseline. A
-      // workspace records its one lockfile at the root.
-      project.lockDigest = await lockfileDigest(project.root);
-      models.push(...resolved);
     }
     if (signal.aborted) throw signal.reason;
     this.warnOnOldElide(dist, models[0]?.elideVersion);
 
     if (config.writeWorkspaceJson && models.length > 0) {
-      progress.report({ message: `writing ${WORKSPACE_JSON}` });
-      const ws = await writeKotlinLspWorkspace(models, folderPath);
-      this.ui.log(`wrote ${path.join(folderPath, WORKSPACE_JSON)}: ${ws.modules.length} modules, ${ws.libraries.length} libraries`);
-      await this.configureJdkForSymbolResolution(state.folder, models);
-      await this.pinKotlinLspImporter(state.folder);
+      await sync.run(`Writing ${WORKSPACE_JSON}`, async (step) => {
+        const composeCompilerPlugin = jetBrainsComposeCompilerPlugin();
+        if (models.some((model) => model.kotlin.compose) && !composeCompilerPlugin) {
+          this.ui.log("Compose analysis needs the bundled Compose IDE plugin from the JetBrains Kotlin extension; update that extension and sync again.");
+        }
+        const ws = await writeKotlinLspWorkspace(models, folderPath, { composeCompilerPlugin });
+        step.setDetail(`${ws.modules.length} modules · ${ws.libraries.length} libraries`);
+        this.ui.log(`wrote ${path.join(folderPath, WORKSPACE_JSON)}: ${ws.modules.length} modules, ${ws.libraries.length} libraries`);
+      });
+      let restart = false;
+      await sync.run("Configuring the Kotlin LSP", async () => {
+        await this.configureJdkForSymbolResolution(state.folder, models);
+        await this.pinKotlinLspImporter(state.folder);
+        if (models.some((model) => model.kotlin.compose)) restart = await this.installKotlinLspPlugin(signal);
+      });
       // The JetBrains reload command may block for as long as the server's import runs; never let it hold the sync.
-      void reloadKotlinLsp().then(
-        (used) => this.ui.log(used ? `Kotlin LSP reload requested via ${used}` : "Kotlin LSP not running yet; it will import workspace.json on start"),
+      void reloadKotlinLsp(restart).then(
+        (used) => this.ui.log(used ? `Kotlin LSP ${restart ? "restart" : "reload"} requested via ${used}` : "Kotlin LSP not running yet; it will import workspace.json on start"),
         (e) => {
           if (e instanceof KotlinSetupPendingError) {
             this.ui.log(`Kotlin LSP not started: ${e.message}`);
             notifyKotlinSetupPending(e.steps, { once: true });
             return;
           }
-          this.ui.log(`Kotlin LSP reload failed: ${e instanceof Error ? e.message : String(e)}`);
-          void vscode.window.showWarningMessage("Elide: Kotlin LSP did not reload; run 'IntelliJ: Restart Language Server'.");
+          this.ui.log(`Kotlin LSP ${restart ? "restart" : "reload"} failed: ${e instanceof Error ? e.message : String(e)}`);
+          void vscode.window.showWarningMessage(`Elide: Kotlin LSP did not ${restart ? "restart" : "reload"}; run 'IntelliJ: Restart Language Server'.`);
         },
       );
     }
@@ -537,6 +682,42 @@ export class ElideWorkspace implements vscode.Disposable {
   }
 
   /**
+   * Load Elide's plugin into the Kotlin LSP for Compose projects. It suppresses the `FunctionName` inspection on
+   * `@Composable` functions, which are named like types — the rule Android Studio's Compose plugin applies and the
+   * language server lacks.
+   *
+   * The plugin is listed in `intellij.additionalJvmArgs` as `-Dplugin.path`. That setting is window-scoped and the
+   * path is machine-local, so it goes into user settings; the suppressor touches nothing but `@Composable`
+   * functions, so other projects are unaffected. Returns whether the setting changed: JVM arguments apply only to a
+   * newly launched server.
+   */
+  private async installKotlinLspPlugin(signal: AbortSignal): Promise<boolean> {
+    const server = jetBrainsServerDirectory();
+    if (!server) {
+      this.ui.log("Compose function-name suppression needs the JetBrains Kotlin extension's bundled server");
+      return false;
+    }
+    let plugin: string;
+    try {
+      plugin = await kotlinLspPlugin(server, this.kotlinLspPluginSources, this.cacheRoot, signal);
+    } catch (e) {
+      this.ui.log(`could not build the Kotlin LSP plugin: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+    const intellij = vscode.workspace.getConfiguration("intellij");
+    const next = withKotlinLspPlugin(intellij.inspect<string[]>("additionalJvmArgs")?.globalValue ?? [], plugin, this.cacheRoot);
+    if (!next) return false;
+    try {
+      await intellij.update("additionalJvmArgs", next, vscode.ConfigurationTarget.Global);
+      this.ui.log(`intellij.additionalJvmArgs = ${JSON.stringify(next)} (user settings)`);
+      return true;
+    } catch (e) {
+      this.ui.log(`could not write intellij.additionalJvmArgs: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  }
+
+  /**
    * Force the Kotlin LSP's JSON importer for this window.
    *
    * The server's auto-detection (`InitializeKt.planAutoImport`, intellij-server 263.x) first filters its importers
@@ -571,8 +752,11 @@ export class ElideWorkspace implements vscode.Disposable {
     }
   }
 
-  /** Logs and notifies; the notification is not awaited (it settles only when the user dismisses it). */
-  private reportError(e: unknown): void {
+  /**
+   * Logs and notifies; the notification is not awaited (it settles only when the user dismisses it). It names the
+   * step that failed and offers that sync's log, which holds the failing command's output.
+   */
+  private reportError(e: unknown, sync: TimelineNode): void {
     const message = e instanceof Error ? e.message : String(e);
     this.ui.log(`sync failed: ${message}`);
     if (e instanceof ElideNotFoundError || e instanceof InvalidElideHomeError) {
@@ -580,8 +764,11 @@ export class ElideWorkspace implements vscode.Disposable {
       return;
     }
     const summary = e instanceof ElideCommandFailedError ? `elide ${e.args.join(" ")} failed (exit ${e.exitCode ?? "signal"})` : e instanceof ManifestParseError ? e.message : message;
-    void vscode.window.showErrorMessage(`Elide: ${summary}`, "Show Output").then((pick) => {
-      if (pick === "Show Output") this.ui.output.show(true);
+    const failed = sync.children.findLast((step) => step.state === "failed");
+    const where = failed && failed.label !== summary ? ` while ${failed.label.toLowerCase()}` : "";
+    void vscode.window.showErrorMessage(`Elide: ${summary}${where}`, "Show Log", "Show Activity").then((pick) => {
+      if (pick === "Show Log") void this.ui.activity.openLog(sync);
+      if (pick === "Show Activity") void vscode.commands.executeCommand("elide.showActivity");
     });
   }
 
@@ -589,7 +776,7 @@ export class ElideWorkspace implements vscode.Disposable {
     const key = folder.uri.toString();
     let state = this.folders.get(key);
     if (!state) {
-      state = { folder, projects: new Map(), stale: false, rerun: false, quietUntil: 0 };
+      state = { folder, projects: new Map(), stale: false, staleMarks: 0, installedMarks: 0, rerun: false, quietUntil: 0 };
       this.folders.set(key, state);
     }
     return state;
@@ -598,6 +785,7 @@ export class ElideWorkspace implements vscode.Disposable {
   dispose(): void {
     for (const f of this.folders.values()) f.syncing?.abort();
     this.changed.dispose();
+    this.modulesChanged.dispose();
   }
 }
 

@@ -1,0 +1,35 @@
+amends "elide:project.pkl"
+import "elide:Jvm.pkl" as Jvm
+import "elide:Sources.pkl" as Sources
+
+name = "report"
+description = "Aggregates log records and renders them as text tables"
+
+sources {
+  ["main"] = new Sources.SourceSetSpec {
+    paths {
+      "src/main/kotlin/**/*.kt"
+    }
+  }
+  ["test"] = new Sources.SourceSetSpec {
+    paths {
+      "src/test/kotlin/**/*.kt"
+    }
+  }
+}
+
+dependencies {
+  maven {
+    packages {
+      // A sibling JAR and a root-pinned coordinate side by side.
+      module.project("model")
+      "org.apache.commons:commons-lang3"
+    }
+  }
+}
+
+artifacts {
+  ["report"] = new Jvm.Jar {
+    sources { "main" }
+  }
+}

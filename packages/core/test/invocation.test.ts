@@ -19,6 +19,16 @@ describe("elideInvocationArgs", () => {
     ).toEqual(["run", "-f", "release", "-f", "tag=beta", "--coverage", "src/main.kt", "--", "--port", "8080"]);
   });
 
+  test("puts build options after the targets, which is the only place `elide build` reads them", () => {
+    expect(
+      elideInvocationArgs("build", {
+        args: ["android-run-app"],
+        flags: ["release"],
+        options: { device: "emulator-5554", "install-sdk": true },
+      }),
+    ).toEqual(["build", "-f", "release", "android-run-app", "--device=emulator-5554", "--install-sdk"]);
+  });
+
   test("spells options by name length, and repeats an array option", () => {
     expect(
       elideInvocationArgs("test", {

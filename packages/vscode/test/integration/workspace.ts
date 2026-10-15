@@ -35,9 +35,16 @@ export async function runWorkspaceScenario(): Promise<void> {
     const json = readWorkspace();
     return json?.modules.some((m) => m.name === "cli.main") ? json : undefined;
   }, 300_000);
+  // One module per declared source set; the root declares none, so it gets the default `main` and `test`.
   assert.deepEqual(
     ws.modules.map((m) => m.name),
-    ["logstat", ...MEMBERS].flatMap((p) => [`${p}.main`, `${p}.test`]),
+    [
+      "logstat.main",
+      "logstat.test",
+      ...MEMBERS.flatMap((p) =>
+        [...readFileSync(path.join(member(p), "elide.pkl"), "utf8").matchAll(/\["(\w+)"\] = new Sources\.SourceSetSpec/g)].map((m) => `${p}.${m[1]}`),
+      ),
+    ],
   );
   const exported = (name: string, scope: string) => ({ type: "module", name, scope, isExported: true, isTestJar: false });
   assert.deepEqual(moduleDeps(ws, "parser.main"), [exported("model.main", "compile")], "parser.main depends on model");
@@ -103,9 +110,10 @@ export async function runWorkspaceScenario(): Promise<void> {
     "members nested in declaration order",
   );
   // A section with nothing under it is left out: the root runs no entrypoint of its own, while `cli` declares a main
-  // class. Build targets are read once for the whole workspace and listed per project.
+  // class, and the root's Maven block only pins its members' versions — with no sources, its classpath is empty.
+  // Build targets are read once for the whole workspace and listed per project.
   const rootGroups = ((await explorer.getChildren(roots[0])) as Node[]).filter((n) => n.kind === "group");
-  assert.deepEqual(rootGroups.map((g) => g.group), ["tasks", "sourceSets", "dependencies"], "the root offers no entrypoints section");
+  assert.deepEqual(rootGroups.map((g) => g.group), ["tasks", "sourceSets"], "the root offers no entrypoints or dependencies section");
   const cliGroups = (await explorer.getChildren(members[3])) as Node[];
   assert.deepEqual(
     cliGroups.filter((n) => n.kind === "group").map((g) => g.group),

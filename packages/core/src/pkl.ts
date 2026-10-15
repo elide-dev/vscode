@@ -1,10 +1,10 @@
 /**
  * Reading and editing `elide.pkl` as text.
  *
- * `elide project export` answers for a project the CLI can already load, which is not every question an editor asks: the
- * artifacts a manifest declares carry no source positions in that JSON, and the workspace above a folder has to be
- * found before any project is loaded. Both are read from the manifest text instead, with the little of Pkl's syntax
- * those questions need — braces, string literals and `//` comments.
+ * The exported project model answers for a project the CLI can already load, which is not every question an editor
+ * asks: the artifacts a manifest declares carry no source positions in that JSON, and the workspace above a folder
+ * has to be found before any project is loaded. Both are read from the manifest text instead, with the little of
+ * Pkl's syntax those questions need — braces, string literals and `//` comments.
  */
 
 /** The line without its `//` comment; a `//` inside a string literal is content, not a comment. */
@@ -112,6 +112,24 @@ export function pklStrings(text: string, from = 0, to = text.length): string[] {
       const newline = text.indexOf("\n", i);
       if (newline < 0 || newline >= to) return found;
       i = newline;
+    }
+  }
+  return found;
+}
+
+/** `amends "…"`, `extends "…"`, `import "…"`, `import* "…"` and the `import("…")` expression: the URI is group 2. */
+const MODULE_REFERENCE = /\b(amends|extends|import\*?)\s*\(?\s*"((?:[^"\\]|\\.)*)"/g;
+
+/**
+ * The module URIs a Pkl module reads other modules from, in source order: what it amends or extends and what it
+ * imports, whether by clause or by `import(…)` expression. Glob imports (`import*`) are left out: they name a set of
+ * modules, not one.
+ */
+export function pklModuleReferences(text: string): string[] {
+  const found: string[] = [];
+  for (const line of text.split("\n")) {
+    for (const match of stripComment(line).matchAll(MODULE_REFERENCE)) {
+      if (match[1] !== "import*") found.push(match[2]!);
     }
   }
   return found;

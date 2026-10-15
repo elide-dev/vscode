@@ -1,0 +1,35 @@
+amends "elide:project.pkl"
+import "elide:Jvm.pkl" as Jvm
+import "elide:Sources.pkl" as Sources
+
+name = "parser"
+description = "Reads access-log text into model records"
+
+sources {
+  ["main"] = new Sources.SourceSetSpec {
+    paths {
+      "src/main/kotlin/**/*.kt"
+    }
+  }
+  ["test"] = new Sources.SourceSetSpec {
+    paths {
+      "src/test/kotlin/**/*.kt"
+    }
+  }
+}
+
+dependencies {
+  maven {
+    packages {
+      // A sibling's JAR, not a Maven coordinate: `model` is built on demand, only when a task
+      // that actually consumes this classpath is scheduled.
+      module.project("model")
+    }
+  }
+}
+
+artifacts {
+  ["parser"] = new Jvm.Jar {
+    sources { "main" }
+  }
+}

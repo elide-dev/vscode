@@ -2,10 +2,27 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { MANIFEST_NAME, WORKSPACE_JSON, isLockfileName, nativeImageBinary, type ElideCommand } from "@elide/ide-core";
 import * as vscode from "vscode";
+import { ACTIVITY_VIEW_ID, type ElideActivityApi } from "./activity.js";
+import {
+  createAndroidAvd,
+  createAndroidKeystore,
+  debugAndroid,
+  installAndroidSdk,
+  openAndroidMapping,
+  runAndroid,
+  startAndroidEmulator,
+  stopAndroidEmulator,
+} from "./android.js";
+import { ELIDE_ANDROID_DEBUG_TYPE, ElideAndroidDebugConfigurationProvider } from "./androidDebug.js";
+import { AndroidDeploymentController } from "./androidDeployment.js";
+import { registerAndroidLogcat } from "./androidLogcat.js";
+import { registerAndroidReadiness } from "./androidReadiness.js";
 import { ElideCodeLensProvider } from "./codelens.js";
+import { registerComposePreview, type ElideComposePreviewApi } from "./composePreview.js";
 import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
 import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./explorer.js";
+import { jetBrainsExtension } from "./jetbrains.js";
 import { ELIDE_NATIVE_DEBUG_TYPE, ElideNativeDebugConfigurationProvider } from "./nativeDebug.js";
 import { addWorkspaceMember, newProject } from "./newProject.js";
 import { ElideUi } from "./output.js";
@@ -17,17 +34,28 @@ import { ElideTestController, type ElideTestApi } from "./testing.js";
 export interface ElideExtensionApi {
   tests: ElideTestApi;
   explorer: ElideExplorerApi;
+  composePreview: ElideComposePreviewApi;
+  activity: ElideActivityApi;
 }
 
 const DEBOUNCE_MS = 1_000;
 
 export async function activate(context: vscode.ExtensionContext): Promise<ElideExtensionApi> {
   const ui = new ElideUi();
-  const workspace = new ElideWorkspace(ui, context.globalState);
+  const workspace = new ElideWorkspace(ui, context.globalState, context.asAbsolutePath("media/kotlin-lsp"), context.globalStorageUri.fsPath);
   context.subscriptions.push(ui, workspace);
+  const composePreview = registerComposePreview(workspace, ui, context);
+  const deployments = new AndroidDeploymentController(workspace, context.workspaceState);
+  context.subscriptions.push(
+    composePreview.disposable,
+    registerAndroidLogcat(workspace, () => deployments.target),
+    registerAndroidReadiness(workspace, ui),
+    deployments,
+  );
 
   const debugConfigurations = new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions);
   const nativeDebugConfigurations = new ElideNativeDebugConfigurationProvider(workspace, ui);
+  const androidDebugConfigurations = new ElideAndroidDebugConfigurationProvider(workspace, ui, debugConfigurations.sessions, deployments);
   const tests = new ElideTestController(workspace, ui, debugConfigurations.sessions);
   const codeLenses = new ElideCodeLensProvider(workspace);
   const explorer = new ElideProjectsView(workspace, ui);
@@ -48,11 +76,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.debugArtifact", (target: unknown) => debugArtifact(workspace, target)),
     vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, target)),
     vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
+    vscode.commands.registerCommand("elide.androidSelectTarget", (target: unknown) => deployments.select(target)),
+    vscode.commands.registerCommand("elide.androidRun", (target: unknown) => runAndroid(workspace, deployments, target)),
+    vscode.commands.registerCommand("elide.androidDebug", (target: unknown) => debugAndroid(workspace, deployments, target)),
+    vscode.commands.registerCommand("elide.androidStartEmulator", (target: unknown) => startAndroidEmulator(workspace, target)),
+    vscode.commands.registerCommand("elide.androidStopEmulator", (target: unknown) => stopAndroidEmulator(workspace, target)),
+    vscode.commands.registerCommand("elide.androidCreateAvd", (target: unknown) => createAndroidAvd(workspace, target)),
+    vscode.commands.registerCommand("elide.androidInstallSdk", (target: unknown) => installAndroidSdk(workspace, target)),
+    vscode.commands.registerCommand("elide.androidCreateKeystore", (target: unknown) => createAndroidKeystore(workspace, ui, target)),
+    vscode.commands.registerCommand("elide.androidOpenMapping", (target: unknown) => openAndroidMapping(workspace, target)),
     vscode.commands.registerCommand("elide.revealLibrary", (target: unknown) => revealLibrary(target)),
     vscode.tasks.registerTaskProvider(ELIDE_TASK_TYPE, new ElideTaskProvider(workspace)),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_DEBUG_TYPE, debugConfigurations),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_NATIVE_DEBUG_TYPE, nativeDebugConfigurations),
+    vscode.debug.registerDebugConfigurationProvider(ELIDE_ANDROID_DEBUG_TYPE, androidDebugConfigurations),
     vscode.window.registerTreeDataProvider(PROJECTS_VIEW_ID, explorer),
+    vscode.window.registerTreeDataProvider(ACTIVITY_VIEW_ID, ui.activity),
     explorer,
     tests,
   );
@@ -62,6 +101,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     workspace.onDidChange(() => void vscode.commands.executeCommand("setContext", "elide.hasProjects", workspace.projects.length > 0)),
   );
 
+  // Kotlin's own activation events do not cover Java-only Elide projects. Start the companion
+  // when an Elide source document needs it, without making CLI features wait for its server.
+  let kotlinRequested = false;
+  const startKotlinForDocuments = () => {
+    if (kotlinRequested || !vscode.workspace.textDocuments.some((document) =>
+      document.uri.scheme === "file" && (document.languageId === "kotlin" || document.languageId === "java")
+      && workspace.projectFor(document.uri.fsPath) !== undefined,
+    )) return;
+    const extension = jetBrainsExtension();
+    if (!extension) return;
+    kotlinRequested = true;
+    void extension.activate().then(undefined, (error: unknown) => {
+      ui.log(`Kotlin extension activation failed: ${error instanceof Error ? error.message : String(error)}`);
+      void vscode.window.showWarningMessage("Elide: Kotlin/Java analysis could not start. Build and sync remain available; see Elide Output for details.");
+    });
+  };
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument(startKotlinForDocuments),
+    workspace.onDidChange(startKotlinForDocuments),
+  );
+
   for (const folder of vscode.workspace.workspaceFolders ?? []) await workspace.discover(folder);
   await vscode.commands.executeCommand("setContext", "elide.hasProjects", workspace.projects.length > 0);
   // No project is not a dead end: commands, the welcome view and project creation stay available.
@@ -69,9 +129,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   else {
     ui.setStatus("idle");
     if (readConfig().syncOnStartup) void workspace.syncAll("startup");
-    else workspace.markStaleAll();
+    else workspace.markStaleAll(false);
   }
-  return { tests, explorer };
+  return { tests, explorer, composePreview: composePreview.api, activity: ui.activity };
 }
 
 export function deactivate(): void {}
@@ -100,17 +160,15 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
 
   /**
    * The tracked project a changed file belongs to. `rootOf` maps the file to the directory whose manifest owns it;
-   * a path that is not a tracked project root belongs to a nested (ignored) manifest and is not a reason to resync,
-   * and neither is a change a sync of that folder is making itself.
+   * a path that is not a tracked project root belongs to a nested (ignored) manifest and is not a reason to resync.
    */
   const ownerOf = (uri: vscode.Uri, rootOf: (fsPath: string) => string): ElideProject | undefined => {
     const located = workspace.locate(uri);
-    if (!located) return undefined;
-    const project = workspace.projectAt(rootOf(located.fsPath));
-    return project && !workspace.isSelfInflicted(project.folder) ? project : undefined;
+    return located ? workspace.projectAt(rootOf(located.fsPath)) : undefined;
   };
 
   const manifests = vscode.workspace.createFileSystemWatcher(`**/${MANIFEST_NAME}`);
+  // A sync never writes a manifest: an edit made while one runs, or right after, still makes the folder stale.
   manifests.onDidChange((uri) => {
     const project = ownerOf(uri, path.dirname);
     if (project) onStale(project.folder, MANIFEST_NAME, uri.fsPath);
@@ -123,7 +181,7 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
       const located = workspace.locate(uri);
       const owner = located ? workspace.projectFor(path.dirname(located.fsPath)) : undefined;
       const inWorkspace = owner !== undefined && (owner.workspaceRoot !== undefined || (owner.model?.members.length ?? 0) > 0);
-      if (owner && (inWorkspace || workspace.lastError(owner.folder)) && !workspace.isSelfInflicted(owner.folder)) {
+      if (owner && (inWorkspace || workspace.lastError(owner.folder))) {
         onStale(owner.folder, MANIFEST_NAME, uri.fsPath);
       }
       return;
@@ -147,7 +205,7 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
     if (!isLockfileName(path.basename(uri.fsPath))) return;
     // `<project root>/.dev/elide.lock*.bin`: two levels up from the lockfile.
     const project = ownerOf(uri, (p) => path.dirname(path.dirname(p)));
-    if (!project) return;
+    if (!project || workspace.isSelfInflicted(project.folder)) return;
     // Running an entrypoint or the tests rewrites the lockfile with the same content, which is no reason to
     // re-import: let the writes settle, then compare content and keep quiet unless the dependencies moved.
     debounce(`lockfile:${project.root}`, async () => {
@@ -158,9 +216,34 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
   lockfiles.onDidChange(onLock);
   lockfiles.onDidCreate(onLock);
 
+  // Local modules the manifests read, e.g. a shared `versions.pkl`: one watcher per file, wherever it lives.
+  const moduleWatchers = new Map<string, vscode.FileSystemWatcher>();
+  const watchModules = () => {
+    const readers = workspace.moduleReaders();
+    for (const [module, watcher] of moduleWatchers) {
+      if (readers.has(module)) continue;
+      watcher.dispose();
+      moduleWatchers.delete(module);
+    }
+    for (const module of readers.keys()) {
+      if (moduleWatchers.has(module)) continue;
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(path.dirname(module)), path.basename(module)));
+      const onModule = (uri: vscode.Uri) => {
+        for (const folder of workspace.moduleReaders().get(module) ?? []) onStale(folder, path.basename(module), uri.fsPath);
+      };
+      watcher.onDidChange(onModule);
+      watcher.onDidCreate(onModule);
+      watcher.onDidDelete(onModule);
+      moduleWatchers.set(module, watcher);
+    }
+  };
+  watchModules();
+
   context.subscriptions.push(
     manifests,
     lockfiles,
+    workspace.onDidChangeModules(watchModules),
+    { dispose: () => moduleWatchers.forEach((w) => w.dispose()) },
     vscode.workspace.onDidChangeConfiguration((e) => {
       // Build flags reach the manifest as `build.flags`, so a model resolved without them describes another build.
       if (!e.affectsConfiguration("elide.flags")) return;
@@ -235,9 +318,16 @@ async function openWorkspaceJson(workspace: ElideWorkspace): Promise<void> {
 const MENU_ACTIONS: { label: string; description: string; command: string }[] = [
   { label: "$(sync) Sync Project(s)", description: "Re-resolve the project model and refresh the Kotlin LSP", command: "elide.sync" },
   { label: "$(play) Run Elide Command…", description: "Build, test, install, or run an entrypoint", command: "elide.runTask" },
+  { label: "$(device-mobile) Select Android Deployment Target…", description: "Choose the application and device for Run and Debug", command: "elide.androidSelectTarget" },
+  { label: "$(play) Run Android App…", description: "Build, install and launch on the selected device", command: "elide.androidRun" },
+  { label: "$(debug-alt) Debug Android App…", description: "Build, install and attach the debugger", command: "elide.androidDebug" },
+  { label: "$(checklist) Check Android Environment", description: "Diagnose SDK, tools and connected devices", command: "elide.androidDoctor" },
+  { label: "$(preview) Open Compose Preview", description: "Render composables locally, without a device", command: "elide.androidComposePreview" },
+  { label: "$(output) Show Android Logcat", description: "Application logs and stack traces", command: "elide.androidLogcat" },
   { label: "$(beaker) Run All Tests", description: "Run every test in the Testing view", command: "testing.runAll" },
   { label: "$(file-code) Open elide.pkl", description: "Project manifest", command: "elide.openManifest" },
   { label: "$(json) Open generated Kotlin LSP workspace", description: WORKSPACE_JSON, command: "elide.openWorkspaceJson" },
+  { label: "$(pulse) Show Activity", description: "What syncs and preview builds did, step by step, and where their time went", command: "elide.showActivity" },
   { label: "$(output) Show Output", description: "Elide output channel", command: "elide.showOutput" },
   { label: "$(new-folder) New Project…", description: "Create a project from an Elide template", command: "elide.newProject" },
   { label: "$(add) Add Workspace Member…", description: "Create a project inside this one and declare it a member", command: "elide.addMember" },
@@ -252,7 +342,7 @@ async function showMenu(workspace: ElideWorkspace): Promise<void> {
     items.push({
       label: `$(error) Last sync failed: ${error.split("\n")[0]}`,
       description: folder.name,
-      command: "elide.showOutput",
+      command: "elide.showActivity",
     });
     break;
   }

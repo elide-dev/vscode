@@ -11,12 +11,16 @@ import { compareElideVersions, parseElideVersion, resolveElideDistribution } fro
 import * as vscode from "vscode";
 import type { ElideExtensionApi as ElideApi } from "../../src/extension.js";
 import { errorsOf, hoverAt, log, waitFor } from "./helpers.js";
+import { runAndroidScenario } from "./android.js";
+import { runComposeScenario } from "./compose.js";
 import { runWorkspaceScenario } from "./workspace.js";
 
 const sample = process.env.ELIDE_TEST_SAMPLE!;
 
 export async function run(): Promise<void> {
   if (process.env.ELIDE_TEST_SCENARIO === "workspace") return await runWorkspaceScenario();
+  if (process.env.ELIDE_TEST_SCENARIO === "compose") return await runComposeScenario();
+  if (process.env.ELIDE_TEST_SCENARIO === "android") return await runAndroidScenario();
   const folder = vscode.workspace.workspaceFolders?.[0];
   assert.ok(folder, "sample workspace folder open");
   assert.equal(folder.uri.fsPath, sample);
@@ -75,14 +79,30 @@ export async function run(): Promise<void> {
   assert.deepEqual(errorsOf(testKt).map((d) => d.message), [], "no errors in MainTest.kt");
   log("no diagnostics errors");
 
-  // 3. Manifest change → automatic resync (policy: always) → new dependency resolves.
+  // 3. Manifest change → automatic resync (policy: always) → new dependency resolves. The edit lands while a manual
+  //    sync runs, or right after it ends: either way that sync read the manifest before the edit, and must not
+  //    swallow it.
+  const elide = vscode.extensions.all.find((e) => e.id.endsWith(".elide"));
+  const activity = await waitFor("extension activity api", () => (elide?.exports as ElideApi | undefined)?.activity, 30_000, 500);
+  const previous = activity.getChildren()[0];
+  void vscode.commands.executeCommand("elide.sync");
+  const manual = await waitFor("a manual sync past reading the manifest", () => {
+    const newest = activity.getChildren()[0];
+    if (!newest || newest === previous || !newest.label.startsWith("Sync ")) return undefined;
+    return !newest.running || newest.children.some((step) => step.label.startsWith("Resolving")) ? newest : undefined;
+  }, 60_000, 10);
   const manifest = path.join(sample, "elide.pkl");
-  appendFileSync(manifest, `\ndependencies {\n    maven {\n        packages {\n            "com.google.guava:guava:33.4.0-jre"\n        }\n    }\n}\n`);
-  log("edited elide.pkl; waiting for resync with guava");
-  const withGuava = await waitFor("guava in workspace.json", () => {
+  // The version comes from the `versions.pkl` the manifest imports (runner.ts).
+  appendFileSync(manifest, `\ndependencies {\n    maven {\n        packages {\n            "com.google.guava:guava:\\(versions.guava)"\n        }\n    }\n}\n`);
+  log(`edited elide.pkl ${manual.running ? "while a sync ran" : "right after a sync ended"}; waiting for resync with guava`);
+  // The sync the edit interrupted, or one it raced, may model guava from its classpath query before a sync installs it.
+  const withGuava = await waitFor("guava with its sources in workspace.json", () => {
     const w = JSON.parse(readFileSync(workspaceJson, "utf8"));
-    return w.libraries.some((l: { name: string }) => l.name.includes("com.google.guava:guava")) ? w : undefined;
+    const guava = w.libraries.find((l: { name: string }) => l.name.includes("com.google.guava:guava"));
+    return guava?.roots.some((r: { type: string }) => r.type === "SOURCES") ? w : undefined;
   }, 300_000, 2_000);
+  log("syncs, newest first:", activity.getChildren().filter((op) => op.label.startsWith("Sync ")).slice(0, 4)
+    .map((op) => `${op.state} (${op.detail ?? ""}) ${Math.round(op.durationMs)} ms: ${op.children.map((step) => step.label).join(", ")}`).join(" | "));
   // `elide.install.classifiers` defaults to ["sources"], installed as `--slim --with sources`: the sources jar is
   // attached for Go to Definition and the javadoc jar the CLI would fetch by default is not downloaded.
   const guavaLib = withGuava.libraries.find((l: { name: string }) => l.name.includes("com.google.guava:guava"));
@@ -102,6 +122,21 @@ export async function run(): Promise<void> {
   log("hover(ImmutableList):", guavaHover.slice(0, 160).replace(/\n/g, " "));
   await new Promise((r) => setTimeout(r, 5_000));
   assert.deepEqual(errorsOf(guavaUri).map((d) => d.message), [], "no errors in Guava.kt");
+
+  // 3b. A local module the manifest imports counts like the manifest: editing only `versions.pkl` resyncs, the
+  //     resync installs, and the new version lands in workspace.json.
+  const syncsBefore = new Set(activity.getChildren());
+  writeFileSync(path.join(sample, "versions.pkl"), `guava = "33.3.1-jre"\n`);
+  log("edited versions.pkl; waiting for resync with guava 33.3.1-jre");
+  await waitFor("guava 33.3.1-jre in workspace.json", () => {
+    const names: string[] = JSON.parse(readFileSync(workspaceJson, "utf8")).libraries.map((l: { name: string }) => l.name);
+    return names.some((n) => n.includes("com.google.guava:guava:33.3.1-jre")) && !names.some((n) => n.includes("com.google.guava:guava:33.4.0-jre")) ? true : undefined;
+  }, 300_000, 2_000);
+  const moduleResync = activity.getChildren().find((op) => !syncsBefore.has(op) && op.label.startsWith("Sync ") && op.state === "succeeded");
+  assert.ok(moduleResync, "a sync ran after the versions.pkl edit");
+  assert.equal(moduleResync.detail, "manifest-change", "the module edit triggered a manifest-change resync");
+  assert.ok(moduleResync.children.some((step) => step.label === "Installing dependencies"), "the resync after a module edit installs");
+  log("versions.pkl resync:", `${moduleResync.detail} ${Math.round(moduleResync.durationMs)} ms: ${moduleResync.children.map((step) => step.label).join(", ")}`);
 
   // 4. Tasks.
   const tasks = await vscode.tasks.fetchTasks({ type: "elide" });
