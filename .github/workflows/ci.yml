@@ -24,29 +24,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.19.1
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+          cache-save: ${{ github.event_name != 'pull_request' }}
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - name: Check BUILD files are up to date
+        run: bazel run --config=ci //:gazelle.check
 
-      - name: Build
-        run: bun run build
-
-      - name: Typecheck extension
-        run: bun run --filter elide typecheck
-
-      - name: Run unit tests
-        run: bun run test
-
+      # Builds every target (the extension type-check, bundle and .vsix included) and runs the unit tests.
       # The integration suite drives a real VS Code with the 1.2 GB JetBrains.kotlin-server extension and a local
-      # Elide install; it is run locally (`packages/vscode: bun run test:integration`), not on CI runners.
-      - name: Package extension
-        run: bun run --filter elide package
+      # Elide install; it is run locally (`bazel run //packages/vscode:integration_test`), not on CI runners.
+      - name: Build and test
+        run: bazel test --config=ci //...
+
+      - name: Stage extension
+        run: |
+          version="$(jq -r '.version' packages/vscode/package.json)"
+          mkdir -p "$RUNNER_TEMP/vsix"
+          cp "$(bazel cquery --config=ci --output=files //packages/vscode:vsix)" "$RUNNER_TEMP/vsix/elide-${version}.vsix"
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v4
         with:
           name: extension-vsix
-          path: packages/vscode/*.vsix
+          path: ${{ runner.temp }}/vsix/*.vsix
           retention-days: 7

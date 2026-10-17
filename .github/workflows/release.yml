@@ -42,19 +42,21 @@ jobs:
         with:
           ref: ${{ needs.release-please.outputs.tag }}
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.19.1
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
 
       - name: Run unit tests
-        run: bun run test
+        run: bazel test --config=ci //...
 
       # the tag and `packages/vscode/package.json` are both written by release-please, so they cannot disagree
       - name: Publish extension to Elide repository
         run: tools/deploy.sh
         env:
+          BAZEL_FLAGS: --config=ci
           ELIDE_PLUGINS_KEY: ${{ secrets.ELIDE_PLUGINS_KEY }}
           ELIDE_PLUGINS_URL: ${{ vars.ELIDE_PLUGINS_URL }}
 
@@ -70,10 +72,10 @@ jobs:
             exit 0
           fi
           version="$(jq -r '.version' packages/vscode/package.json)"
-          bunx @vscode/vsce publish --no-dependencies --packagePath "packages/vscode/elide-${version}.vsix"
+          bazel run --config=ci //packages/vscode:vsce -- publish --no-dependencies --packagePath "$PWD/dist/elide-${version}.vsix"
 
       - name: Attach the extension to the GitHub Release
-        run: gh release upload "$TAG" packages/vscode/*.vsix --clobber
+        run: gh release upload "$TAG" dist/*.vsix --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.release-please.outputs.tag }}

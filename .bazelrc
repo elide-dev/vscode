@@ -1,0 +1,29 @@
+# Hermeticity: actions see a fixed PATH and no network, and every toolchain (Node, pnpm, TypeScript, esbuild, Bun) is
+# fetched at a pinned version by MODULE.bazel rather than taken from the machine.
+common --incompatible_strict_action_env
+common --nosandbox_default_allow_network
+common --enable_platform_specific_config
+common --repo_env=DO_NOT_TRACK=1
+
+# TypeScript: tsc both type-checks and emits, as `tsc -p` did; tsconfig.base.json's `skipLibCheck` applies.
+common --@aspect_rules_ts//ts:default_to_tsc_transpiler
+common --@aspect_rules_ts//ts:skipLibCheck=honor_tsconfig
+
+# Concurrent worktrees. Each checkout already gets its own output base, server and `bazel-*` symlinks (all keyed by
+# the workspace path), so builds in different worktrees never share mutable state. What they share is content-
+# addressed and safe for concurrent writers: the repository cache (Bazel's default, per user) and this disk cache,
+# which lets a fresh worktree reuse every action another one already ran. Keep it bounded.
+common --disk_cache=~/.cache/bazel-disk/elide-vscode
+common --experimental_disk_cache_gc_max_size=10G
+
+test --test_output=errors
+
+# CI: the module lockfile and pnpm-lock.yaml must already be up to date.
+common:ci --lockfile_mode=error
+common:ci --repo_env=ASPECT_RULES_JS_FROZEN_PNPM_LOCK=1
+common:ci --announce_rc
+common:ci --color=yes
+common:ci --show_timestamps
+
+# Per-worktree overrides (gitignored).
+try-import %workspace%/user.bazelrc

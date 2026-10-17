@@ -1,0 +1,213 @@
+load("@aspect_rules_esbuild//esbuild:defs.bzl", "esbuild")
+load("@aspect_rules_js//js:defs.bzl", "js_binary")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@npm//packages/vscode:@vscode/vsce/package_json.bzl", vsce_bin = "bin")
+load("//tools/bazel/bun:defs.bzl", "bun_test")
+
+# The integration suite is bundled by the hand-written targets below, outside the tsc project (tsconfig.json covers src).
+# gazelle:exclude test
+
+npm_link_all_packages(name = "node_modules")
+
+ts_project(
+    name = "vscode",
+    srcs = [
+        "src/activity.ts",
+        "src/android.ts",
+        "src/androidDebug.ts",
+        "src/androidDeployment.ts",
+        "src/androidDeploymentState.ts",
+        "src/androidLogcat.ts",
+        "src/androidReadiness.ts",
+        "src/androidStackLinks.ts",
+        "src/androidStackSource.ts",
+        "src/codelens.ts",
+        "src/composeBackend.ts",
+        "src/composeCompiler.ts",
+        "src/composeKomodo.ts",
+        "src/composePreview.ts",
+        "src/composePreviewHtml.ts",
+        "src/composeRender.ts",
+        "src/composeRuntime.ts",
+        "src/composeSource.ts",
+        "src/composeWorker.ts",
+        "src/config.ts",
+        "src/debug.ts",
+        "src/explorer.ts",
+        "src/extension.ts",
+        "src/jetbrains.ts",
+        "src/kotlinLspPlugin.ts",
+        "src/manifestModules.ts",
+        "src/nativeDebug.ts",
+        "src/newProject.ts",
+        "src/output.ts",
+        "src/projects.ts",
+        "src/tasks.ts",
+        "src/testing.ts",
+    ],
+    declaration = False,
+    no_emit = True,
+    out_dir = "dist",
+    root_dir = "src",
+    source_map = True,
+    tsconfig = ":tsconfig",
+    deps = [
+        ":node_modules/@elide/ide-core",
+        ":node_modules/@types/node",
+        ":node_modules/@types/vscode",
+        ":node_modules/@types/yauzl",
+        ":node_modules/yauzl",
+    ],
+)
+
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+    visibility = [":__subpackages__"],
+    deps = [
+        ":package.json",
+        "//:tsconfig_base",
+        "//packages/core:tsconfig",
+    ],
+)
+
+# bazel-bin/packages/vscode is the extension: the bundle at the manifest's `main` with the manifest and assets beside it.
+# The Extension Development Host, the integration runner and vsce all load it from there.
+esbuild(
+    name = "bundle",
+    srcs = glob(["src/**/*.ts"]) + [
+        "tsconfig.json",
+        "//:tsconfig_base",
+    ],
+    entry_point = "src/extension.ts",
+    external = ["vscode"],
+    format = "cjs",
+    output = "dist/extension.js",
+    platform = "node",
+    sourcemap = "linked",
+    sources_content = True,
+    target = "node22",
+    tsconfig = "tsconfig.json",
+    deps = [
+        ":node_modules/@elide/ide-core",
+        ":node_modules/yauzl",
+    ],
+)
+
+copy_to_bin(
+    name = "assets",
+    srcs = [
+        ".vscodeignore",
+        "CHANGELOG.md",
+        "LICENSE",
+        "README.md",
+        "icon.png",
+        "package.json",
+    ] + glob([
+        "media/**",
+        "syntaxes/**",
+    ]),
+)
+
+# Building the extension type-checks it: `:vscode` emits nothing, and its tsc run is the `_typecheck` output.
+filegroup(
+    name = "extension",
+    srcs = [
+        ":assets",
+        ":bundle",
+        ":vscode_typecheck",
+    ],
+)
+
+vsce_bin.vsce(
+    name = "vsix",
+    srcs = [
+        ":extension",
+        "//:node_modules/@secretlint/secretlint-formatter-sarif",
+        "//:node_modules/@secretlint/secretlint-rule-no-dotenv",
+        "//:node_modules/@secretlint/secretlint-rule-preset-recommend",
+    ],
+    outs = ["elide.vsix"],
+    args = [
+        "package",
+        "--no-dependencies",
+        "--out",
+        "elide.vsix",
+    ],
+    chdir = package_name(),
+)
+
+# The pinned vsce, for publishing a built archive: `bazel run //packages/vscode:vsce -- publish --packagePath <abs path>`.
+vsce_bin.vsce_binary(name = "vsce")
+
+# Unit tests run under Bun (`bun:test`) from their sources; `vscode` is mocked, the rest is the real modules.
+bun_test(
+    name = "test",
+    size = "small",
+    srcs = glob(["test/*.test.ts"]),
+    data = glob(
+        [
+            "media/**",
+            "src/**/*.ts",
+        ],
+    ) + [
+        "package.json",
+        ":node_modules/@elide/ide-core",
+        ":node_modules/yauzl",
+    ],
+)
+
+# Integration suite: drives the locally installed VS Code, JetBrains.kotlin-server extension and `elide`, so it is not
+# hermetic and only runs on request: `bazel run //packages/vscode:integration_test`.
+esbuild(
+    name = "integration_suite",
+    testonly = True,
+    srcs = glob([
+        "src/**/*.ts",
+        "test/integration/**/*.ts",
+    ]) + [
+        "tsconfig.json",
+        "//:tsconfig_base",
+    ],
+    entry_point = "test/integration/index.ts",
+    external = ["vscode"],
+    format = "cjs",
+    output = "dist-test/index.js",
+    platform = "node",
+    target = "node22",
+    tsconfig = "tsconfig.json",
+    deps = [":node_modules/@elide/ide-core"],
+)
+
+esbuild(
+    name = "integration_runner",
+    testonly = True,
+    srcs = ["test/integration/runner.ts"],
+    entry_point = "test/integration/runner.ts",
+    external = ["@vscode/test-electron"],
+    format = "esm",
+    output = "test/integration/runner.mjs",
+    platform = "node",
+    target = "node22",
+)
+
+js_binary(
+    name = "integration_test",
+    testonly = True,
+    data = [
+        ":extension",
+        ":integration_suite",
+        ":node_modules/@vscode/test-electron",
+        "//samples/ktjvm",
+        "//samples/workspace",
+    ],
+    entry_point = "test/integration/runner.mjs",
+    # Output-tree copies are read-only; the runner copies the samples out of its runfiles and edits those copies.
+    no_copy_to_bin = [
+        "//samples/ktjvm",
+        "//samples/workspace",
+    ],
+    tags = ["manual"],
+)

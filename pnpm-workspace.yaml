@@ -1,0 +1,9 @@
+packages:
+  - packages/*
+
+# No dependency install script runs, under pnpm or Bazel (rules_js reads this list). Both are only reached by vsce
+# features the release does not use: keytar backs `vsce login`'s credential store and would download a native prebuild;
+# @vscode/vsce-sign's postinstall stages its binary for `--sign-tool` signing and signature verification.
+allowBuilds:
+  "@vscode/vsce-sign": false
+  keytar: false

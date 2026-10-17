@@ -12,9 +12,8 @@ updates:
       github-actions:
         patterns: ["*"]
 
-  # Bun ecosystem: the repo has no package-lock.json, only the text-based `bun.lock` the bun updater understands.
-  # CI runs `bun install --frozen-lockfile`, so a bump whose lockfile was not refreshed fails loudly instead of merging.
-  - package-ecosystem: bun
+  # npm ecosystem over the pnpm workspace: Dependabot updates `pnpm-lock.yaml`, which rules_js reads directly.
+  - package-ecosystem: npm
     directory: "/"
     schedule:
       interval: weekly
@@ -23,5 +22,5 @@ updates:
       prefix: "chore"
       include: scope
     groups:
-      bun:
+      npm:
         patterns: ["*"]

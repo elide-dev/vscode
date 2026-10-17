@@ -6,10 +6,16 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}/packages/vscode",
+        "--extensionDevelopmentPath=${workspaceFolder}/bazel-bin/packages/vscode",
         "${workspaceFolder}/samples/ktjvm"
       ],
-      "outFiles": ["${workspaceFolder}/packages/vscode/dist/**/*.js"],
+      "outFiles": ["${workspaceFolder}/bazel-bin/packages/vscode/dist/**/*.js"],
+      // The extension host loads the bundle by its real path in Bazel's output base, and its source maps point at the
+      // copies of the sources there: accept those maps, and map their sources back to the workspace.
+      "resolveSourceMapLocations": ["${workspaceFolder}/**", "**/bazel-out/*/bin/packages/**", "!**/node_modules/**"],
+      "sourceMapPathOverrides": {
+        "?:*/bazel-out/?:*/bin/*": "${workspaceFolder}/*"
+      },
       "preLaunchTask": "build"
     }
   ]

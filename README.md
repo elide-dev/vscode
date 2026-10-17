@@ -451,21 +451,22 @@ unlinked. Obfuscated release traces still require the matching R8 mapping; this 
   from commit subjects by [release-please](https://github.com/googleapis/release-please) when a release is cut.
 - `samples/ktjvm` — Kotlin/JVM sample used by the integration test.
 - `tools/deploy.sh` — packaging and publication to `plugins.elide.dev`.
+- `tools/bazel` — repository-local Bazel rules (a hermetic Bun for the unit tests).
 
 ## Development
 
-Use the Bun version pinned in `package.json` (`packageManager`) for the test suite.
+Building needs only [Bazelisk](https://github.com/bazelbuild/bazelisk); Bazel fetches every other tool at a pinned
+version, and outputs stay in `bazel-bin/`, so several worktrees can build and test at once.
 
 ```bash
-bun install
-bun run build                       # core (tsc) + extension (esbuild)
-bun run test                        # core and extension behavioral tests
-cd packages/vscode && bun run test:integration   # drives real VS Code + Kotlin LSP against samples/ktjvm
+bazel test //...                                # core (tsc) + extension (esbuild, type-check) + .vsix + unit tests
+bazel run //:gazelle                            # regenerate BUILD files after adding or moving sources
+bazel run //packages/vscode:integration_test    # drives real VS Code + Kotlin LSP against samples/ktjvm
 ```
 
 The integration test requires VS Code at `/Applications/Visual Studio Code.app`, `JetBrains.kotlin-server` installed
 in `~/.vscode/extensions`, `elide` installed, and network access (it adds Guava to the sample). Press F5 in this repo to
-run the extension against `samples/ktjvm`.
+run the extension against `samples/ktjvm`. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the full dev loop.
 
 ## Contributing
 

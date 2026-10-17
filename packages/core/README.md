@@ -48,9 +48,8 @@ consumed through the workspace by `packages/vscode`.
 ## Development
 
 ```bash
-bun install
-bun run --filter '@elide/ide-core' build
-bun test
+bazel build //packages/core        # tsc → bazel-bin/packages/core/dist
+bazel test //packages/core:test    # bun test
 ```
 
 MIT licensed. See [LICENSE](./LICENSE).

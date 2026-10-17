@@ -5,7 +5,9 @@ everything you need to build, test, and submit changes.
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) 1.3 or newer. The repo is Node-free: install and dev scripts run under Bun.
+- [Bazelisk](https://github.com/bazelbuild/bazelisk), installed as `bazel`. It runs the Bazel version pinned in
+  `.bazelversion`, and Bazel fetches every other tool at a pinned version (Node.js, pnpm, TypeScript, esbuild, Bun,
+  vsce): nothing else needs to be installed to build and test.
 - VS Code 1.105 or newer, if you want to run the extension itself (via the `Run Extension` launch
   configuration).
 - For manual/integration testing: [Elide](https://elide.dev) 1.5 or newer installed locally, and the
@@ -19,34 +21,70 @@ everything you need to build, test, and submit changes.
 - `samples/ktjvm` — a sample Kotlin/JVM project used to exercise the extension during development and
   by the local-only integration test.
 - `tools/deploy.sh` — release/deploy helper script.
+- `tools/bazel` — repository-local Bazel rules (the hermetic Bun used by `bun_test`).
 
 ## Dev loop
 
+The build is [Bazel](https://bazel.build) with [rules_js](https://github.com/aspect-build/rules_js) and
+[rules_ts](https://github.com/aspect-build/rules_ts); npm dependencies come from the pnpm workspace
+(`pnpm-workspace.yaml`, `pnpm-lock.yaml`).
+
 ```sh
-bun install
-bun run build
-bun test                              # unit tests for packages/core
-bun run --filter elide typecheck      # typecheck the extension package
+bazel test //...                                  # build and type-check everything, package the .vsix, run unit tests
+bazel test //packages/core:test                   # unit tests for packages/core only
+bazel build //packages/vscode:extension           # the extension, at bazel-bin/packages/vscode
+bazel build //packages/vscode:vsix                # bazel-bin/packages/vscode/elide.vsix
 ```
 
-To run the extension interactively, open this repo in VS Code and start the `Run Extension` launch
-configuration; use `samples/ktjvm` as the workspace to open in the resulting Extension Development
-Host window.
+Outputs land in `bazel-bin/`, never in the source tree. To run the extension interactively, open this repo in VS Code
+and start the `Run Extension` launch configuration: it builds `//packages/vscode:extension` and opens `samples/ktjvm`
+in an Extension Development Host loading `bazel-bin/packages/vscode`.
+
+For editor support (the TypeScript language service needs `node_modules`), install the workspace with the pinned
+pnpm: `bazel run -- @pnpm//:pnpm --dir "$PWD" install`. Bazel itself never reads those `node_modules`. No build is
+needed for the editor to see `@elide/ide-core`: `packages/vscode/tsconfig.json` references the `packages/core`
+project, so the language service reads its sources in place of the `dist/` outputs that only exist in `bazel-bin`.
+
+### Dependencies and BUILD files
+
+- Add or bump an npm dependency in the package's `package.json`; the next Bazel build re-locks `pnpm-lock.yaml` and
+  stops, asking to be run again. Commit the lockfile together with `.aspect/rules/external_repository_action_cache/`;
+  CI fails on a stale lockfile.
+- `BUILD.bazel` files are maintained by [Gazelle](https://github.com/aspect-build/aspect-gazelle): after adding,
+  removing or re-importing source files, run `bazel run //:gazelle`. CI runs `bazel run //:gazelle.check`. Gazelle
+  leaves the targets it does not generate (bundles, tests, the `.vsix`) alone; those are maintained by hand.
+- Tool versions live in `MODULE.bazel` (Node.js, esbuild, rulesets), `tools/bazel/bun/extensions.bzl` (Bun),
+  `package.json` (`packageManager` for pnpm, `typescript`) and `.bazelversion`.
+
+### Working in several worktrees
+
+Concurrent builds in separate `git worktree`s are safe. Bazel keys each checkout's output base, server and
+`bazel-*` symlinks by the checkout's path, and nothing is written to the source tree, so worktrees share no mutable
+build state. They do share two content-addressed caches that tolerate concurrent writers: Bazel's repository cache
+(downloads) and the disk cache at `~/.cache/bazel-disk/elide-vscode` (action outputs, capped at 10 GB), so a fresh
+worktree reuses whatever another one already built. Per-worktree flags go in a gitignored `user.bazelrc`.
+
+Each worktree keeps its own Bazel server (idle for up to three hours) and output base: run `bazel shutdown` in a
+worktree you are done with, and `bazel clean --expunge` before removing it to free its output base.
+
+### Integration tests
 
 Integration tests require a real VS Code install, the `JetBrains.kotlin-server` extension, and a local
 Elide install, so they are not run in CI. To run them locally:
 
 ```sh
-cd packages/vscode
-bun run test:integration
+bazel run //packages/vscode:integration_test
 ```
+
+Every run works on its own temporary copy of the sample and its own VS Code user data directory, so runs from
+different worktrees can overlap. They share the installed extensions in `~/.vscode/extensions`; test instances run
+with extension auto-update off so they leave that directory alone.
 
 The default scenario drives `samples/ktjvm`. `ELIDE_TEST_SCENARIO=workspace` runs the Elide-workspace
 scenario instead, against `samples/workspace` or the directory `ELIDE_WORKSPACE_SAMPLE` names:
 
 ```sh
-cd packages/vscode
-ELIDE_TEST_SCENARIO=workspace bun run test:integration
+ELIDE_TEST_SCENARIO=workspace bazel run //packages/vscode:integration_test
 ```
 
 Android app verification has no default fixture. Select an Elide Android application explicitly, including its
@@ -100,11 +138,10 @@ each subject as the entry you want users to read on the Marketplace.
 
 Before opening a PR, confirm:
 
-- [ ] `bun run build` succeeds.
-- [ ] `bun run --filter elide typecheck` succeeds.
-- [ ] `bun test` passes.
+- [ ] `bazel test //...` passes (build, type-check, packaging and unit tests).
+- [ ] `bazel run //:gazelle.check` passes (BUILD files up to date).
 - [ ] Docs are updated for any user-visible change (the changelog is generated on release).
-- [ ] No generated artifacts are committed (`dist/`, `*.vsix`, and `workspace.json` are gitignored —
+- [ ] No generated artifacts are committed (`dist/`, `*.vsix`, `bazel-*`, and `workspace.json` are gitignored —
       make sure your diff doesn't reintroduce them).
 
 ## Reporting problems

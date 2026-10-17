@@ -1,0 +1,31 @@
+alias(
+    name = "bun",
+    actual = select({
+        ":darwin_aarch64": "@bun_darwin_aarch64//:bun",
+        ":darwin_x64": "@bun_darwin_x64//:bun",
+        ":linux_aarch64": "@bun_linux_aarch64//:bun",
+        ":linux_x64": "@bun_linux_x64//:bun",
+    }),
+    visibility = ["//visibility:public"],
+)
+
+[
+    config_setting(
+        name = "{}_{}".format(os, cpu),
+        constraint_values = [
+            "@platforms//os:" + {"darwin": "macos"}.get(os, os),
+            "@platforms//cpu:" + {
+                "aarch64": "aarch64",
+                "x64": "x86_64",
+            }[cpu],
+        ],
+    )
+    for os in [
+        "darwin",
+        "linux",
+    ]
+    for cpu in [
+        "aarch64",
+        "x64",
+    ]
+]
