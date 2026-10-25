@@ -2,8 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
-import { AndroidLogcatFormatter, AndroidLogcatSession, androidLogcatArgs, parseAndroidLogcatLine, parseAndroidPackageUid, type AndroidLogcatOptions } from "../src/androidLogcat.js";
+import {
+  AndroidLogcatFormatter, AndroidLogcatSession, androidLogcatArgs, androidLogcatClockScript, androidLogcatProcessFallback, androidLogcatStart,
+  formatAndroidLogcatFilter, parseAndroidLogcatFilter, parseAndroidLogcatLine, parseAndroidPackageUid, type AndroidLogcatOptions,
+} from "../src/androidLogcat.js";
 
 const defaults: AndroidLogcatOptions = { adb: "/sdk with spaces/platform-tools/adb", device: "emulator-5554", priority: "I", text: "" };
 
@@ -12,13 +14,21 @@ describe("logcat arguments and package identity", () => {
     expect(androidLogcatArgs({ ...defaults, device: "serial; echo bad", text: "$(touch /tmp/bad)" })).toEqual([
       "-s", "serial; echo bad", "logcat", "-v", "threadtime", "*:I",
     ]);
-    expect(androidLogcatArgs({ ...defaults, packageName: "com.example.app", priority: "W" }, 10123)).toContain("--uid=10123");
+    expect(androidLogcatArgs({ ...defaults, packageName: "com.example.app", priority: "W" }, { uid: 10123 })).toContain("--uid=10123");
+    expect(androidLogcatArgs({ ...defaults, packageName: "com.example.app" }, { pid: 4242 })).toEqual([
+      "-s", "emulator-5554", "logcat", "-v", "threadtime", "--pid=4242", "*:I",
+    ]);
+    expect(androidLogcatArgs(defaults, undefined, "1792192635.684")).toEqual([
+      "-s", "emulator-5554", "logcat", "-v", "threadtime", "-T", "1792192635.684", "*:I",
+    ]);
+    expect(() => androidLogcatArgs(defaults, undefined, "1; id")).toThrow("start time");
   });
 
   test("remote-shell package arguments are restricted before execution", () => {
-    expect(() => androidLogcatArgs({ ...defaults, packageName: "com.example;id" }, 123)).toThrow("application ID");
+    expect(() => androidLogcatArgs({ ...defaults, packageName: "com.example;id" }, { uid: 123 })).toThrow("application ID");
     expect(() => androidLogcatArgs({ ...defaults, packageName: "com.example.app" })).toThrow("UID");
-    expect(() => androidLogcatArgs(defaults, Number.NaN)).toThrow("UID");
+    expect(() => androidLogcatArgs(defaults, { uid: Number.NaN })).toThrow("UID");
+    expect(() => androidLogcatArgs(defaults, { pid: 0 })).toThrow("process ID");
     expect(() => androidLogcatArgs({ ...defaults, device: "" })).toThrow("device");
   });
 
@@ -28,6 +38,57 @@ describe("logcat arguments and package identity", () => {
     expect(parseAndroidPackageUid(output, "com.example")).toBeUndefined();
     expect(parseAndroidPackageUid("package:com.example.app uid:garbage", "com.example.app")).toBeUndefined();
     expect(parseAndroidPackageUid("package:com.example.app uid:9007199254740992", "com.example.app")).toBeUndefined();
+  });
+
+  test("devices whose logcat lacks --uid (before API 31) follow the app's running process, or explain why not", () => {
+    const stat = "stat 4242 (com.example.app) S 1 2 3";
+    expect(androidLogcatClockScript()).toContain("getprop ro.build.version.sdk");
+    expect(androidLogcatProcessFallback(`now 2000\nsdk 31\n${stat}\n`, "com.example.app")).toBeUndefined();
+    // An unreadable level keeps UID discovery, which reports its own failure.
+    expect(androidLogcatProcessFallback(`now 2000\nsdk \n${stat}\n`, "com.example.app")).toBeUndefined();
+    expect(androidLogcatProcessFallback(`now 2000\nsdk 30\n${stat}\n`, "com.example.app")).toEqual({ pid: 4242, sdk: 30 });
+    expect(androidLogcatProcessFallback(`sdk 24\n${stat}`, "com.example.app")).toEqual({ pid: 4242, sdk: 24 });
+    expect(() => androidLogcatProcessFallback("now 2000\nsdk 28\n", "com.example.app")).toThrow("com.example.app is not running");
+    expect(() => androidLogcatProcessFallback("now 2000\nsdk 28\nstat garbage\n", "com.example.app")).toThrow("not running");
+    expect(() => androidLogcatProcessFallback(`sdk 23\n${stat}`, "com.example.app")).toThrow("needs API 24");
+  });
+
+  test("a new stream starts at the running app's process start, else now, never at the buffer's start", () => {
+    expect(() => androidLogcatClockScript("com.example;id")).toThrow("application ID");
+    expect(androidLogcatClockScript()).not.toContain("pidof");
+    expect(androidLogcatClockScript("com.example.app")).toContain("pidof -s com.example.app");
+    // Booted 1000 s ago; the process started 900 s after boot (90000 ticks at 100 Hz). Its name contains spaces.
+    const stat = "4242 (com.exa mple) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 90000 19";
+    expect(androidLogcatStart(`now 2000.5\nuptime 1000.25 3000.00\ntck 100\nstat ${stat}\n`)).toEqual({ since: "1900.250", from: "process" });
+    expect(androidLogcatStart("now 2000.123456789\nuptime 1000.25 3000.00\ntck 100\n")).toEqual({ since: "2000.123", from: "now" });
+    // Missing CLK_TCK means Android's 100 Hz; a malformed stat falls back to now.
+    expect(androidLogcatStart(`now 2000\nuptime 1000 1\ntck \nstat ${stat}`)?.since).toBe("1900.000");
+    expect(androidLogcatStart("now 2000\nuptime 1000 1\ntck 100\nstat garbage")).toEqual({ since: "2000.000", from: "now" });
+    expect(androidLogcatStart("now %s.%N\n")).toBeUndefined();
+  });
+
+  test("one filter line carries the application, minimum priority and literal text", () => {
+    expect(parseAndroidLogcatFilter("package:com.example.app level:warn Fatal Exception")).toEqual({ packageName: "com.example.app", priority: "W", text: "Fatal Exception" });
+    expect(parseAndroidLogcatFilter("")).toEqual({ priority: "I", text: "" });
+    expect(parseAndroidLogcatFilter("APP:com.example.app priority:E")).toEqual({ packageName: "com.example.app", priority: "E", text: "" });
+    expect(parseAndroidLogcatFilter(`level:v "package:not.a.filter  x" http://host "say \\"hi\\""`)).toEqual({ priority: "V", text: `package:not.a.filter  x http://host say "hi"` });
+    for (const [input, error] of [["package:com.example;id", "application ID"], ["level:loud", "not a priority"],
+      ["level:constructor", "not a priority"], ["priority:__proto__", "not a priority"], ["package:a.b package:c.d", "twice"],
+      ["level:e level:w", "twice"], ["\"unclosed text", "Close"]]) {
+      expect(parseAndroidLogcatFilter(input!)).toEqual({ error: expect.stringContaining(error!) });
+    }
+  });
+
+  test("the formatted filter reads back as the same filter", () => {
+    const filters = [
+      { priority: "I" as const, text: "" },
+      { packageName: "com.example.app", priority: "D" as const, text: "two words" },
+      { priority: "F" as const, text: "level:error" },
+      { priority: "W" as const, text: "  padded  " },
+      { priority: "E" as const, text: "quote \" and back\\slash" },
+    ];
+    for (const filter of filters) expect(parseAndroidLogcatFilter(formatAndroidLogcatFilter(filter))).toEqual(filter);
+    expect(formatAndroidLogcatFilter({ packageName: "com.example.app", priority: "W", text: "Exception" })).toBe("package:com.example.app level:warn Exception");
   });
 });
 
@@ -85,8 +146,19 @@ const path = require("node:path");
 const root = __dirname;
 const args = process.argv.slice(2);
 fs.appendFileSync(path.join(root, "calls"), JSON.stringify(args) + "\\n");
-if (args.includes("shell")) {
-  if (args.at(-1) === "com.example.slow") {
+process.on("SIGTERM", () => {
+  fs.writeFileSync(path.join(root, "stopped-" + process.pid), "yes");
+  if (args.at(-1) === "com.example.stubborn") return;
+  process.exit(0);
+});
+if (args.includes("shell") && args.at(-1).includes("date +%s")) {
+  console.log("now 2000.5");
+  console.log("uptime 1000.25 3000.00");
+  console.log("tck 100");
+  console.log("sdk " + ((/^api(\\d+)$/.exec(args[1]) || [])[1] || 34));
+  if (args.at(-1).includes("pidof -s com.example.app")) console.log("stat 4242 (com.example.app) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 90000 19");
+} else if (args.includes("shell")) {
+  if (args.at(-1) === "com.example.slow" || args.at(-1) === "com.example.stubborn") {
     fs.writeFileSync(path.join(root, "pending"), String(process.pid));
     fs.watch(root, () => {});
   } else {
@@ -164,13 +236,38 @@ describe.skipIf(process.platform === "win32")("owned adb streams", () => {
     const { promise: completion, resolve: ended } = Promise.withResolvers<Error | undefined>();
     const session = new AndroidLogcatSession((line) => lines.push(line), ended);
     sessions.push(session);
-    await session.start({ ...defaults, adb: fake.adb, packageName: "com.example.app", text: "needle" });
+    expect(await session.start({ ...defaults, adb: fake.adb, packageName: "com.example.app", text: "needle" })).toEqual({ start: { since: "1900.250", from: "process" } });
     expect(await completion).toBeUndefined();
     expect(lines).toEqual(["NEEDLE €", "Needle final"]);
     expect(fake.calls()).toEqual([
+      ["-s", defaults.device, "shell", androidLogcatClockScript("com.example.app")],
       ["-s", defaults.device, "shell", "cmd", "package", "list", "packages", "--user", "current", "-U", "com.example.app"],
-      ["-s", defaults.device, "logcat", "-v", "threadtime", "--uid=10123", "*:I"],
+      ["-s", defaults.device, "logcat", "-v", "threadtime", "-T", "1900.250", "--uid=10123", "*:I"],
     ]);
+  });
+
+  test("before API 31 a running app is followed by its process ID, never by an unsupported --uid", async () => {
+    const fake = fixture();
+    const { promise: completion, resolve: ended } = Promise.withResolvers<Error | undefined>();
+    const session = new AndroidLogcatSession(() => {}, ended);
+    sessions.push(session);
+    const options = { ...defaults, adb: fake.adb, device: "api30", packageName: "com.example.app" };
+    expect(await session.start(options)).toEqual({ start: { since: "1900.250", from: "process" }, process: { pid: 4242, sdk: 30 } });
+    expect(await completion).toBeUndefined();
+    expect(fake.calls()).toEqual([
+      ["-s", "api30", "shell", androidLogcatClockScript("com.example.app")],
+      ["-s", "api30", "logcat", "-v", "threadtime", "-T", "1900.250", "--pid=4242", "*:I"],
+    ]);
+  });
+
+  test("before API 31 a stopped app, and before API 24 any app, fails with the reason instead of streaming", async () => {
+    const fake = fixture();
+    const session = new AndroidLogcatSession(() => { throw new Error("Unexpected log"); }, () => {});
+    sessions.push(session);
+    await expect(session.start({ ...defaults, adb: fake.adb, device: "api30", packageName: "com.example.missing" })).rejects.toThrow("com.example.missing is not running");
+    await expect(session.start({ ...defaults, adb: fake.adb, device: "api23", packageName: "com.example.app" })).rejects.toThrow("needs API 24");
+    expect(fake.calls().every((call) => call.includes("shell"))).toBe(true);
+    expect(session.active).toBe(false);
   });
 
   test("an absent app fails instead of leaking all-device logs", async () => {
@@ -178,7 +275,7 @@ describe.skipIf(process.platform === "win32")("owned adb streams", () => {
     const session = new AndroidLogcatSession(() => { throw new Error("Unexpected log"); }, () => {});
     sessions.push(session);
     await expect(session.start({ ...defaults, adb: fake.adb, packageName: "com.example.missing" })).rejects.toThrow("not installed");
-    expect(fake.calls()).toHaveLength(1);
+    expect(fake.calls()).toHaveLength(2);
   });
 
   test("reports device failures and executable launch errors", async () => {
@@ -214,15 +311,23 @@ describe.skipIf(process.platform === "win32")("owned adb streams", () => {
     await expect(session.start(options)).rejects.toThrow("disposed");
   });
 
-  test("stop cancels pending UID discovery and never launches a stale stream", async () => {
-    const fake = fixture();
-    const session = new AndroidLogcatSession(() => {}, () => { throw new Error("Unexpected end notification"); });
-    sessions.push(session);
-    const pending = session.start({ ...defaults, adb: fake.adb, packageName: "com.example.slow" });
-    const pid = await waitForFile(path.join(fake.root, "pending"));
-    session.stop();
-    await pending;
-    await waitForExit(Number(pid));
-    expect(fake.calls()).toHaveLength(1);
+  test("stop and disposal cancel UID discovery even when adb ignores SIGTERM", async () => {
+    for (const packageName of ["com.example.slow", "com.example.stubborn"]) {
+      const fake = fixture();
+      const session = new AndroidLogcatSession(() => {}, () => { throw new Error("Unexpected end notification"); });
+      sessions.push(session);
+      const pending = session.start({ ...defaults, adb: fake.adb, packageName });
+      const pid = Number(await waitForFile(path.join(fake.root, "pending")));
+      try {
+        if (packageName.endsWith("stubborn")) session.dispose();
+        else session.stop();
+        expect(await pending).toBeUndefined();
+        await waitForExit(pid);
+        expect(session.active).toBe(false);
+        expect(fake.calls()).toHaveLength(2);
+      } finally {
+        try { process.kill(pid, "SIGKILL"); } catch { /* Already reaped. */ }
+      }
+    }
   });
 });

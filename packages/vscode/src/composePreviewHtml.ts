@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { PREVIEW_KEY_NAMES } from "./composeBackend.js";
 
 /** Self-contained webview: preview pixels and tooling coordinates share one canvas. */
 export function previewHtml(): string {
@@ -36,7 +37,8 @@ h1 { font-size: 13px; font-weight: 650; margin: 0; letter-spacing: .01em; }
 .status-row[data-state="ready"] .status-dot { background: var(--vscode-testing-iconPassed, #73c991); }
 .status-row[data-state="error"] .status-dot { background: var(--error); }
 #status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-#diagnostics-toggle, #log-toggle { font-size: 11px; min-height: 24px; padding: 1px 6px; }
+#diagnostics-toggle, #log-toggle, #status-action { font-size: 11px; min-height: 24px; padding: 1px 6px; }
+#status-action { color: var(--accent); border-color: var(--border); }
 #status-elapsed { font-variant-numeric: tabular-nums; white-space: nowrap; }
 #retained { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border: 1px solid var(--border); border-radius: 3px; padding: 0 5px; white-space: nowrap; }
 #gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); align-items: start; gap: 18px; padding: 20px 18px 32px; }
@@ -68,6 +70,9 @@ body:not(.inspect) .layout-overlay { display: none; }
 .component-picker { min-width: 0; flex: 1; width: 0; height: 25px; border: 1px solid var(--vscode-dropdown-border, var(--border)); border-radius: 3px; color: var(--vscode-dropdown-foreground, var(--text)); background: var(--vscode-dropdown-background, var(--surface)); font-size: 11px; padding: 0 5px; }
 .parent-node { min-height: 25px; padding: 1px 5px; font-size: 11px; }
 .inspection-hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.card-size { font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.inspect-hint { margin: 14px 18px -6px; color: var(--muted); font-size: 12px; }
+.inspect-hint strong { color: var(--text); font-weight: 600; }
 #empty { max-width: 400px; margin: 15vh auto 0; padding: 0 24px; text-align: center; color: var(--muted); }
 .empty-icon { display: inline-flex; padding: 14px; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px; color: var(--accent); }
 .empty-icon svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.25; }
@@ -78,6 +83,7 @@ body:not(.inspect) .layout-overlay { display: none; }
 .panel-actions { display: flex; align-items: center; gap: 4px; }
 #diagnostics-title, #build-log-title { margin: 0; font-size: 12px; }
 #diagnostics-body { margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 var(--vscode-editor-font-family, monospace); user-select: text; color: var(--error); }
+#diagnostics-body a { color: var(--accent); }
 #build-log-body { min-height: 120px; padding: 8px 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 var(--vscode-editor-font-family, monospace); user-select: text; }
 .log-error { color: var(--error); }
 .log-warning { color: var(--vscode-editorWarning-foreground, #cca700); }
@@ -85,7 +91,7 @@ body:not(.inspect) .layout-overlay { display: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .vscode-high-contrast .preview-card, .vscode-high-contrast-light .preview-card, .vscode-high-contrast button, .vscode-high-contrast-light button { border-color: var(--vscode-contrastBorder, var(--border)); }
 .vscode-high-contrast .layout-outline, .vscode-high-contrast-light .layout-outline { stroke-opacity: 1; stroke-width: 2; }
-@media (max-width: 420px) { .toolbar-main { padding: 9px 10px 5px; gap: 6px; } .actions { gap: 3px; } .actions button { padding: 4px 6px; font-size: 11px; } .status-row { padding-left: 10px; padding-right: 10px; } #gallery { padding: 12px 10px 24px; gap: 12px; } .viewport { padding: 10px; } #retained { display: none; } }
+@media (max-width: 420px) { .toolbar-main { padding: 9px 10px 5px; gap: 6px; } .actions { gap: 3px; } .actions button { padding: 4px 6px; font-size: 11px; } .status-row { padding-left: 10px; padding-right: 10px; } #gallery { padding: 12px 10px 24px; gap: 12px; } .viewport { padding: 10px; } #retained { display: none; } .inspect-hint { margin: 10px 10px -2px; } }
 @media (forced-colors: active) { .layout-outline { stroke: Highlight; stroke-opacity: 1; } .layout-outline.selected, .layout-outline.hovered { stroke: Highlight; fill: Highlight; } button { border-color: ButtonText; } }
 </style>
 </head>
@@ -100,13 +106,15 @@ body:not(.inspect) .layout-overlay { display: none; }
       <button id="inspect" type="button" aria-pressed="false" title="Show layout outlines and inspect components"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h18v18H3zM3 9h18M9 9v12"/></svg><span>Inspect</span></button>
     </div>
   </div>
-  <div id="status" class="status-row" data-state="working"><span class="status-dot" aria-hidden="true"></span><span id="status-text" role="status" aria-live="polite">Starting preview…</span><span id="status-elapsed" title="Time since this build started" hidden></span><span id="retained" hidden>Last good preview</span><button id="log-toggle" type="button" aria-controls="build-log" aria-expanded="false" title="Follow the output of the preview build" hidden>Build log</button><button id="diagnostics-toggle" type="button" aria-controls="diagnostics" aria-expanded="false" hidden>Details</button></div>
+  <div id="status" class="status-row" data-state="working"><span class="status-dot" aria-hidden="true"></span><span id="status-text" role="status" aria-live="polite">Starting preview…</span><span id="status-elapsed" title="Time since this build started" hidden></span><span id="retained" hidden>Last good preview</span><button id="status-action" type="button" hidden></button><button id="log-toggle" type="button" aria-controls="build-log" aria-expanded="false" title="Follow the output of the preview build" hidden>Build log</button><button id="diagnostics-toggle" type="button" aria-controls="diagnostics" aria-expanded="false" hidden>Details</button></div>
 </header>
 <main aria-label="Compose preview gallery">
   <div id="empty"><div class="empty-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 9v12"/></svg></div><h2 id="empty-title">Preparing your previews</h2><p id="empty-description">Rendered composables will appear here. You can keep editing while they build.</p></div>
+  <p id="inspect-hint" class="inspect-hint" hidden>Turn on <strong>Inspect</strong> to explore measured layout bounds. Source navigation is available when the renderer supplies source locations.</p>
   <div id="gallery" aria-busy="true"></div>
 </main>
 <p id="keyboard-help" class="sr-only">Use arrow keys to select components, Home or End for the first or last component, Alt plus Up for the enclosing component, and Enter to open source. Click to select, or double-click to open source.</p>
+<p id="input-help" class="sr-only">Click or Tab to a live preview to send keyboard input to that card. Tab then moves between its Compose controls. Press F6 or Shift+F6 to leave using VS Code's next or previous part focus commands, or click outside the preview. Escape remains available to Compose. IME composition and clipboard paste are not supported.</p>
 <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
 <section id="diagnostics" aria-labelledby="diagnostics-title" hidden><div class="diagnostics-header"><h2 id="diagnostics-title">Preview diagnostics</h2><button id="diagnostics-close" type="button" aria-label="Close diagnostics">Close</button></div><pre id="diagnostics-body" tabindex="0"></pre></section>
 <section id="build-log" aria-labelledby="build-log-title" hidden><div class="diagnostics-header"><h2 id="build-log-title">Build log</h2><div class="panel-actions"><button id="build-log-open" type="button" title="Open the complete output of this build, with timestamps, in an editor">Open in editor</button><button id="build-log-activity" type="button" title="Show each step of the preview build and how long it took">Timing</button><button id="build-log-close" type="button" aria-label="Close build log">Close</button></div></div><div id="build-log-body" tabindex="0" role="log" aria-label="Preview build output"></div></section>
@@ -123,11 +131,70 @@ let statusState = 'working';
 let statusText = 'Starting preview…';
 let diagnosticsText = '';
 let diagnosticOrigin = null;
+/** The recovery the extension offers for the current error, if the next ordinary build cannot fix it. */
+let statusAction = null;
 /** Epoch milliseconds the running phase began; the status row counts up from it. */
 let since = null;
 let logLines = 0;
 const LOG_LIMIT = 2000;
 const cards = new Map();
+const inputKeys = ${JSON.stringify(PREVIEW_KEY_NAMES)};
+let inputEpoch = 0;
+let inputFocus = 0;
+let focusedInput = null;
+let composing = false;
+const heldKeys = new Set();
+
+function releaseInput(notify = true) {
+  const previous = focusedInput;
+  focusedInput = null;
+  heldKeys.clear();
+  if (previous && notify) api.postMessage({ type: 'focusInput', imageId: null, epoch: inputEpoch, focus: previous.focus });
+}
+function focusInput(card) {
+  if (inspecting || composing || !card.live || !card.keyboard || !card.image || !isFresh()) return false;
+  if (focusedInput && focusedInput.card === card) return true;
+  releaseInput();
+  focusedInput = { card, focus: ++inputFocus };
+  api.postMessage({ type: 'focusInput', imageId: card.id, epoch: inputEpoch, focus: inputFocus });
+  return true;
+}
+function resetInput(epoch) {
+  const canvas = focusedInput && focusedInput.card.canvas;
+  releaseInput(false);
+  inputEpoch = epoch;
+  composing = false;
+  for (const card of cards.values()) { card.keyboard = false; updateInspector(card); }
+  if (canvas && document.activeElement === canvas) canvas.blur();
+}
+function keyboard(card, action, event) {
+  if (composing || event.isComposing || event.keyCode === 229) {
+    if (focusedInput && focusedInput.card === card) releaseInput();
+    return;
+  }
+  if (inspecting || !focusedInput || focusedInput.card !== card || document.activeElement !== card.canvas
+    || !card.live || !card.keyboard || !isFresh()) return;
+  // Preserve VS Code's keyboard-only exit from a webview instead of trapping its focus-navigation keys.
+  if (event.key === 'F6' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    if (action === 'down') {
+      releaseInput();
+      card.canvas.blur();
+    }
+    return; // Bubble to the webview host's existing Focus Next/Previous Part bindings.
+  }
+  const point = event.key.codePointAt(0);
+  if (!inputKeys.includes(event.key)
+    && !([...event.key].length === 1 && point >= 32 && point !== 127 && !(point >= 0xd800 && point <= 0xdfff))) return;
+  const key = event.code || event.key;
+  if ((action === 'up' || event.repeat) && !heldKeys.has(key)) return;
+  if (action === 'down') heldKeys.add(key);
+  else heldKeys.delete(key);
+  api.postMessage({ type: 'keyboard', imageId: card.id, epoch: inputEpoch, focus: focusedInput.focus,
+    event: { action, key: event.key, code: event.code, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey,
+      altKey: event.altKey, metaKey: event.metaKey, repeat: event.repeat } });
+  event.preventDefault();
+  event.stopPropagation();
+}
 const svgNS = 'http://www.w3.org/2000/svg';
 function element(tag, className, text) {
   const result = document.createElement(tag);
@@ -142,11 +209,13 @@ function button(className, text, title) {
   return result;
 }
 function preferences() {
+  if (inspecting) releaseInput();
   document.body.classList.toggle('fit', fitted);
   document.body.classList.toggle('inspect', inspecting);
   document.getElementById('fit').setAttribute('aria-pressed', String(fitted));
   document.getElementById('fit-label').textContent = fitted ? 'Fit' : '1:1';
   document.getElementById('inspect').setAttribute('aria-pressed', String(inspecting));
+  document.getElementById('inspect-hint').hidden = inspecting || cards.size === 0;
   for (const card of cards.values()) updateInspector(card);
 }
 function isFresh() { return imageRevision === currentRevision && imageRevision >= 0; }
@@ -180,17 +249,24 @@ function parentNode(card, node) {
 function updateInspector(card) {
   const node = activeNode(card);
   const selected = selectedNode(card);
-  card.canvas.tabIndex = inspecting && card.nodes.length ? 0 : -1;
-  card.canvas.setAttribute('aria-label', card.name + (selected ? ', selected ' + selected.name : ', layout inspector'));
-  card.controls.hidden = !inspecting || !card.nodes.length;
-  card.hint.hidden = inspecting && card.nodes.length > 0;
-  card.open.hidden = !inspecting || !card.nodes.length;
+  card.canvas.tabIndex = inspecting ? card.nodes.length ? 0 : -1 : card.live && card.image ? 0 : -1;
+  card.canvas.setAttribute('aria-label', card.name + (inspecting ? selected ? ', selected ' + selected.name : ', layout inspector'
+    : card.keyboard ? ', interactive preview' : card.live ? ', keyboard input unavailable' : ', preview image'));
+  card.canvas.setAttribute('aria-roledescription', inspecting ? 'layout inspector' : 'Compose preview');
+  card.canvas.setAttribute('aria-describedby', inspecting ? 'keyboard-help' : 'input-help');
+  card.canvas.title = !inspecting && card.live && !card.keyboard
+    ? 'Keyboard input unavailable: this Komodo does not support it. Use an Elide distribution with a newer Komodo.' : '';
+  card.size.textContent = card.image ? card.dimensions : '';
+  // Inspection details take room only while Inspect is on; the toolbar's Inspect toggle is the one way in.
+  card.inspector.hidden = !inspecting;
+  card.controls.hidden = !card.nodes.length;
+  card.hint.hidden = card.nodes.length > 0;
+  card.open.hidden = !card.nodes.length;
   card.open.disabled = !canNavigate(card, node);
   card.open.title = !isFresh() ? 'Source navigation resumes after a successful rebuild' : node && node.source ? 'Open ' + sourceLabel(node) : 'Select a component with source information';
-  card.component.textContent = !inspecting ? 'Layout inspection' : node ? node.name : card.nodes.length ? 'Select a component' : 'No layout information';
-  card.context.textContent = !inspecting ? card.dimensions : !isFresh() ? 'Waiting for fresh source locations · preview retained' : node ? sourceLabel(node) + ' · ' + Math.round(node.width) + ' × ' + Math.round(node.height) : card.nodes.length ? card.nodes.length + ' components · click a layout outline' : 'This render did not provide component bounds.';
+  card.component.textContent = node ? node.name : card.nodes.length ? 'Select a component' : 'No layout information';
+  card.context.textContent = (node ? Math.round(node.width) + ' × ' + Math.round(node.height) + ' px · x ' + node.x + ', y ' + node.y + (node.source ? ' · ' + sourceLabel(node) : ' · No source location') : card.nodes.length ? card.nodes.length + ' layouts · click an outline' : card.layoutError || 'This render did not provide layout bounds.') + (!isFresh() ? ' · Last rendered layout; awaiting update' : '');
   card.context.title = card.context.textContent;
-  card.hint.textContent = !inspecting ? 'Enable Inspect to explore bounds and open component source.' : 'Rebuild this preview to refresh layout information.';
   card.picker.value = card.selectedId || '';
   card.parent.disabled = !parentNode(card, selected);
   for (const [id, rect] of card.rects) {
@@ -202,7 +278,7 @@ function selectNode(card, node, announce) {
   card.selectedId = node ? node.id : null;
   card.hoveredId = null;
   updateInspector(card);
-  if (announce && node) document.getElementById('announcement').textContent = node.name + ', ' + sourceLabel(node);
+  if (announce && node) document.getElementById('announcement').textContent = node.name + ', ' + node.width + ' by ' + node.height + ' pixels';
 }
 function navigate(card, node) {
   if (!canNavigate(card, node)) return;
@@ -250,12 +326,13 @@ function createCard(id) {
   heading.append(title, detail);
   const error = button('card-error', 'Details', 'Show preview diagnostics');
   error.hidden = true;
-  header.append(heading, error);
+  const size = element('span', 'card-size');
+  header.append(heading, size, error);
   const viewport = element('div', 'viewport');
   const canvas = element('div', 'canvas');
   canvas.setAttribute('role', 'group');
-  canvas.setAttribute('aria-roledescription', 'layout inspector');
-  canvas.setAttribute('aria-describedby', 'keyboard-help');
+  canvas.setAttribute('aria-roledescription', 'Compose preview');
+  canvas.setAttribute('aria-describedby', 'input-help');
   const overlay = document.createElementNS(svgNS, 'svg');
   overlay.classList.add('layout-overlay');
   overlay.setAttribute('aria-hidden', 'true');
@@ -275,11 +352,12 @@ function createCard(id) {
   picker.setAttribute('aria-label', 'Select component');
   const parent = button('parent-node', '↑ Parent', 'Select enclosing component (Alt+Up)');
   controls.append(picker, parent);
-  const hint = element('p', 'inspection-hint');
+  const hint = element('p', 'inspection-hint', 'Rebuild this preview to refresh layout information.');
   inspector.append(row, context, controls, hint);
+  inspector.hidden = true;
   root.append(header, viewport, inspector);
-  const card = { id, root, title, detail, error, viewport, canvas, overlay, unavailable, component, open, context, controls, picker, parent, hint, nodes: [], rects: new Map(), image: null, data: null, selectedId: null, hoveredId: null, width: 0, height: 0, dimensions: '', name: '', errorText: '' };
-  error.onclick = () => showDiagnostics(card.errorText, card.name, error);
+  const card = { id, root, title, detail, size, error, viewport, canvas, overlay, unavailable, inspector, component, open, context, controls, picker, parent, hint, nodes: [], rects: new Map(), image: null, data: null, selectedId: null, hoveredId: null, width: 0, height: 0, dimensions: '', name: '', errorText: '', errorLinks: [], live: false, keyboard: false };
+  error.onclick = () => showDiagnostics(card.errorText, card.name, error, card);
   open.onclick = () => navigate(card, activeNode(card));
   picker.onchange = () => selectNode(card, card.nodes.find(node => node.id === picker.value), true);
   parent.onclick = () => selectNode(card, parentNode(card, selectedNode(card)), true);
@@ -298,16 +376,31 @@ function createCard(id) {
   canvas.addEventListener('dblclick', event => { if (inspecting) navigate(card, hitNode(card, event)); });
   // A live card (the Komodo engine) takes pointer input while not inspecting, in the image's pixels.
   const forward = (action, event) => {
-    if (inspecting || !card.live || !card.image) return;
+    if (inspecting || !card.live || !card.image || !isFresh()) return;
     const bounds = card.image.getBoundingClientRect();
     if (!bounds.width || !bounds.height) return;
-    api.postMessage({ type: 'pointer', imageId: card.id, action,
+    api.postMessage({ type: 'pointer', imageId: card.id, epoch: inputEpoch, action,
       x: Math.round((event.clientX - bounds.left) * card.width / bounds.width), y: Math.round((event.clientY - bounds.top) * card.height / bounds.height) });
   };
-  canvas.addEventListener('pointerdown', event => { if (card.live && !inspecting) { canvas.setPointerCapture(event.pointerId); forward('down', event); } });
+  canvas.addEventListener('pointerdown', event => {
+    if (card.live && !inspecting) {
+      canvas.focus({ preventScroll: true });
+      focusInput(card);
+      canvas.setPointerCapture(event.pointerId);
+      forward('down', event);
+    }
+  });
   canvas.addEventListener('pointerup', event => forward('up', event));
   canvas.addEventListener('pointermove', event => { if (event.buttons) forward('move', event); });
-  canvas.addEventListener('keydown', event => inspectKey(card, event));
+  canvas.addEventListener('focus', () => focusInput(card));
+  canvas.addEventListener('blur', () => { if (focusedInput && focusedInput.card === card) releaseInput(); });
+  canvas.addEventListener('keydown', event => { if (inspecting) inspectKey(card, event); else keyboard(card, 'down', event); });
+  canvas.addEventListener('keyup', event => keyboard(card, 'up', event));
+  canvas.addEventListener('compositionstart', () => { composing = true; releaseInput(); });
+  canvas.addEventListener('compositionend', () => {
+    composing = false;
+    if (document.activeElement === canvas) focusInput(card);
+  });
   return card;
 }
 function installNodes(card, nodes) {
@@ -328,7 +421,7 @@ function installNodes(card, nodes) {
     rect.setAttribute('height', String(node.height));
     card.overlay.append(rect);
     card.rects.set(node.id, rect);
-    const option = element('option', '', node.name + (node.source ? ' — ' + sourceLabel(node) : ''));
+    const option = element('option', '', node.name + ' — ' + (node.source ? sourceLabel(node) : node.width + ' × ' + node.height + ' px at ' + node.x + ', ' + node.y));
     option.value = node.id;
     card.picker.append(option);
   }
@@ -336,18 +429,45 @@ function installNodes(card, nodes) {
 function emptyState() {
   document.getElementById('empty').hidden = cards.size > 0;
   document.getElementById('empty-title').textContent = statusState === 'error' ? 'Preview could not be built' : statusState === 'working' ? 'Preparing your previews' : 'No previews to display';
-  document.getElementById('empty-description').textContent = statusState === 'error' ? 'Open Details for diagnostics, or Build log for the build output. Your previews will appear after the next successful build.' : statusState === 'working' ? 'Rendered composables will appear here. You can keep editing while they build' + (logLines ? '; open Build log to follow the build.' : '.') : 'Add a @Preview composable to this file, then rebuild.';
+  document.getElementById('empty-description').textContent = statusState === 'error' ? 'Open Details for diagnostics, or Build log for the build output. ' + (statusAction ? statusAction.detail : 'Your previews will appear after the next successful build.') : statusState === 'working' ? 'Rendered composables will appear here. You can keep editing while they build' + (logLines ? '; open Build log to follow the build.' : '.') : 'Add a @Preview composable to this file, then rebuild.';
 }
 function closeDiagnostics() {
   document.getElementById('diagnostics').hidden = true;
   document.getElementById('diagnostics-toggle').setAttribute('aria-expanded', 'false');
   if (diagnosticOrigin && diagnosticOrigin.isConnected) diagnosticOrigin.focus({ preventScroll: true });
 }
-function showDiagnostics(text, title, origin) {
+/** Diagnostics text; a card's project stack frames link to their source, by line and UTF-16 span. */
+function diagnosticsContent(text, card) {
+  const body = document.getElementById('diagnostics-body');
+  const links = card ? card.errorLinks : [];
+  if (!links.length) { body.textContent = text; return; }
+  const fragment = document.createDocumentFragment();
+  const lines = text.split('\n');
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    let cursor = 0;
+    links.forEach((link, linkIndex) => {
+      if (link.line !== index || link.start < cursor || link.end > line.length) return;
+      fragment.append(line.slice(cursor, link.start));
+      const anchor = element('a', '', line.slice(link.start, link.end));
+      anchor.href = '#';
+      anchor.title = 'Open ' + anchor.textContent;
+      anchor.onclick = event => {
+        event.preventDefault();
+        api.postMessage({ type: 'openFrame', revision: imageRevision, imageId: card.id, link: linkIndex });
+      };
+      fragment.append(anchor);
+      cursor = link.end;
+    });
+    fragment.append(line.slice(cursor) + (index < lines.length - 1 ? '\n' : ''));
+  }
+  body.replaceChildren(fragment);
+}
+function showDiagnostics(text, title, origin, card) {
   closeBuildLog(false);
   diagnosticOrigin = origin;
   document.getElementById('diagnostics-title').textContent = title || 'Preview diagnostics';
-  document.getElementById('diagnostics-body').textContent = text;
+  diagnosticsContent(text, card);
   document.getElementById('diagnostics').hidden = false;
   document.getElementById('diagnostics-toggle').setAttribute('aria-expanded', 'true');
   document.getElementById('diagnostics-close').focus({ preventScroll: true });
@@ -396,12 +516,18 @@ function applyStatus(data) {
   statusState = ['working', 'ready', 'error'].includes(data.state) ? data.state : 'working';
   statusText = typeof data.text === 'string' ? data.text : '';
   diagnosticsText = statusState === 'error' ? statusText : '';
+  statusAction = statusState === 'error' && data.action && typeof data.action.id === 'string' ? data.action : null;
   document.getElementById('status').dataset.state = statusState;
-  const summary = statusText.split(/\r?\n/).find(line => line.trim()) || (statusState === 'error' ? 'Preview build failed' : 'Preparing previews');
+  const summary = (typeof data.headline === 'string' && data.headline) || statusText.split(/\r?\n/).find(line => line.trim()) || (statusState === 'error' ? 'Preview build failed' : 'Preparing previews');
   document.getElementById('status-text').textContent = summary;
   document.getElementById('status-text').title = summary;
   document.getElementById('retained').hidden = data.retained !== true;
   document.getElementById('diagnostics-toggle').hidden = !diagnosticsText;
+  document.getElementById('status-action').hidden = !statusAction;
+  if (statusAction) {
+    document.getElementById('status-action').textContent = statusAction.label;
+    document.getElementById('status-action').title = statusAction.detail;
+  }
   since = Number.isFinite(data.since) ? data.since : null;
   updateElapsed();
   gallery.setAttribute('aria-busy', String(statusState === 'working'));
@@ -416,6 +542,10 @@ async function receiveImages(message) {
   // A restored webview may receive old pixels with the current invalidation revision.
   const expectedRevision = Number.isFinite(message.currentRevision) ? message.currentRevision : message.revision;
   if (expectedRevision < currentRevision || message.revision > expectedRevision) return;
+  if (!Number.isFinite(message.inputEpoch) || message.inputEpoch < inputEpoch) return;
+  if (message.inputEpoch !== inputEpoch) resetInput(message.inputEpoch);
+  if (focusedInput && (!Array.isArray(message.keyboard) || !message.keyboard.includes(focusedInput.card.id)
+    || !message.images.some(image => image.id === focusedInput.card.id && image.live && image.data && !image.error))) releaseInput();
   currentRevision = expectedRevision;
   const ticket = ++generation;
   for (const card of cards.values()) updateInspector(card);
@@ -430,6 +560,8 @@ async function receiveImages(message) {
     catch { return { preview, image: null, decodeError: 'The rendered PNG could not be decoded. Rebuild to try again.' }; }
   }));
   if (ticket !== generation || currentRevision !== expectedRevision) return;
+  // An input reset during decoding already released input: the pixels stand, the keyboard cards wait for the next publication.
+  const keyboard = inputEpoch === message.inputEpoch && Array.isArray(message.keyboard) ? message.keyboard : [];
   const scrollX = window.scrollX;
   const scrollY = window.scrollY;
   const keep = new Set();
@@ -445,7 +577,12 @@ async function receiveImages(message) {
     card.title.textContent = preview.name;
     card.detail.textContent = preview.detail || '';
     card.errorText = [preview.error, entry.decodeError].filter(Boolean).join('\n\n');
+    card.layoutError = typeof preview.layoutError === 'string' ? preview.layoutError : '';
+    card.errorLinks = message.errorLinks && Array.isArray(message.errorLinks[preview.id]) ? message.errorLinks[preview.id] : [];
     card.error.hidden = !card.errorText;
+    card.live = preview.live === true && !!preview.data && !card.errorText;
+    card.keyboard = card.live && keyboard.includes(card.id);
+    if (focusedInput && focusedInput.card === card && !card.keyboard) releaseInput();
     if (entry.image) {
       const left = card.viewport.scrollLeft;
       const top = card.viewport.scrollTop;
@@ -462,7 +599,6 @@ async function receiveImages(message) {
       card.width = !retainedPixels && preview.width > 0 ? preview.width : card.image.naturalWidth;
       card.height = !retainedPixels && preview.height > 0 ? preview.height : card.image.naturalHeight;
       card.dimensions = card.image.naturalWidth + ' × ' + card.image.naturalHeight + ' px';
-      card.live = preview.live === true;
       card.overlay.setAttribute('viewBox', '0 0 ' + card.width + ' ' + card.height);
       installNodes(card, retainedPixels ? [] : Array.isArray(preview.nodes) ? preview.nodes : []);
     } else installNodes(card, []);
@@ -473,18 +609,30 @@ async function receiveImages(message) {
     if (atPosition !== card.root) gallery.insertBefore(card.root, atPosition || null);
     position++;
   }
-  for (const [id, card] of cards) if (!keep.has(id)) { card.root.remove(); cards.delete(id); }
+  for (const [id, card] of cards) if (!keep.has(id)) {
+    if (focusedInput && focusedInput.card === card) releaseInput();
+    card.root.remove();
+    cards.delete(id);
+  }
   document.getElementById('count').textContent = String(cards.size);
+  document.getElementById('inspect-hint').hidden = inspecting || cards.size === 0;
   gallery.setAttribute('aria-busy', 'false');
   emptyState();
   window.scrollTo(scrollX, scrollY);
+  // Acknowledged even when a newer publication is decoding: the extension reports this one's pixels as painted.
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    if (ticket === generation && currentRevision === expectedRevision) api.postMessage({ type: 'painted', revision: imageRevision });
+    if (currentRevision === expectedRevision) api.postMessage({ type: 'painted', revision: message.revision, publication: message.publication });
   }));
 }
 document.getElementById('refresh').onclick = () => api.postMessage({ type: 'refresh' });
+document.getElementById('status-action').onclick = () => { if (statusAction) api.postMessage({ type: 'action', id: statusAction.id }); };
 document.getElementById('fit').onclick = () => { fitted = !fitted; preferences(); api.setState(Object.assign({}, saved, { fitted, inspecting })); };
-document.getElementById('inspect').onclick = () => { inspecting = !inspecting; preferences(); api.setState(Object.assign({}, saved, { fitted, inspecting })); };
+document.getElementById('inspect').onclick = () => {
+  inspecting = !inspecting;
+  preferences();
+  api.setState(Object.assign({}, saved, { fitted, inspecting }));
+  api.postMessage({ type: 'inspect', enabled: inspecting });
+};
 document.getElementById('diagnostics-toggle').onclick = event => {
   if (document.getElementById('diagnostics').hidden) showDiagnostics(diagnosticsText, 'Preview diagnostics', event.currentTarget);
   else closeDiagnostics();
@@ -502,19 +650,44 @@ document.addEventListener('keydown', event => {
   if (!document.getElementById('diagnostics').hidden) { event.preventDefault(); closeDiagnostics(); }
   else if (!document.getElementById('build-log').hidden) { event.preventDefault(); closeBuildLog(true); }
 });
+window.addEventListener('blur', () => {
+  const canvas = focusedInput && focusedInput.card.canvas;
+  releaseInput();
+  composing = false;
+  if (canvas) canvas.blur();
+});
+document.addEventListener('visibilitychange', () => { if (document.hidden) releaseInput(); });
+window.addEventListener('pagehide', () => releaseInput());
 setInterval(updateElapsed, 1000);
 window.addEventListener('message', ({ data }) => {
   if (!data || typeof data !== 'object') return;
+  if (data.type === 'inputReset' && Number.isFinite(data.epoch) && data.epoch >= inputEpoch) resetInput(data.epoch);
+  else if (data.type === 'inputBlur' && data.epoch === inputEpoch && focusedInput && data.focus === focusedInput.focus) {
+    const canvas = focusedInput.card.canvas;
+    releaseInput(false);
+    if (document.activeElement === canvas) canvas.blur();
+  }
   if (data.type === 'status') applyStatus(data);
   else if (data.type === 'invalidate' && Number.isFinite(data.revision) && data.revision >= currentRevision) {
     if (data.revision > currentRevision) { currentRevision = data.revision; generation++; }
+    releaseInput();
     gallery.setAttribute('aria-busy', 'true');
     for (const card of cards.values()) updateInspector(card);
   } else if (data.type === 'images') void receiveImages(data);
-  else if (data.type === 'log' && Array.isArray(data.lines)) appendLog(data.lines, data.reset === true);
+  else if (data.type === 'source' && typeof data.uri === 'string') {
+    // What the extension reopens after a window reload.
+    saved.source = data.uri;
+    api.setState(Object.assign({}, saved, { fitted, inspecting }));
+  } else if (data.type === 'log' && Array.isArray(data.lines)) appendLog(data.lines, data.reset === true);
+  else if (data.type === 'inspect' && typeof data.enabled === 'boolean') {
+    inspecting = data.enabled;
+    preferences();
+    api.setState(Object.assign({}, saved, { fitted, inspecting }));
+  }
 });
 preferences();
 api.postMessage({ type: 'ready' });
+if (inspecting) api.postMessage({ type: 'inspect', enabled: true });
 </script>
 </body>
 </html>`;

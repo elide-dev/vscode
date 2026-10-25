@@ -7,17 +7,26 @@ import {
   createAndroidAvd,
   createAndroidKeystore,
   debugAndroid,
+  executeAndroidTask,
   installAndroidSdk,
+  isAndroidBuild,
   openAndroidMapping,
   runAndroid,
+  runAndroidDeviceTask,
   startAndroidEmulator,
   stopAndroidEmulator,
 } from "./android.js";
 import { ELIDE_ANDROID_DEBUG_TYPE, ElideAndroidDebugConfigurationProvider } from "./androidDebug.js";
 import { AndroidDeploymentController } from "./androidDeployment.js";
+import { androidApks, hasAndroidProjects } from "./androidDeploymentState.js";
+import { ElideAndroidTestController } from "./androidTesting.js";
+import { registerAndroidDatabase } from "./androidDatabase.js";
 import { registerAndroidLogcat } from "./androidLogcat.js";
 import { registerAndroidReadiness } from "./androidReadiness.js";
+import { registerAndroidWireless } from "./androidWireless.js";
 import { ElideCodeLensProvider } from "./codelens.js";
+import { ComposeAgentPreviews } from "./composeAgent.js";
+import { registerComposePreviewMcp, type ElideComposePreviewMcpApi } from "./composeAgentMcp.js";
 import { registerComposePreview, type ElideComposePreviewApi } from "./composePreview.js";
 import { readConfig, type KotlinLspServer } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider, KOMODO_DEBUG_TYPE } from "./debug.js";
@@ -37,6 +46,7 @@ export interface ElideExtensionApi {
   tests: ElideTestApi;
   explorer: ElideExplorerApi;
   composePreview: ElideComposePreviewApi;
+  composePreviewMcp: ElideComposePreviewMcpApi;
   activity: ElideActivityApi;
 }
 
@@ -47,11 +57,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const workspace = new ElideWorkspace(ui, context.globalState, context.asAbsolutePath("media/kotlin-lsp"), context.globalStorageUri.fsPath);
   context.subscriptions.push(ui, workspace);
   const composePreview = registerComposePreview(workspace, ui, context);
+  const agentPreviews = new ComposeAgentPreviews(workspace, ui, composePreview.agentHost);
+  const composePreviewMcp = registerComposePreviewMcp(context, agentPreviews, ui, String(context.extension.packageJSON.version));
   const deployments = new AndroidDeploymentController(workspace, context.workspaceState);
   context.subscriptions.push(
     composePreview.disposable,
+    agentPreviews,
+    composePreviewMcp.disposable,
     registerAndroidLogcat(workspace, () => deployments.target),
+    registerAndroidDatabase(workspace, context, () => deployments.target),
     registerAndroidReadiness(workspace, ui),
+    registerAndroidWireless(workspace, () => deployments.target),
     deployments,
   );
 
@@ -59,6 +75,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const nativeDebugConfigurations = new ElideNativeDebugConfigurationProvider(workspace, ui);
   const androidDebugConfigurations = new ElideAndroidDebugConfigurationProvider(workspace, ui, debugConfigurations.sessions, deployments);
   const tests = new ElideTestController(workspace, ui, debugConfigurations.sessions);
+  const androidTests = new ElideAndroidTestController(workspace, ui, deployments);
   const codeLenses = new ElideCodeLensProvider(workspace);
   const explorer = new ElideProjectsView(workspace, ui);
   context.subscriptions.push(
@@ -72,16 +89,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.runTask", () => runTaskCommand(workspace)),
     vscode.commands.registerCommand("elide.newProject", () => newProject(ui)),
     vscode.commands.registerCommand("elide.addMember", (target: unknown) => addWorkspaceMember(workspace, ui, target)),
-    vscode.commands.registerCommand("elide.run", (target: unknown) => runEntrypoint(workspace, target, "run")),
-    vscode.commands.registerCommand("elide.build", (target: unknown) => runEntrypoint(workspace, target, "build")),
+    vscode.commands.registerCommand("elide.run", (target: unknown) => runEntrypoint(workspace, ui, target, "run")),
+    vscode.commands.registerCommand("elide.build", (target: unknown) => runEntrypoint(workspace, ui, target, "build")),
     vscode.commands.registerCommand("elide.runArtifact", (target: unknown) => runArtifact(workspace, ui, target)),
     vscode.commands.registerCommand("elide.debug", (target: unknown) => debugEntrypoint(workspace, target)),
     vscode.commands.registerCommand("elide.debugArtifact", (target: unknown) => debugArtifact(workspace, target)),
-    vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, target)),
+    vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, ui, target)),
     vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
     vscode.commands.registerCommand("elide.androidSelectTarget", (target: unknown) => deployments.select(target)),
-    vscode.commands.registerCommand("elide.androidRun", (target: unknown) => runAndroid(workspace, deployments, target)),
+    vscode.commands.registerCommand("elide.androidRun", (target: unknown) => runAndroid(workspace, ui, deployments, target)),
     vscode.commands.registerCommand("elide.androidDebug", (target: unknown) => debugAndroid(workspace, deployments, target)),
+    vscode.commands.registerCommand("elide.androidRunDeviceTask", (target: unknown) => runAndroidDeviceTask(workspace, ui, deployments, target)),
     vscode.commands.registerCommand("elide.androidStartEmulator", (target: unknown) => startAndroidEmulator(workspace, target)),
     vscode.commands.registerCommand("elide.androidStopEmulator", (target: unknown) => stopAndroidEmulator(workspace, target)),
     vscode.commands.registerCommand("elide.androidCreateAvd", (target: unknown) => createAndroidAvd(workspace, target)),
@@ -98,6 +116,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.window.registerTreeDataProvider(ACTIVITY_VIEW_ID, ui.activity),
     explorer,
     tests,
+    androidTests,
   );
 
   registerWatchers(context, workspace, ui);
@@ -111,7 +130,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   };
   updateKomodoAvailability();
   context.subscriptions.push(
-    workspace.onDidChange(() => void vscode.commands.executeCommand("setContext", "elide.hasProjects", workspace.projects.length > 0)),
+    workspace.onDidChange(() => void updateContextKeys(workspace)),
     workspace.onDidChangeKomodoAvailability(updateKomodoAvailability),
     vscode.debug.onDidStartDebugSession((session) => {
       if (session.type !== KOMODO_DEBUG_TYPE) return;
@@ -157,11 +176,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   );
 
   for (const folder of vscode.workspace.workspaceFolders ?? []) await workspace.discover(folder);
-  await vscode.commands.executeCommand("setContext", "elide.hasProjects", workspace.projects.length > 0);
+  await updateContextKeys(workspace);
   // No project is not a dead end: commands, the welcome view and project creation stay available.
   if (workspace.projects.length === 0) ui.log("No elide.pkl found in the workspace.");
   else void workspace.syncAll("startup", (folder) => readConfig(folder).syncOnStartup);
-  return { tests, explorer, composePreview: composePreview.api, activity: ui.activity };
+  return { tests, explorer, composePreview: composePreview.api, composePreviewMcp: composePreviewMcp.api, activity: ui.activity };
 }
 
 export function deactivate(): void {}
@@ -375,17 +394,32 @@ async function openWorkspaceJson(workspace: ElideWorkspace): Promise<void> {
   }
 }
 
-/** Actions offered by the status-bar menu, in order; entries whose command is not registered are skipped. */
-const MENU_ACTIONS: { label: string; description: string; command: string }[] = [
+/**
+ * `elide.hasProjects`, and the keys that keep Android commands out of non-Android workspaces: `elide.hasAndroidProjects`
+ * (a synced project declares `android`) and `elide.hasUnsyncedProjects` (a project has no model yet, so it may).
+ */
+async function updateContextKeys(workspace: ElideWorkspace): Promise<void> {
+  await Promise.all([
+    vscode.commands.executeCommand("setContext", "elide.hasProjects", workspace.projects.length > 0),
+    vscode.commands.executeCommand("setContext", "elide.hasAndroidProjects", hasAndroidProjects(workspace.projects)),
+    vscode.commands.executeCommand("setContext", "elide.hasUnsyncedProjects", workspace.projects.some((project) => !project.model)),
+  ]);
+}
+
+/** Actions offered by the status-bar menu, in order; entries whose command is not registered are skipped, Android ones without an Android project. */
+const MENU_ACTIONS: { label: string; description: string; command: string; android?: true }[] = [
   { label: "$(sync) Sync Project(s)", description: "Re-resolve the project model and refresh the Kotlin LSP", command: "elide.sync" },
   { label: "$(cloud-download) Install Komodo", description: "Explicitly install the managed native Kotlin component", command: "elide.installKomodo" },
-  { label: "$(play) Run Elide Command…", description: "Build, test, install, or run an entrypoint", command: "elide.runTask" },
-  { label: "$(device-mobile) Select Android Deployment Target…", description: "Choose the application and device for Run and Debug", command: "elide.androidSelectTarget" },
-  { label: "$(play) Run Android App…", description: "Build, install and launch on the selected device", command: "elide.androidRun" },
-  { label: "$(debug-alt) Debug Android App…", description: "Build, install and attach the debugger", command: "elide.androidDebug" },
-  { label: "$(checklist) Check Android Environment", description: "Diagnose SDK, tools and connected devices", command: "elide.androidDoctor" },
-  { label: "$(preview) Open Compose Preview", description: "Render composables locally, without a device", command: "elide.androidComposePreview" },
-  { label: "$(output) Show Android Logcat", description: "Application logs and stack traces", command: "elide.androidLogcat" },
+  { label: "$(play) Run Elide Command…", description: "Build, test, install, run an entrypoint or an Android app", command: "elide.runTask" },
+  { label: "$(device-mobile) Select Android Deployment Target…", description: "Choose the application and device for Run and Debug", command: "elide.androidSelectTarget", android: true },
+  { label: "$(radio-tower) Pair Android Device over Wi-Fi…", description: "Pair by QR or pairing code, or reconnect a paired device", command: "elide.androidPairWireless", android: true },
+  { label: "$(play) Run Android App…", description: "Build, install and launch on the selected device", command: "elide.androidRun", android: true },
+  { label: "$(debug-alt) Debug Android App…", description: "Build, install and attach the debugger", command: "elide.androidDebug", android: true },
+  { label: "$(beaker) Run Android Instrumented Tests…", description: "Install a test APK and run its tests on the selected device", command: "elide.androidTest", android: true },
+  { label: "$(checklist) Check Android Environment", description: "Diagnose SDK, tools and connected devices", command: "elide.androidDoctor", android: true },
+  { label: "$(preview) Open Compose Preview", description: "Render composables locally, without a device", command: "elide.androidComposePreview", android: true },
+  { label: "$(output) Show Android Logcat", description: "Application logs and stack traces", command: "elide.androidLogcat", android: true },
+  { label: "$(database) Explore Android Databases", description: "The connected app's Room / SQLite data", command: "elide.androidDatabase", android: true },
   { label: "$(beaker) Run All Tests", description: "Run every test in the Testing view", command: "testing.runAll" },
   { label: "$(file-code) Open elide.pkl", description: "Project manifest", command: "elide.openManifest" },
   { label: "$(json) Open Generated Kotlin LSP Workspace", description: WORKSPACE_JSON, command: "elide.openWorkspaceJson" },
@@ -408,31 +442,46 @@ async function showMenu(workspace: ElideWorkspace): Promise<void> {
     });
     break;
   }
-  items.push(...MENU_ACTIONS.filter((a) => registered.has(a.command) &&
-    (a.command !== "elide.androidComposePreview" || readConfig().composePreviewEngine !== "komodo" || workspace.komodoPreviewAvailable)));
+  // The environment check also diagnoses a project that is not synced yet, and may turn out to be an Android one.
+  const android = hasAndroidProjects(workspace.projects);
+  const unsynced = workspace.projects.some((project) => !project.model);
+  items.push(...MENU_ACTIONS.filter((a) => registered.has(a.command)
+    && (!a.android || android || (a.command === "elide.androidDoctor" && unsynced))
+    && (a.command !== "elide.androidComposePreview" || readConfig().composePreviewEngine !== "komodo" || workspace.komodoPreviewAvailable)));
   const pick = await vscode.window.showQuickPick(items, { placeHolder: "Elide" });
   if (pick) await vscode.commands.executeCommand(pick.command);
 }
 
+/**
+ * Every command the projects offer: build, test and install each, run each entrypoint, and — on the deployment
+ * target — run, debug or test each APK, as far as Elide lists a device target for it.
+ */
 async function runTaskCommand(workspace: ElideWorkspace): Promise<void> {
-  const items: (vscode.QuickPickItem & { command: ElideCommand; args: string[]; project: ElideProject })[] = [];
+  const items: (vscode.QuickPickItem & { run: () => Thenable<unknown> })[] = [];
   for (const project of workspace.projects) {
     const rel = path.relative(project.folder.uri.fsPath, project.root);
     const desc = rel ? rel : project.folder.name;
     const add = (command: ElideCommand, args: string[] = [], label = [command, ...args].join(" ")) =>
-      items.push({ label: `elide ${label}`, description: desc, command, args, project });
+      items.push({ label: `elide ${label}`, description: desc, run: () => executeElideTask(workspace, project, command, { args }) });
     add("build");
     add("test");
     add("install");
     for (const ep of project.model?.entrypoints ?? []) add("run", entrypointArgs(ep), entrypointLabel(ep));
+    for (const apk of androidApks(project)) {
+      const target = { root: project.root, artifact: apk.name };
+      const android = (label: string, command: string) =>
+        items.push({ label, description: desc, detail: "on the Android deployment target", run: () => vscode.commands.executeCommand(command, target) });
+      if (apk.device?.runnable) android(`$(play) Run Android app ${apk.name}`, "elide.androidRun");
+      if (apk.device?.debuggable) android(`$(debug-alt) Debug Android app ${apk.name}`, "elide.androidDebug");
+      if (apk.device?.instrumented) android(`$(beaker) Run instrumented tests of ${apk.name}`, "elide.androidTest");
+    }
   }
   if (items.length === 0) {
     void vscode.window.showInformationMessage("Elide: no Elide projects found; run 'Elide: Sync Project(s)' first.");
     return;
   }
   const pick = await vscode.window.showQuickPick(items, { placeHolder: "Elide command to run" });
-  if (!pick) return;
-  await executeElideTask(workspace, pick.project, pick.command, { args: pick.args });
+  if (pick) await pick.run();
 }
 
 /** What an `elide.run`/`elide.debug`/`elide.build`/`elide.runArtifact`/`elide.debugArtifact`/`elide.executeTask` invocation points at. */
@@ -465,11 +514,14 @@ function projectForTarget(workspace: ElideWorkspace, target: CommandTarget): Eli
   return project;
 }
 
-async function runEntrypoint(workspace: ElideWorkspace, value: unknown, command: ElideCommand): Promise<void> {
+/** `elide <command> <args>` as a task; an Android build reports its failure in Elide's words (see {@link executeAndroidTask}). */
+async function runEntrypoint(workspace: ElideWorkspace, ui: ElideUi, value: unknown, command: ElideCommand): Promise<void> {
   const target = toTarget(value);
   if (!target) return;
   const project = projectForTarget(workspace, target);
-  if (project) await executeElideTask(workspace, project, command, { args: target.args });
+  if (!project) return;
+  if (command === "build" && isAndroidBuild(project, target.args)) await executeAndroidTask(workspace, ui, project, { args: target.args });
+  else await executeElideTask(workspace, project, command, { args: target.args });
 }
 
 /**
@@ -499,11 +551,10 @@ async function runArtifact(workspace: ElideWorkspace, ui: ElideUi, value: unknow
   await executeProgramTask(project, `run ${artifact}`, binary);
 }
 
-async function runNamedTask(workspace: ElideWorkspace, value: unknown): Promise<void> {
+async function runNamedTask(workspace: ElideWorkspace, ui: ElideUi, value: unknown): Promise<void> {
   const target = toTarget(value);
   if (!target?.command) return;
-  const project = projectForTarget(workspace, target);
-  if (project) await executeElideTask(workspace, project, target.command, { args: target.args });
+  await runEntrypoint(workspace, ui, target, target.command);
 }
 
 /**

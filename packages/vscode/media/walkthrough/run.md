@@ -14,8 +14,10 @@ Start with **Elide: Check Android Environment** to inspect local tools and devic
 Select a finding for its settings or repair action; inspection does not install SDK components or accept licenses.
 
 After syncing, use **Elide: Select Android Deployment Target…** to choose an APK and device. The status bar shows
-the remembered selection used by **Run Android App…** and **Debug Android App…**. A disconnected selection
-stops deployment instead of silently switching devices. Debugging requires `android:debuggable="true"` in the APK.
+the remembered selection used by **Run Android App…**, **Debug Android App…**, **Run Android Instrumented Tests…**
+and the device-bound build targets. A disconnected selection stops deployment instead of silently switching
+devices. Debugging requires `android:debuggable="true"` in the APK; Run and Debug are offered only for an APK Elide
+can install.
 
 **Open Compose Preview** renders locally without a device. **Show Android Logcat** streams application logs;
 Ctrl/Cmd-click a resolvable application stack frame to open its source line.

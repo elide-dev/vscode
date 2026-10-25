@@ -5,9 +5,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { ANDROID_EMULATOR_TASK, ANDROID_NO_WINDOW_OPTION, adbExecutable, type AndroidDevice } from "@elide/ide-core";
 import * as vscode from "vscode";
-import { androidSdkFor, attachedDevices, toAndroidTarget } from "./android.js";
-import { androidApks, androidAvdToBoot, androidDeviceProblem, preferredAndroidProject, restoredAndroidTarget } from "./androidDeploymentState.js";
-import type { AndroidDeploymentDestination, AndroidDeploymentTarget } from "./androidDeploymentState.js";
+import { androidSdkFor, attachedDevices, toAndroidTarget, uninstallAndroidApp } from "./android.js";
+import { NO_ANDROID_PROJECT, androidApks, androidAvdToBoot, androidDeviceProblem, androidApkOffers, androidUseTask, deployableApks, hasAndroidProjects, preferredAndroidProject, restoredAndroidTarget } from "./androidDeploymentState.js";
+import type { AndroidDeploymentDestination, AndroidDeploymentTarget, AndroidDeploymentUse } from "./androidDeploymentState.js";
 import { readConfig } from "./config.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
 import { executeElideTask, taskExitCode } from "./tasks.js";
@@ -16,15 +16,29 @@ const STATE_KEY = "elide.android.deploymentTarget";
 const SELECT_COMMAND = "elide.androidSelectTarget";
 const BOOT_TIMEOUT_MS = 120_000;
 const BOOT_POLL_MS = 2_000;
+const UNINSTALL = "Uninstall";
 const exec = promisify(execFile);
 
 export interface AndroidDeployment extends AndroidDeploymentTarget {
   project: ElideProject;
 }
 
-function runnable(project: ElideProject): boolean {
-  return project.model?.android?.targets.some((target) => target.kind === "apk") ?? false;
+function deployable(project: ElideProject, use?: AndroidDeploymentUse): boolean {
+  return deployableApks(project, use).length > 0;
 }
+
+function sameTarget(a: AndroidDeploymentTarget | undefined, b: AndroidDeploymentTarget): boolean {
+  if (a?.root !== b.root || a.artifact !== b.artifact || a.destination.kind !== b.destination.kind) return false;
+  return a.destination.kind === "emulator" || b.destination.kind === "emulator"
+    || (a.destination.serial === b.destination.serial && a.destination.avd === b.destination.avd);
+}
+
+/** What each use is called in a refusal; a device-only action needs any device target. */
+const USE_LABELS: Record<AndroidDeploymentUse, string> = { run: "Run", debug: "Debug", test: "instrumented-test" };
+/** Why Elide lists no device target for an APK, in the case a user can do something about. */
+const INSTALLABLE_HINT = "Elide lists none for an APK it cannot install, such as an unsigned one: check its `signing` and sync again.";
+/** Why an installable APK offers no Debug: its manifest, or the build it was merged into, leaves it undebuggable. */
+const DEBUGGABLE_HINT = "Build it with `release = false` (with an Elide that marks such builds debuggable), or set `android:debuggable=\"true\"` on `<application>` in its manifest, then build it again.";
 
 /** One workspace's Run/Debug target. Device discovery is demand-driven, never a background poll. */
 export class AndroidDeploymentController implements vscode.Disposable {
@@ -32,6 +46,8 @@ export class AndroidDeploymentController implements vscode.Disposable {
   private readonly status = vscode.window.createStatusBarItem("elide.androidTarget", vscode.StatusBarAlignment.Left, 90);
   private readonly subscriptions: vscode.Disposable[];
   private disposed = false;
+  /** Bumped whenever a different selection is persisted: a resolution that began before it is stale. */
+  private revision = 0;
   private readonly bootTasks = new Set<vscode.TaskExecution>();
 
   constructor(private readonly workspace: ElideWorkspace, private readonly state: vscode.Memento) {
@@ -56,33 +72,57 @@ export class AndroidDeploymentController implements vscode.Disposable {
   }
 
   async select(value?: unknown): Promise<void> {
-    await this.resolve(value, true);
+    await this.resolve(value, undefined, true);
   }
 
-  /** Explicit invocation, active runnable owner, remembered app, then a choice among runnable apps. */
-  async resolve(value?: unknown, choose = false): Promise<AndroidDeployment | undefined> {
+  /**
+   * Explicit invocation, active deployable owner, remembered app, then a choice among deployable apps. `use` names
+   * what the caller deploys for — its APK must offer that target; without it, any device target will do, which is
+   * what an action needing only the device asks for.
+   */
+  async resolve(value?: unknown, use?: AndroidDeploymentUse, choose = false): Promise<AndroidDeployment | undefined> {
     if (this.disposed) return undefined;
+    // Only another selection persisted meanwhile supersedes this one; a picker dismissed elsewhere does not.
+    const revision = this.revision;
     const explicit = toAndroidTarget(value);
-    const candidates = this.workspace.projects.filter(runnable);
+    const candidates = this.workspace.projects.filter((project) => deployable(project, use));
+    const label = use ? USE_LABELS[use] : "device";
+    if (!hasAndroidProjects(this.workspace.projects)) {
+      void vscode.window.showWarningMessage(NO_ANDROID_PROJECT);
+      return undefined;
+    }
+    // Selecting a target only helps when there is another one to select, and never from the selection itself.
+    const selectable = !choose && candidates.length > 0;
+    const editor = vscode.window.activeTextEditor;
+    const owner = editor?.document.uri.scheme === "file" ? this.workspace.projectFor(editor.document.uri.fsPath) : undefined;
     let project: ElideProject | undefined;
     if (explicit) {
       project = this.workspace.projectAt(explicit.root);
-      if (!project || !runnable(project)) {
-        await this.problem(`Project ${explicit.root} has no synced Android application package. Sync the project and select an APK target.`);
+      if (explicit.device && !explicit.artifact && !choose) {
+        // A device row names only the device. Its root is the project its tree's tools act for, not an app the user
+        // picked: the app is the one the tree would deploy without a target, the active or the remembered one.
+        const top = project?.workspaceRoot ? this.workspace.projectAt(project.workspaceRoot) : project;
+        const tree = top ? [top, ...this.workspace.membersOf(top.root)] : [];
+        project = preferredAndroidProject(tree, owner && tree.includes(owner) ? owner : undefined, this.selected?.root, use) ?? project;
+      }
+      if (!project || !deployable(project, use)) {
+        this.problem(project && androidApks(project).length > 0
+          ? `No APK of ${project.model?.name ?? project.root} has a ${label} target. ${INSTALLABLE_HINT}`
+          : `Project ${explicit.root} has no synced Android application package. Sync the project and select an APK target.`, selectable);
         return undefined;
       }
     } else if (!choose) {
-      const editor = vscode.window.activeTextEditor;
-      const owner = editor?.document.uri.scheme === "file" ? this.workspace.projectFor(editor.document.uri.fsPath) : undefined;
-      project = preferredAndroidProject(this.workspace.projects, owner, this.selected?.root);
+      project = preferredAndroidProject(this.workspace.projects, owner, this.selected?.root, use);
       if (!project && this.selected) {
-        await this.problem(`Remembered Android project ${this.selected.root} is no longer runnable. Select a current deployment target.`);
+        this.problem(`Remembered Android project ${this.selected.root} has no APK with a ${label} target. Select a current deployment target.`, selectable);
         return undefined;
       }
     }
     if (!project) {
       if (candidates.length === 0) {
-        await this.problem("No synced project declares an Android application package. Sync an Android app project first.");
+        this.problem(this.workspace.projects.some((candidate) => androidApks(candidate).length > 0)
+          ? `No synced Android APK has a ${label} target. ${INSTALLABLE_HINT}`
+          : "No synced Android project declares an application package (APK); its projects build only libraries or bundles.", false);
         return undefined;
       }
       project = candidates.length === 1 ? candidates[0] : (await vscode.window.showQuickPick(
@@ -90,12 +130,25 @@ export class AndroidDeploymentController implements vscode.Disposable {
         { placeHolder: "Android deployment project" },
       ))?.project;
     }
-    if (!project) return undefined;
+    if (!project || this.disposed || revision !== this.revision) return undefined;
+    const root = project.root;
+    // A sync gives the project a new model, and a workspace member a new project: what counts is that it is still Android.
+    const current = () => !this.disposed && revision === this.revision && this.workspace.projectAt(root)?.model?.android !== undefined;
+    if (!current()) return undefined;
+    project = this.workspace.projectAt(root)!;
+    const android = project.model!.android!;
     const remembered = this.selected?.root === project.root ? this.selected : undefined;
-    const apks = androidApks(project);
+    const apks = deployableApks(project, use);
     let artifact = explicit?.artifact ?? (choose ? undefined : remembered?.artifact);
-    if (artifact && !apks.some((apk) => apk.name === artifact)) {
-      await this.problem(`Android APK '${artifact}' is no longer declared by ${project.model?.name ?? project.root}. Select a current deployment target.`);
+    const declared = artifact === undefined ? undefined : androidApks(project).find((apk) => apk.name === artifact);
+    if (artifact && !declared) {
+      this.problem(`Android APK '${artifact}' is no longer declared by ${project.model?.name ?? project.root}. Select a current deployment target.`, selectable);
+      return undefined;
+    }
+    if (artifact && declared && !androidApkOffers(declared, use)) {
+      // An installable APK without Debug is one that cannot be debugged, not one Elide cannot install.
+      this.problem(use === "debug" && declared.device?.runnable ? `'${artifact}' is not debuggable. ${DEBUGGABLE_HINT}`
+        : `Elide lists no ${use ? androidUseTask(use, artifact) : "device"} target for '${artifact}'. ${INSTALLABLE_HINT} Or select a different deployment target.`, selectable);
       return undefined;
     }
     if (!artifact) {
@@ -103,19 +156,21 @@ export class AndroidDeploymentController implements vscode.Disposable {
         apks.map((apk) => ({ label: apk.name, description: apk.output })), { placeHolder: "Android application package" },
       ))?.label;
     }
-    if (!artifact) return undefined;
+    if (!artifact || !current()) return undefined;
     const devices = await this.devices(project);
-    if (!devices) return undefined;
-    const avd = project.model!.android!.avd;
+    if (!devices || !current()) return undefined;
+    const avd = android.avd;
     let destination: AndroidDeploymentDestination | undefined = explicit?.device
       ? (remembered?.destination.kind === "device" && remembered.destination.serial === explicit.device ? remembered.destination : { kind: "device", serial: explicit.device })
       : choose ? undefined : remembered?.destination;
     // A stopped emulator is booted at deployment time; only a physical device needs the user to bring it back.
-    if (destination?.kind === "device" && !androidAvdToBoot(devices, destination, avd) && !await this.validateDevice(devices, destination.serial)) return undefined;
+    if (destination?.kind === "device" && !androidAvdToBoot(devices, destination, avd) && !this.validateDevice(devices, destination.serial, selectable)) return undefined;
+    if (!current()) return undefined;
     if (!destination) {
       const ready = devices.filter((device) => device.ready);
       const sdk = androidSdkFor(project);
       const avds = await Promise.all(ready.map((device) => device.emulator && sdk ? this.avdOf(sdk, device.serial) : undefined));
+      if (!current()) return undefined;
       const items: (vscode.QuickPickItem & { destination: AndroidDeploymentDestination })[] = ready.map((device, index) => {
         const running = avds[index];
         return {
@@ -129,68 +184,139 @@ export class AndroidDeploymentController implements vscode.Disposable {
       destination = (await vscode.window.showQuickPick(items, {
         placeHolder: unavailable.length ? `Deploy ${artifact}; unavailable: ${unavailable.join(", ")}. Authorize USB debugging or reconnect.` : `Deploy ${artifact} on`,
       }))?.destination;
+      if (!current()) return undefined;
       if (destination?.kind === "device") {
         const refreshed = await this.devices(project);
-        if (!refreshed || !await this.validateDevice(refreshed, destination.serial)) return undefined;
+        if (!refreshed || !current() || !this.validateDevice(refreshed, destination.serial, false)) return undefined;
       }
     }
-    if (!destination || this.disposed) return undefined;
+    if (!current()) return undefined;
+    if (destination?.kind === "device" && !destination.avd) {
+      const serial = destination.serial;
+      const device = devices.find((candidate) => candidate.serial === serial);
+      const sdk = device?.emulator && device.ready ? androidSdkFor(project) : undefined;
+      const identity = sdk ? await this.avdOf(sdk, serial) : undefined;
+      if (identity) destination = { ...destination, avd: identity };
+    }
+    if (!destination || !current()) return undefined;
     const selection = { root: project.root, artifact, destination };
-    if (!await this.remember(selection)) return undefined;
-    return { ...selection, project };
+    // Persisting a different selection supersedes every resolution begun before it, this one excepted.
+    if (!await this.remember(selection, revision)) return undefined;
+    const deployed = this.workspace.projectAt(root);
+    return deployed?.model?.android ? { ...selection, project: deployed } : undefined;
   }
 
   /**
    * The serial a deployment installs on, booting its emulator first when it is not running. A pinned emulator is
    * resolved again by AVD identity, since a reboot may give it another port; a physical device is never swapped.
+   * The deployment must stay the selection meanwhile: when another target is selected while its emulator starts,
+   * nothing is deployed, and the user is told so.
    */
   async readyDevice(deployment: AndroidDeployment): Promise<string | undefined> {
+    // Re-pinning a rebooted emulator's serial replaces the selection this deployment has to remain.
+    const pin = { target: { root: deployment.root, artifact: deployment.artifact, destination: deployment.destination } };
+    const serial = await this.prepareDevice(pin);
     if (this.disposed) return undefined;
-    const { project, destination } = deployment;
-    const projectAvd = project.model!.android!.avd;
-    if (destination.kind === "emulator") return this.bootAvd(project, projectAvd);
-    const devices = await this.devices(project);
-    if (!devices) return undefined;
-    const avd = androidAvdToBoot(devices, destination, projectAvd);
-    if (!avd) return await this.validateDevice(devices, destination.serial) ? destination.serial : undefined;
-    const serial = await this.bootAvd(project, avd);
-    if (!serial) return undefined;
-    if (serial !== destination.serial || destination.avd !== avd) {
-      const remembered = await this.remember({ root: deployment.root, artifact: deployment.artifact, destination: { kind: "device", serial, avd } });
-      if (!remembered) return undefined;
+    if (!sameTarget(this.selected, pin.target)) {
+      void vscode.window.showWarningMessage(`Elide: the Android deployment target changed while the device for ${deployment.artifact} was getting ready, so nothing was deployed. Start it again to deploy to the new target.`);
+      return undefined;
+    }
+    if (!this.declares(pin.target)) {
+      this.problem(`Android APK '${deployment.artifact}' is no longer declared by ${deployment.root}. Select a current deployment target.`);
+      return undefined;
     }
     return serial;
+  }
+
+  private async prepareDevice(pin: { target: AndroidDeploymentTarget }): Promise<string | undefined> {
+    const current = () => !this.disposed && sameTarget(this.selected, pin.target) && this.declares(pin.target);
+    const { root, artifact, destination } = pin.target;
+    const project = this.workspace.projectAt(root);
+    const projectAvd = project?.model?.android?.avd;
+    if (!project || !projectAvd || !current()) return undefined;
+    if (destination.kind === "emulator") return await this.bootAvd(project, projectAvd, current);
+    const devices = await this.devices(project);
+    if (!devices || !current()) return undefined;
+    const sdk = androidSdkFor(project);
+    const currentAvd = destination.avd && sdk ? await this.avdOf(sdk, destination.serial) : undefined;
+    if (!current()) return undefined;
+    const avd = androidAvdToBoot(devices, destination, projectAvd, currentAvd);
+    if (!avd) return this.validateDevice(devices, destination.serial) ? destination.serial : undefined;
+    const serial = await this.bootAvd(project, avd, current);
+    if (!serial || !current()) return undefined;
+    if (serial !== destination.serial || destination.avd !== avd) {
+      const repinned: AndroidDeploymentTarget = { root, artifact, destination: { kind: "device", serial, avd } };
+      if (!await this.remember(repinned, this.revision)) return undefined;
+      pin.target = repinned;
+    }
+    return serial;
+  }
+
+  /** Whether the live model still declares the target's APK; a sync may have removed it. */
+  private declares(target: AndroidDeploymentTarget): boolean {
+    return this.workspace.projectAt(target.root)?.model?.android?.targets.some((apk) => apk.kind === "apk" && apk.name === target.artifact) ?? false;
+  }
+
+  /**
+   * Uninstall `application` from the device `deployment` installs on, once the user has confirmed that this erases
+   * its data: a Run or Debug refused with `INSTALL_FAILED_UPDATE_INCOMPATIBLE` can then install its own build.
+   * `serial` is the device it installed on; the project emulator, which Elide boots itself, is found again.
+   */
+  async uninstall(deployment: AndroidDeployment, application: string, serial?: string): Promise<boolean> {
+    const device = serial ?? await this.readyDevice(deployment);
+    if (!device || this.disposed) return false;
+    const avd = deployment.destination.kind === "emulator" ? this.workspace.projectAt(deployment.root)?.model?.android?.avd : deployment.destination.avd;
+    const name = avd ? `${device} (${avd})` : device;
+    const confirmed = await vscode.window.showWarningMessage(`Uninstall ${application} from ${name}?`, {
+      modal: true,
+      detail: `Android refuses to update it: the copy on the device is signed with a different key. Uninstalling erases ${application}'s data on ${name}, then installs the app again.`,
+    }, UNINSTALL);
+    if (confirmed !== UNINSTALL || this.disposed) return false;
+    try {
+      await uninstallAndroidApp(deployment.project, device, application);
+      return true;
+    } catch (error) {
+      this.problem(`Could not uninstall ${application} from ${name}: ${error instanceof Error ? error.message : String(error)}`, false);
+      return false;
+    }
   }
 
   /**
    * Boot `avd` unless it already runs, and return its serial once Android finished booting. The project's AVD goes
    * through Elide, which also creates it; any other AVD is launched with the SDK's emulator, which Elide cannot name.
+   * A failure is reported without waiting for the user to dismiss it, so the startup progress closes with it.
    */
-  private async bootAvd(project: ElideProject, avd: string): Promise<string | undefined> {
+  private async bootAvd(project: ElideProject, avd: string, current: () => boolean): Promise<string | undefined> {
+    const projectAvd = project.model?.android?.avd;
+    if (!projectAvd || !current()) return undefined;
     const sdk = androidSdkFor(project);
     if (!sdk) {
-      await this.problem("No Android SDK is configured. Set elide.android.sdk or install the Android SDK components, then retry.");
+      this.problem("No Android SDK is configured. Set elide.android.sdk or install the Android SDK components, then retry.");
       return undefined;
     }
     try {
       const running = await this.findEmulator(project, sdk, avd);
-      if (running?.ready && await this.bootCompleted(sdk, running.serial)) return running.serial;
+      if (!current()) return undefined;
+      if (running?.ready && await this.bootCompleted(sdk, running.serial)) return current() ? running.serial : undefined;
+      if (!current()) return undefined;
       const windowed = readConfig(project.folder).androidEmulatorWindow;
-      const booted = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Elide: starting Android emulator '${avd}'`, cancellable: true }, async (_progress, token) => {
-        if (token.isCancellationRequested || this.disposed) return false;
-        if (avd === project.model!.android!.avd) return this.bootThroughElide(project, windowed, token);
-        return this.bootThroughSdk(project, sdk, avd, windowed, running !== undefined, token);
+      return await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Elide: starting Android emulator '${avd}'`, cancellable: true }, async (_progress, token) => {
+        if (token.isCancellationRequested || !current()) return undefined;
+        const booted = avd === projectAvd
+          ? await this.bootThroughElide(project, windowed, token)
+          : await this.bootThroughSdk(project, sdk, avd, windowed, running !== undefined, token);
+        if (token.isCancellationRequested || !current()) return undefined;
+        if (!booted) {
+          this.problem(`Emulator '${avd}' startup failed or exceeded two minutes. Check the Elide task terminal or the emulator, then retry.`);
+          return undefined;
+        }
+        const serial = await this.findEmulator(project, sdk, avd);
+        if (token.isCancellationRequested || !current()) return undefined;
+        if (!serial?.ready) this.problem(`AVD '${avd}' did not appear as a ready device after startup. Check the emulator and select its device serial.`);
+        return serial?.ready ? serial.serial : undefined;
       });
-      if (this.disposed) return undefined;
-      if (!booted) {
-        await this.problem(`Emulator '${avd}' startup was cancelled, failed, or exceeded two minutes. Check the Elide task terminal or the emulator, then retry.`);
-        return undefined;
-      }
-      const serial = await this.findEmulator(project, sdk, avd);
-      if (!serial?.ready) await this.problem(`AVD '${avd}' did not appear as a ready device after startup. Check the emulator and select its device serial.`);
-      return serial?.ready ? serial.serial : undefined;
     } catch (error) {
-      await this.problem(`Could not start Android emulator '${avd}': ${error instanceof Error ? error.message : String(error)} Check adb and the emulator, then retry.`);
+      this.problem(`Could not start Android emulator '${avd}': ${error instanceof Error ? error.message : String(error)} Check adb and the emulator, then retry.`);
       return undefined;
     }
   }
@@ -237,7 +363,11 @@ export class AndroidDeploymentController implements vscode.Disposable {
       while (!token.isCancellationRequested && !this.disposed && Date.now() < deadline) {
         if (failure) throw failure;
         const device = await this.findEmulator(project, sdk, avd);
-        if (device?.ready && await this.bootCompleted(sdk, device.serial)) { child = undefined; return true; }
+        if (device?.ready && await this.bootCompleted(sdk, device.serial)) {
+          if (token.isCancellationRequested || this.disposed) return false;
+          child = undefined;
+          return true;
+        }
         await sleep(BOOT_POLL_MS);
       }
       return false;
@@ -277,45 +407,60 @@ export class AndroidDeploymentController implements vscode.Disposable {
     }
   }
 
-  /** Persist the selection; false once disposed, so a late answer never resurrects a torn-down controller. */
-  private async remember(selection: AndroidDeploymentTarget): Promise<boolean> {
-    await this.state.update(STATE_KEY, selection);
+  /**
+   * Persist `selection` unless another one was persisted since `revision`; an equal one is already the selection.
+   * It becomes the selection at once, so a slow Memento write cannot bring back an older target after a newer one.
+   */
+  private async remember(selection: AndroidDeploymentTarget, revision: number): Promise<boolean> {
     if (this.disposed) return false;
+    if (sameTarget(this.selected, selection)) return true;
+    if (revision !== this.revision) return false;
+    const generation = ++this.revision;
     this.selected = selection;
     this.updateStatus();
-    return true;
+    await this.state.update(STATE_KEY, selection);
+    return !this.disposed && generation === this.revision;
   }
 
   private async devices(project: ElideProject): Promise<AndroidDevice[] | undefined> {
     try {
       const devices = await attachedDevices(project);
-      if (!devices) await this.problem("Android SDK platform-tools (adb) are unavailable. Set elide.android.sdk or install the Android SDK components, then retry.");
+      if (!devices) this.problem("Android SDK platform-tools (adb) are unavailable. Set elide.android.sdk or install the Android SDK components, then retry.", false);
       return devices;
     } catch (error) {
-      await this.problem(`Android device discovery failed: ${error instanceof Error ? error.message : String(error)} Check the SDK's adb installation and daemon, then retry.`);
+      this.problem(`Android device discovery failed: ${error instanceof Error ? error.message : String(error)} Check the SDK's adb installation and daemon, then retry.`, false);
       return undefined;
     }
   }
 
-  private async validateDevice(devices: AndroidDevice[], serial: string): Promise<boolean> {
+  private validateDevice(devices: AndroidDevice[], serial: string, selectable = true): boolean {
     const state = androidDeviceProblem(devices, serial);
     if (!state) return true;
     const action = state === "unauthorized" ? "Unlock the device and approve its USB debugging authorization." : "Reconnect the device or start its emulator.";
-    await this.problem(`Android target ${serial} is ${state}. ${action} Select a different deployment target explicitly to switch devices.`);
+    this.problem(`Android target ${serial} is ${state}. ${action}${selectable ? " Select a different deployment target explicitly to switch devices." : ""}`, selectable);
     return false;
   }
 
-  private async problem(message: string): Promise<void> {
-    const action = await vscode.window.showErrorMessage(`Elide: ${message}`, "Select Android Deployment Target");
-    if (action) void vscode.commands.executeCommand(SELECT_COMMAND);
+  /**
+   * `selectable` offers the selection only where choosing another target can fix the problem. The deployment that
+   * failed ends without waiting for the notification to be dismissed.
+   */
+  private problem(message: string, selectable = true): void {
+    if (!selectable) {
+      void vscode.window.showErrorMessage(`Elide: ${message}`);
+      return;
+    }
+    void vscode.window.showErrorMessage(`Elide: ${message}`, "Select Android Deployment Target").then((action) => {
+      if (action) void vscode.commands.executeCommand(SELECT_COMMAND);
+    });
   }
 
   private updateStatus(): void {
     if (this.disposed) return;
-    if (!this.workspace.projects.some(runnable)) { this.status.hide(); return; }
+    if (!this.workspace.projects.some((candidate) => deployable(candidate))) { this.status.hide(); return; }
     const selected = this.selected;
     const project = selected ? this.workspace.projectAt(selected.root) : undefined;
-    const valid = project?.model?.android?.targets.some((target) => target.kind === "apk" && target.name === selected?.artifact);
+    const valid = project ? deployableApks(project).some((apk) => apk.name === selected?.artifact) : false;
     if (selected && valid) {
       const destination = selected.destination.kind === "device" ? selected.destination.avd ?? selected.destination.serial : project!.model!.android!.avd;
       this.status.text = `$(device-mobile) ${selected.artifact} → ${destination}`;

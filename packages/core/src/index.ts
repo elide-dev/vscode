@@ -29,6 +29,7 @@ export {
 export * from "./android.js";
 export * from "./androidBinaryXml.js";
 export * from "./androidLogcat.js";
+export * from "./androidTests.js";
 export * from "./composeInputs.js";
 export * from "./artifacts.js";
 export * from "./buildTasks.js";
@@ -51,3 +52,5 @@ export * from "./workspace.js";
 export * from "./timeline.js";
 export * from "./buildOutput.js";
 export * from "./commandTimeline.js";
+export * from "./androidDatabase.js";
+export * from "./androidWireless.js";

@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import type { AndroidDevice } from "@elide/ide-core";
-import { androidApks, androidAvdToBoot, androidDeviceProblem, preferredAndroidProject, restoredAndroidTarget } from "../src/androidDeploymentState.js";
+import type { AndroidDevice, AndroidDeviceTargets } from "@elide/ide-core";
+import {
+  androidApks, androidAvdToBoot, androidDeviceProblem, androidEmulatorOwners, androidToolsProject, deployableApks, hasAndroidProjects,
+  preferredAndroidProject, restoredAndroidTarget,
+} from "../src/androidDeploymentState.js";
 import type { ElideProject } from "../src/projects.js";
 
-function project(root: string, kind = "apk"): ElideProject {
-  return { root, model: { android: { targets: [{ name: "app", kind }] } } } as ElideProject;
+const SIGNED: AndroidDeviceTargets = { runnable: true, debuggable: true, instrumented: false };
+
+function project(root: string, kind = "apk", device: AndroidDeviceTargets | undefined = kind === "apk" ? SIGNED : undefined): ElideProject {
+  return { root, model: { android: { targets: [{ name: "app", kind, ...(device ? { device } : {}) }] } } } as ElideProject;
 }
 
 const phone: AndroidDevice = { serial: "phone", state: "device", ready: true, emulator: false };
@@ -45,10 +50,19 @@ describe("Android deployment decisions", () => {
     const pinned = { serial: "emulator-5554", avd: "pixel" };
     expect(androidAvdToBoot([], pinned, "project")).toBe("pixel");
     expect(androidAvdToBoot([{ serial: "emulator-5554", state: "offline", ready: false, emulator: true }], pinned, "project")).toBe("pixel");
-    expect(androidAvdToBoot([{ serial: "emulator-5554", state: "device", ready: true, emulator: true }], pinned, "project")).toBeUndefined();
+    expect(androidAvdToBoot([{ serial: "emulator-5554", state: "device", ready: true, emulator: true }], pinned, "project", "pixel")).toBeUndefined();
     expect(androidAvdToBoot([], { serial: "emulator-5556" }, "project")).toBe("project");
     expect(androidAvdToBoot([phone], { serial: "old" }, "project")).toBeUndefined();
     expect(androidAvdToBoot([{ serial: "old", state: "unauthorized", ready: false, emulator: false }], { serial: "old" }, "project")).toBeUndefined();
+  });
+
+  test("a reused emulator serial cannot substitute another AVD for the selected one", () => {
+    const ready: AndroidDevice = { serial: "emulator-5554", state: "device", ready: true, emulator: true };
+    const pinned = { serial: ready.serial, avd: "selected" };
+    expect(androidAvdToBoot([ready], pinned, "project", "other")).toBe("selected");
+    expect(androidAvdToBoot([ready], pinned, "project", undefined)).toBe("selected");
+    expect(androidAvdToBoot([ready], pinned, "project", "selected")).toBeUndefined();
+    expect(androidAvdToBoot([ready], { serial: ready.serial }, "project")).toBeUndefined();
   });
 
   test("APKs are re-read from the live model, not restored artifact names or library outputs", () => {
@@ -76,7 +90,60 @@ describe("Android deployment decisions", () => {
     expect(preferredAndroidProject([app, library], undefined, library.root)).toBeUndefined();
   });
 
+  test("an APK is deployed only for what Elide lists a target for", () => {
+    const unsigned = project("/unsigned", "apk", { runnable: false, debuggable: false, instrumented: false });
+    expect(androidApks(unsigned).map((apk) => apk.name)).toEqual(["app"]);
+    expect(deployableApks(unsigned)).toEqual([]);
+    expect(deployableApks(unsigned, "run")).toEqual([]);
+    const release = project("/release", "apk", { runnable: true, debuggable: false, instrumented: false });
+    expect(deployableApks(release, "run").map((apk) => apk.name)).toEqual(["app"]);
+    expect(deployableApks(release, "debug")).toEqual([]);
+    const tests = project("/tests", "apk", { runnable: false, debuggable: false, instrumented: true });
+    expect(deployableApks(tests).map((apk) => apk.name)).toEqual(["app"]);
+    expect(deployableApks(tests, "test").map((apk) => apk.name)).toEqual(["app"]);
+    // A model synced before Elide listed device targets offers none.
+    expect(deployableApks({ root: "/old", model: { android: { targets: [{ name: "app", kind: "apk" }] } } } as ElideProject)).toEqual([]);
+  });
+
+  test("an active app that cannot do what was asked does not outrank the remembered one that can", () => {
+    const release = project("/release", "apk", { runnable: true, debuggable: false, instrumented: false });
+    const debug = project("/debug");
+    expect(preferredAndroidProject([release, debug], release, debug.root, "debug")).toBe(debug);
+    expect(preferredAndroidProject([release, debug], release, debug.root, "run")).toBe(release);
+    expect(preferredAndroidProject([release], release, undefined, "debug")).toBeUndefined();
+  });
+
   test("removed remembered projects require a new choice, not the first unrelated app", () => {
     expect(preferredAndroidProject([project("/other")], undefined, "/removed")).toBeUndefined();
+  });
+});
+
+describe("Android UI gating", () => {
+  const jvm = { root: "/jvm", model: { name: "jvm" } } as unknown as ElideProject;
+  const unsynced = { root: "/new" } as ElideProject;
+  const withAvd = (root: string, kind: string, avd: string) =>
+    ({ root, model: { android: { avd, targets: [{ name: root.slice(1), kind, device: SIGNED }] } } }) as unknown as ElideProject;
+
+  test("Android commands show only once a synced project declares an android block, library or application", () => {
+    expect(hasAndroidProjects([])).toBe(false);
+    expect(hasAndroidProjects([jvm, unsynced])).toBe(false);
+    expect(hasAndroidProjects([jvm, project("/lib", "aar")])).toBe(true);
+  });
+
+  test("a workspace tree's devices and tools act for its first application, else its first Android project", () => {
+    const library = project("/model", "aar");
+    const app = project("/app");
+    expect(androidToolsProject([jvm, library, app])).toBe(app);
+    expect(androidToolsProject([jvm, library])).toBe(library);
+    expect(androidToolsProject([jvm, unsynced])).toBeUndefined();
+  });
+
+  test("emulator rows belong to applications, one per AVD, never to a library", () => {
+    const libraries = [withAvd("/model", "aar", "model"), withAvd("/ui", "aar", "ui")];
+    const dev = withAvd("/dev", "apk", "pixel");
+    const tests = withAvd("/tests", "apk", "pixel");
+    const tablet = withAvd("/tablet", "apk", "tablet");
+    expect(androidEmulatorOwners(libraries)).toEqual([]);
+    expect(androidEmulatorOwners([...libraries, dev, tests, tablet])).toEqual([{ avd: "pixel", project: dev }, { avd: "tablet", project: tablet }]);
   });
 });

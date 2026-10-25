@@ -23,6 +23,7 @@ everything you need to build, test, and submit changes.
   by the local-only integration test.
 - `samples/workspace` — an Elide workspace for the integration test's `workspace` scenario.
 - `tools/deploy.sh` — release/deploy helper script.
+- `tools/build-database-inspector.ts` — rebuilds the Android database inspector's DEX (see below).
 - `tools/bazel` — repository-local Bazel rules (the hermetic Bun used by `bun_test`).
 
 ## Dev loop
@@ -104,18 +105,63 @@ Then run without executable/JDK overrides to exercise managed resolution.
 For developer builds only, `ELIDE_KOMODO_LSP` names an absolute executable in an intact native bundle,
 `ELIDE_KOMODO_JAVA_HOME` its JDK inputs, and `ELIDE_KOMODO_PLUGINS` its compiler plugin directory.
 Build the standalone bundle in Komodo; do not copy it into an Elide distribution.
+`ELIDE_KOMODO_SAMPLE=android` opens
+the built Elide Android sample beside this repository (or `ELIDE_ANDROID_SAMPLE`) in place instead (Compose, workspace
+members, Room's kapt output); its files are only edited unsaved and checked unchanged at the end.
 `ELIDE_KOMODO_TRACE=1` records the protocol in the `Elide: Komodo` output channel's log, and `ELIDE_KOMODO_COEXIST=1`
 keeps the JetBrains extension enabled and logs which `kotlin` grammar VS Code applies:
 
 ```sh
-ELIDE_TEST_SCENARIO=komodo \
+ELIDE_TEST_SCENARIO=komodo ELIDE_KOMODO_SAMPLE=android \
 ELIDE_TEST_HOME="${ELIDE_TEST_HOME:?set to an Elide distribution with managed Komodo support}" \
 bazel run //packages/vscode:integration_test
 ```
 
+`ELIDE_TEST_SCENARIO=compose-komodo` opens the Compose sample (as `compose` does, below) with the `komodo` preview
+engine and checks that every card renders live in the language server process, with no JVM child.
+
+`ELIDE_TEST_SCENARIO=compose-agent` opens the same Compose sample and drives the Compose preview MCP tools over HTTP, as an
+agent does: composables without `@Preview` (placeholders, arguments, a private one), an existing preview, reference and
+wrapper compile errors, and a live session that follows an unsaved edit. `ELIDE_COMPOSE_ENGINE=komodo` selects the
+`komodo` engine (and Komodo's language server, as `compose-komodo` does), adding taps and typing into the live card and the
+preview panel's pause while the agent's session is open; it needs a Komodo with session appendices. The sample's files are
+only edited unsaved and checked unchanged at the end.
+
 `ELIDE_TEST_SCENARIO=komodo-debug` takes the same `ELIDE_KOMODO_*` variables and debugs a copy of `samples/ktjvm`
 through Komodo's debug adapter (`komodo --dap`): `Elide: Run (debug)` stops at a Kotlin line breakpoint, reads
 a local, evaluates, steps and runs the program to its end.
+
+`ELIDE_TEST_SCENARIO=komodo-android-debug` exercises the real `elide-android` launch provider with Komodo's
+`komodo-kotlin` adapter on a ready, disposable emulator. It uses a clean copy of `elide-android-sample`, creates
+its debug signing key, and lets the launch build/install/start the APK; no prebuilt APK or changes to the original
+sample are needed. It checks the forwarded JDWP socket's device and PID, a Kotlin `onCreate` breakpoint in the
+copied source, locals/evaluation, stepping from the DAO assignment to `setContent`, and continuation into a
+focused Activity window. It then detaches and removes only the app it installed, leaving the emulator running.
+The application ID must match the sample manifest and must **not** already be installed on that emulator;
+the scenario refuses to overwrite an existing installation.
+The scenario reports attach-to-breakpoint time and fails a first stop slower than 30 s: before Komodo limited its
+loaded-class scan to the project's packages, ART's ~30,000 framework classes took about a minute to bind through adb.
+It is a correctness bound, not a debugger latency benchmark.
+
+Install Android SDK platform/build tools for API 36, boot a dedicated API 36 emulator headlessly, wait for boot
+completion, and dismiss its keyguard before starting. Select an Android-capable Elide distribution using
+`ELIDE_TEST_HOME`; it must provide Komodo under `lib/komodo`, or set `ELIDE_KOMODO_LSP` and
+`ELIDE_KOMODO_JAVA_HOME` as above. Other installed extensions are disabled. With `emulator-5580` already ready:
+
+```sh
+ELIDE_TEST_SCENARIO=komodo-android-debug \
+ELIDE_TEST_HOME="${ELIDE_TEST_HOME:?set to an Android-capable Elide distribution with Komodo}" \
+ELIDE_ANDROID_APP_SAMPLE="$HOME/workspaces/elide-android-sample" \
+ELIDE_ANDROID_APP_MEMBER=app \
+ELIDE_ANDROID_APP_ARTIFACT=app \
+ELIDE_ANDROID_APP_ID=sample.app \
+ELIDE_ANDROID_DEVICE=emulator-5580 \
+bazel run //packages/vscode:integration_test
+```
+
+`ANDROID_HOME` or `ANDROID_SDK_ROOT` must identify that SDK. `KEEP_TEST_DIRS=1` retains the copied workspace,
+generated APK, and isolated VS Code logs for diagnosis; it does not retain the app on the emulator. Do not run
+two instances against the same emulator/application ID at once.
 
 Android app verification has no default fixture. Select an Elide Android application explicitly, including its
 workspace-relative member directory, APK artifact name, and application ID:
@@ -126,12 +172,44 @@ ELIDE_ANDROID_APP_SAMPLE=/path/to/android-workspace \
 ELIDE_ANDROID_APP_MEMBER=app \
 ELIDE_ANDROID_APP_ARTIFACT=app-debug \
 ELIDE_ANDROID_APP_ID=com.example.app \
-bun run test:integration
+bazel run //packages/vscode:integration_test
 ```
 
-The runner builds a clean temporary copy, then installs and launches it on an attached device or headless emulator.
+The runner builds a clean temporary copy, creates the configured debug signing key through **Create Android
+Signing Keystore**, then builds, installs and launches the APK on an attached device or headless emulator.
+The fixture must declare a disposable debug keystore under `.dev` inside its copied workspace; `.dev` and the
+keys it contains are not copied. Use a dedicated application ID that is not already installed with another key.
+The scenario does not uninstall an existing application or delete its data to bypass a signing mismatch.
 Compose verification separately uses `ELIDE_TEST_SCENARIO=compose` with `ELIDE_ANDROID_SAMPLE` pointing to a built
-Compose sample; its default is the sibling `elide-android-sample` checkout.
+Compose sample; its default is the sibling `elide-android-sample` checkout. Leave its VS Code window unminimized
+while it runs: the scenario times paints by the preview's `requestAnimationFrame` acknowledgements, which Chromium
+suspends in a minimized window (`timed out waiting for first paint`) and can delay when the window is activated or
+deactivated mid-step (an optimistic paint acknowledged only after confirmation).
+
+Run latency scenarios without concurrent builds or other preview scenarios. The 1,500 ms optimistic-paint checks
+remain distinct from annotation-processing confirmation, which can take several seconds. Record a timing miss
+and the surrounding load rather than increasing the bound or treating a later functional pass as a performance fix.
+
+### Android database inspector helper
+
+`packages/vscode/media/database/inspector.dex` ships with the extension; the Bazel build does not require an Android
+SDK or compile Java. After changing `DatabaseInspector.java`, rebuild and include the dex, running the helper on the
+pinned Bun (it writes next to its source, so pass the script's absolute path):
+
+```sh
+bazel run //tools/bazel/bun -- "$PWD/tools/build-database-inspector.ts"
+```
+
+Requires a JDK and an Android SDK platform API 28+ with build-tools/d8. Set `ANDROID_HOME` or `ANDROID_SDK_ROOT`
+when the SDK is not in a conventional location. `ANDROID_DATABASE_PLATFORM` (for example `android-36`) and
+`ANDROID_DATABASE_BUILD_TOOLS` (for example `37.0.0`) pin the build inputs; pin the JDK too for reproducibility.
+The helper targets device API 26+. Keep the source and generated dex together when updating the protocol.
+
+For device smoke verification, use an isolated debuggable app with a file-backed SQLite/Room database in WAL mode.
+Verify paging, NULL/BLOB/64-bit values, live app commits after opening the panel, read-only rejection of writes,
+confirmed writes and foreign-key rollback, cancellation and disconnects. Do not run destructive SQL against a
+developer's existing app data. Unit tests cover transport/lifecycle boundaries; they do not replace device or
+real-webview verification.
 
 ## Code style
 

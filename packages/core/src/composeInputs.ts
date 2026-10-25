@@ -59,6 +59,18 @@ export function composePreviewBuildTargets(model: ProjectModel, target: AndroidT
 }
 
 /**
+ * Compose preview annotations in Kotlin source text: annotations whose simple name contains `Preview`, qualified or
+ * not (`@Preview`, `@PreviewLightDark`, multipreview annotations such as `@DevicePreviews`), outside comments and
+ * string literals. A text check that never builds, so a multipreview annotation whose name lacks `Preview` is not
+ * recognized. Zero: the file declares none.
+ */
+export function composePreviewAnnotations(text: string): number {
+  // One left-to-right scan: whichever of a comment or literal starts first hides the other's delimiters.
+  const code = text.replace(/\/\*[\s\S]*?(?:\*\/|$)|\/\/[^\n]*|"""[\s\S]*?(?:"""|$)|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'/g, " ");
+  return code.match(/@(?:[A-Za-z_]\w*\.)*\w*Preview/g)?.length ?? 0;
+}
+
+/**
  * Android applications that can supply the resource context for previews of `file`: those whose preview closure
  * (packaged source sets and their workspace runtime dependencies) compiles it. The nearest consumer comes first, by
  * dependency distance, then by workspace and artifact declaration order.
@@ -127,9 +139,11 @@ export async function composePreviewInputs(model: ProjectModel, target: AndroidT
   const runtimeEntries = modules.flatMap(({ module }) => module.runtimeClassPath!);
   // Each member resolves its own graph, so one library can arrive at several versions. Render what ships: Elide
   // dexes the newest, a tie going to the consumer's own copy, and never an empty stand-in without its provider.
+  // Library roots are normalized (forward slashes); so must the consumer's be, or Windows never sees its own copy.
+  const ownRoot = normalizePath(path.resolve(model.root));
   const libraries = runtimeEntries.flatMap((entry) => {
     const library = publishedLibrary(entry);
-    return library ? [{ entry, ...library, own: library.root === model.root }] : [];
+    return library ? [{ entry, ...library, own: library.root === ownRoot }] : [];
   });
   const shippedJars = new Set(libraries.filter((library) => !library.archive).map((library) => library.name));
   const candidates = Map.groupBy(libraries, (library) => library.identity);

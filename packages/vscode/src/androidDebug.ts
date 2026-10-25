@@ -4,7 +4,9 @@ import { ANDROID_DEVICE_OPTION, androidDebugTask, elideInvocationArgs, elideInvo
 import * as vscode from "vscode";
 import type { AndroidDeploymentController } from "./androidDeployment.js";
 import { configuredInvocation, readConfig } from "./config.js";
-import { launchWithJdwp, resolveAttachType } from "./debug.js";
+import { launchWithJdwp, resolveAttachType, warnSymlinkedFolder } from "./debug.js";
+import { androidFailureActions } from "./failures.js";
+import { isJetBrainsDebugger } from "./jetbrains.js";
 import type { ElideUi } from "./output.js";
 import type { ElideWorkspace } from "./projects.js";
 
@@ -74,6 +76,10 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
       const candidates = this.workspace.projectsIn(targetFolder).filter((candidate) =>
         candidate.model?.android?.targets.some((target) => target.kind === "apk" && target.name === launch.artifact),
       );
+      if (candidates.length === 0) {
+        void vscode.window.showErrorMessage(`Elide: '${launch.artifact}' is not an Android APK in any synced project in this folder.`);
+        return undefined;
+      }
       const editor = vscode.window.activeTextEditor;
       const owner = editor?.document.uri.scheme === "file" ? this.workspace.projectFor(editor.document.uri.fsPath) : undefined;
       root = candidates.find((candidate) => candidate === owner)?.root
@@ -82,7 +88,6 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
         candidates.map((candidate) => ({ label: candidate.model?.name ?? candidate.root, description: candidate.root, root: candidate.root })),
         { placeHolder: `Android project declaring APK '${launch.artifact}'` },
       ))?.root;
-      if (candidates.length === 0) void vscode.window.showErrorMessage(`Elide: '${launch.artifact}' is not an Android APK in any synced project in this folder.`);
       if (!root) return undefined;
     }
     const project = this.workspace.projectAt(root);
@@ -94,10 +99,14 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
     const settings = readConfig(targetFolder);
     const attachType = await resolveAttachType(settings, targetFolder, this.workspace);
     if (!attachType) return undefined;
+    const jetBrains = isJetBrainsDebugger(attachType);
+    if (jetBrains) await this.workspace.prepareAndroidDebugger();
     const name = typeof launch.name === "string" && launch.name ? launch.name : `Elide: Debug ${launch.artifact}`;
 
     if (launch.port !== undefined) {
       // Nothing to build: the port is already forwarded, so the attach session is the whole of it.
+      if (jetBrains && !await this.workspace.kotlinDebuggerReady(project.root, new AbortController().signal)) return undefined;
+      warnSymlinkedFolder(targetFolder, attachType);
       this.ui.log(`android debug: attaching with ${attachType} to port ${launch.port}`);
       const attached = await vscode.debug.startDebugging(targetFolder, {
         type: attachType,
@@ -105,6 +114,9 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
         name,
         hostName: "127.0.0.1",
         port: launch.port,
+        // The attach session is the whole launch, so VS Code runs the configuration's tasks around it.
+        ...(launch.preLaunchTask !== undefined ? { preLaunchTask: launch.preLaunchTask } : {}),
+        ...(launch.postDebugTask !== undefined ? { postDebugTask: launch.postDebugTask } : {}),
       });
       if (!attached) void vscode.window.showErrorMessage(`Elide: could not attach ${attachType} debugger to port ${launch.port}.`);
       return undefined;
@@ -115,7 +127,7 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
       root: project.root,
       artifact: launch.artifact,
       ...(launch.device ? { device: launch.device } : {}),
-    });
+    }, "debug");
     if (!deployment) return undefined;
 
     let dist;
@@ -134,7 +146,20 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
     );
     const argv = elideInvocationArgs("build", invocation);
     this.ui.log(`android debug: ${dist.bin} ${argv.join(" ")} (cwd ${project.root})`);
-    launchWithJdwp({ dist: dist.bin, argv, cwd: project.root, name, folder: targetFolder, attachType, ...(invocation.env ? { env: invocation.env } : {}) }, this.ui, this.sessions);
+    launchWithJdwp({
+      dist: dist.bin,
+      argv,
+      cwd: project.root,
+      name,
+      folder: targetFolder,
+      attachType,
+      ...(invocation.env ? { env: invocation.env } : {}),
+      ...(jetBrains ? { ready: (signal: AbortSignal) => this.workspace.kotlinDebuggerReady(project.root, signal) } : {}),
+      ...(launch.postDebugTask !== undefined ? { postDebugTask: launch.postDebugTask } : {}),
+      failureActions: (failure) => androidFailureActions([project, ...this.workspace.projects], failure, async (application) => {
+        if (await this.deployments.uninstall(deployment, application, device)) await vscode.debug.startDebugging(targetFolder, config);
+      }),
+    }, this.ui, this.sessions);
     // The real session is the attach started once the device's JVM is listening.
     return undefined;
   }

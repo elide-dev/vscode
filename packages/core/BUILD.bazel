@@ -13,7 +13,10 @@ ts_project(
     srcs = [
         "src/android.ts",
         "src/androidBinaryXml.ts",
+        "src/androidDatabase.ts",
         "src/androidLogcat.ts",
+        "src/androidTests.ts",
+        "src/androidWireless.ts",
         "src/artifacts.ts",
         "src/buildOutput.ts",
         "src/buildTasks.ts",

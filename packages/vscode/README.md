@@ -52,7 +52,8 @@ test, and debug commands are available from the editor.
   `res/` and `assets/` of each artifact become resource roots of the source sets it packages, and a sibling Android
   library's classes are resolved as a module dependency rather than an opaque jar, so navigation works across an
   application and the libraries it consumes. Running an APK installs and launches it on a device you pick.
-  Compose component previews render locally with layoutlib, without a device or emulator, and refresh while editing. Logcat streams have
+  Compose component previews render locally without a device or emulator, as layoutlib snapshots or, with the
+  experimental Komodo engine, as live cards, and refresh while editing. Logcat streams have
   application, priority and text filters. Dagger/Hilt generated sources are included in editor synchronization.
 - **Debugging.** Launch `elide run --debugger` and attach with breakpoints in Kotlin and Java, debug an Android
   application on the device it was installed on, or build a Native Image artifact and debug the binary it produced
@@ -100,7 +101,7 @@ accept); add it to `.gitignore` instead to cover every clone.
 | --- | --- |
 | `Elide: Sync Project(s)` | Re-run the sync. |
 | `Elide: Show Menu` | Quick pick with the Elide actions (what the status bar item opens). |
-| `Elide: Run Elide Command…` | Pick `build`, `test`, `install`, or `run <entrypoint>` and run it as a task. |
+| `Elide: Run Elide Command…` | Pick `build`, `test`, `install` or `run <entrypoint>` and run it as a task, or run, debug or test an Android APK on the deployment target. |
 | `Elide: New Project…` | Create a project from an Elide template in a directory you pick. |
 | `Elide: Add Workspace Member…` | Create a project inside an existing one and declare it in `workspace.members`. |
 | `Elide: Open Generated Kotlin LSP Workspace` | Open the generated `workspace.json`. |
@@ -110,14 +111,19 @@ accept); add it to `.gitignore` instead to cover every clone.
 | `Elide: Select Android Deployment Target…` | Choose the remembered project, APK and device shared by Run and Debug. |
 | `Elide: Check Android Environment` | Inspect local tools and device readiness, including before sync succeeds; select a finding for fixes. |
 | `Elide: Refresh Android Devices` | Refresh devices without a project resync. |
+| `Elide: Pair Android Device over Wi-Fi…` | Pair with a QR or six-digit code; discover wireless devices or connect an already-paired device by address. |
 | `Elide: Run Android App…` | Build an APK and install and launch it on a device or the emulator. |
 | `Elide: Debug Android App…` | Build an APK, install and launch it waiting for a debugger, and attach over JDWP. |
-| `Elide: Start Android Emulator` / `Elide: Stop Android Emulators` | Boot the project's AVD, or shut running emulators down. |
+| `Elide: Run Android Instrumented Tests…` | Install a test APK on the deployment target's device and run its instrumented tests, with results in the Test Explorer. |
+| `Elide: Start Android Emulator` / `Elide: Stop Android Emulator` | Boot the project's AVD, or shut it down; a device row's **Stop** stops that emulator only. |
 | `Elide: Create Android Virtual Device` | Create the AVD `android.device` declares, without booting it. |
 | `Elide: Install Android SDK Components` | Install the SDK components the pipeline is missing (`--install-sdk` accepts their licenses). |
-| `Elide: Create Android Signing Keystore` | Mint the keystore an APK signs with, using the Android debug conventions. |
-| `Elide: Open Compose Preview` | Render the Kotlin file's Compose previews beside the source using host-side layoutlib. |
+| `Elide: Create Android Signing Keystore` | Mint the keystore an APK or app bundle signs with, using the Android debug conventions. |
+| `Elide: Open Compose Preview` | Render the Kotlin file's Compose previews beside the source: layoutlib snapshots by default, live cards with the experimental Komodo engine. |
+| `Elide: Copy Compose Preview MCP Server Configuration` | Copy the JSON an MCP client needs to reach this window's [Compose preview tools for agents](#compose-previews-for-ai-agents-mcp) (URL and access token). |
+| `Elide: Close Agent Compose Preview Sessions` | Cancel in-flight agent renders and end live sessions agents left open; the preview panel resumes. |
 | `Elide: Show Android Logcat` | Open a filtered device log stream; Filter, Clear, Stop and Restart commands manage it. |
+| `Elide: Explore Android Databases` | Browse and query a debuggable app's Room / SQLite databases on a connected device. |
 
 ## Settings
 
@@ -145,9 +151,8 @@ accept); add it to `.gitignore` instead to cover every clone.
 | `elide.android.emulatorWindow` | `true` | Boot the emulator with a window; off passes `--no-window`. |
 | `elide.android.composePreview.prewarm` | `true` | Start the Compose preview backend when a file with `@Preview` functions is focused. |
 | `elide.android.composePreview.keepAliveMinutes` | `10` | Minutes an unused Compose preview backend stays warm; `0` stops it with its panel. |
-| `elide.android.composePreview.engine` | `layoutlib` | `komodo` (opt-in, experimental) adds a `komodo-preview` daemon: cards it hosts are live, the rest keep their layoutlib snapshot. |
-| `elide.android.composePreview.komodo.path` | `""` | The `komodo-preview` daemon; empty resolves it beside the Elide binary, then on `PATH`. |
-| `elide.android.composePreview.komodo.fallback` | `true` | Cards Komodo cannot render keep their layoutlib snapshot; off shows the reason on the card. |
+| `elide.android.composePreview.engine` | `"layoutlib"` | `komodo` (experimental) renders live cards inside the workspace's Komodo language server: unsaved Kotlin edits, clicks, keyboard input, compile errors in Problems, and **Inspect** for runtime layout bounds. Requires `elide.kotlinLsp.server` = `komodo`; no fallback to `layoutlib`. See [Komodo Compose preview engine](#komodo-compose-preview-engine-experimental). |
+| `elide.android.composePreview.mcp.enabled` | `true` | Serve the Compose preview to AI agents over MCP (loopback HTTP, token-protected). See [Compose previews for AI agents](#compose-previews-for-ai-agents-mcp). |
 
 In a multi-root workspace each folder can set its own value of every setting except
 `elide.sync.showProgressNotification`, `elide.android.emulatorWindow` and the `elide.android.composePreview.*`
@@ -165,11 +170,12 @@ The extension also maintains two Kotlin LSP settings, and explicit values you se
 
 ### Komodo language server (experimental)
 
-Komodo is an optional native Kotlin language server and debugger managed by Elide. It is
+Komodo is an optional native Kotlin language server, debugger and live Compose preview engine managed by Elide. It is
 opt-in; the JetBrains Kotlin LSP stays the default. To use it, set:
 
 ```jsonc
-"elide.kotlinLsp.server": "komodo" // per folder: Kotlin language server and debugger
+"elide.kotlinLsp.server": "komodo",               // per folder: Kotlin language server and debugger
+"elide.android.composePreview.engine": "komodo"   // optional, window-wide: live Compose previews
 ```
 
 Leave executable, plugin and JDK overrides empty for managed use. The selected Elide CLI runs
@@ -249,6 +255,40 @@ also attach to any JDWP port (`hostName`, `port`, `timeout`, `sourceRoots`) or l
 
 A folder opened through a symlinked path is not matched to the manifest's paths.
 
+### Komodo Compose preview engine (experimental)
+
+With `elide.android.composePreview.engine` set to `komodo` (and the folder on Komodo's language server), **Elide:
+Open Compose Preview** renders every card live inside that same `komodo` process, compiled from the language
+server's own analysis: no separate preview compiler or renderer JVM. It uses the same verified layoutlib runtime the
+`layoutlib` engine downloads on first use. Unsaved Kotlin edits of the
+previewed file and the files it uses reach the cards as you type; clicks run their handlers; `@PreviewParameter`
+providers expand into one card per value; compile errors appear in the Problems view and on the cards, which recover
+once the code compiles again. A card Komodo cannot render says why. There is no fallback to the `layoutlib` engine:
+a `komodo` too old for the engine says so. The project's resources and library classes come from the last Elide
+build, which the panel runs as with `layoutlib`; Java and resource changes need a save. If the language server
+reloads, restarts or crashes, the cards say the preview session closed and the panel reconnects on its own; a save
+that rebuilds the project starts a new session over the new build's classes.
+
+**Inspect** outlines each card's composable calls (`Text`, `Column`, your own composables) by their measured runtime
+layouts; select them by pointer or arrow keys, read their size and image-pixel position, and choose **Open source**,
+double-click or press Enter to open the call in the file Komodo compiled. Only calls located in the project's sources
+are offered; library internals are omitted. Bounds and call sites follow each frame through edits and recovery,
+including calls an edit above them moved. The **Parent** control selects the enclosing call by containment of
+measured bounds. Calls inside another workspace module come from Elide's build of it and are located only when that
+build recorded Compose source information, which Elide does for modules a debug Android app (`release = false`)
+uses and leaves out of release builds. Rebuild after switching; calls without a location still show their bounds.
+
+**Keyboard input.** Click or Tab to a live card's canvas to focus it, then type into its Compose controls. Only that
+card receives keys (with Shift/Ctrl/Alt/Meta and repeat): text input, Backspace/Delete, arrows, Enter, and Tab between
+Compose controls. Press **F6** or **Shift+F6** (VS Code's **Focus Next/Previous Part**) or click outside the canvas to
+leave; Escape still reaches Compose. Leaving the canvas or window, switching cards, enabling **Inspect**, or closing
+the panel releases held keys. IME composition and clipboard paste are not supported, and only characters Android's
+hardware-key input can represent can be typed.
+
+Known limits: the project's own Kotlin compiler arguments and compiler plugin versions are not applied (Komodo's
+pinned Kotlin and bundled plugins are), and code Komodo cannot compile yet shows as "the program does not compile"
+with Komodo's message.
+
 ## Tasks and debugging
 
 Task type `elide` takes `command` (`build` | `run` | `test` | `install`), `project` (project root relative to the
@@ -327,17 +367,20 @@ Elide builds Android applications and libraries without Gradle: every step is an
 
 | Row | Target |
 | --- | --- |
-| An `AndroidApk` artifact | `elide build <artifact>` to package it; **Run** installs and launches it with `elide build android-run-<artifact>`, pinned to the picked device with `--device=<serial>`; **Debug** does the same through `android-debug-<artifact>` and attaches over JDWP. |
+| An `AndroidApk` artifact | `elide build <artifact>` to package it; **Run** installs and launches it with `elide build android-run-<artifact>`, pinned to the picked device with `--device=<serial>`; **Debug** does the same through `android-debug-<artifact>` and attaches over JDWP, for a debuggable APK (see below); **Run Instrumented Tests** runs `android-test-<artifact>` on the deployment target for an APK carrying instrumentation (`instrumentation` in `elide.pkl`, or `<instrumentation>` in its manifest). Each action is offered only when Elide lists its target: none is listed for an APK Elide cannot install, such as an unsigned one, whose row and code lens then only build it. |
 | An `AndroidAab` artifact | `elide build <artifact>`, which publishes `.dev/artifacts/<artifact>.aab`. |
 | An `AndroidAar` artifact | `elide build <artifact>`, which publishes `.dev/artifacts/<artifact>.aar`. |
 | An `AndroidFeature` module | `elide build android-module-<feature>`, staging `.dev/android/<feature>/<feature>.zip`. Its row identifies the base bundle, delivery mode and required features; build the owning AAB to publish it. |
 | The mapping of a minifying artifact | A row beside an artifact with `minify = true`, which opens the `.dev/artifacts/<name>-mapping.txt` R8 published, publishing it with `android-mapping-<artifact>` first when it is not there: without it a stack trace from a shrunk build cannot be read. |
-| **Devices** | `adb devices` of the resolved SDK; a row in the `device` state runs the project's APK on that serial. |
-| **Start emulator** / **Stop emulators** / **Create AVD** | `android-emulator` (with `--no-window` when `elide.android.emulatorWindow` is off), `android-emulator-stop`, `android-avd`. |
+| **Devices** | `adb devices` of the resolved SDK; a row in the `device` state runs an APK of that workspace on that serial — the active file's app, else the selected one, else its first — and an emulator's row stops that emulator (`android-emulator-stop --device=<serial>`). |
+| **Start emulator** / **Stop emulator** / **Create AVD** | `android-emulator` (with `--no-window` when `elide.android.emulatorWindow` is off), `android-emulator-stop`, `android-avd`. **Stop emulator** stops the emulator running the project's AVD and leaves every other emulator running. |
 | **Install Android SDK components** | `android-sdk --install-sdk`, shown when no SDK was found. |
 
 Every other Android step — `android-resources-*`, `android-link-*`, `android-dex-*`, `android-r8-*`,
-`android-sign-*`, `android-bundle-*` — is listed under **Build targets** like any other target of the project.
+`android-sign-*`, `android-bundle-*` — is listed under **Build targets** like any other target of the project. A
+target there that installs onto a device (it takes `--device`: `android-run-*`, `android-debug-*`, `android-test-*`)
+runs on the deployment target's device, resolved as **Run** resolves it, rather than on whichever device Elide would
+pick. Targets Elide gives no description, its internal ones, are grouped under **Other targets**.
 
 A published `.aar` dependency appears under **Dependencies** named by its coordinate, with the sources of the
 archive attached: Elide unpacks each one into `.dev/android/libraries/<group>/<artifact>/<version>/` and compiles
@@ -352,9 +395,70 @@ generated again the same way rather than left out.
 
 An Android application is debugged on the device: an `elide-android` launch configuration builds the APK, installs
 it, launches it waiting for a debugger and attaches to the JDWP socket the target forwards. The APK has to be
-debuggable — `android:debuggable="true"` on `<application>`, which nothing in the build injects — and the target
-says so and stops when it is not. Unit tests of an Android project are plain JVM tests and run in the Test Explorer
-as usual.
+debuggable — `android:debuggable="true"` on `<application>` of the merged manifest. Newer Elide releases add it to a
+`release = false` build, as Gradle does, and list `android-debug-<artifact>` only for an APK that ends up
+debuggable; older Elide builds with Android support add nothing and list it anyway. Debug is therefore also withheld for an
+APK whose manifest sets `android:debuggable="false"`, and for one whose latest build staged a merged manifest
+(`.dev/android/<artifact>/AndroidManifest.xml`) without `android:debuggable="true"`, until the source manifest
+changes. Unit tests of an Android project are plain JVM tests and run in the Test Explorer as usual.
+
+Instrumented tests run on a device. An `AndroidApk` carrying instrumentation is a test APK: one declaring
+`instrumentation` in `elide.pkl`, or an `<instrumentation>` element in its manifest, and for which Elide lists
+`android-test-<artifact>`. Its tests, found in the source sets it packages, appear in the Test Explorer under
+**Elide Android Instrumented Tests**. Running them —
+from there, the APK's row or code lens, or **Elide: Run Android Instrumented Tests…** — installs the APK on the
+deployment target's device with `elide build android-test-<artifact> --device=<serial>`, narrowed to the selected
+classes and methods with `--tests`, and reports each test's pass, failure (with its stack trace) or skip. There is
+no Debug profile: the target attaches no debugger.
+
+A failed Android Run, Build (APK or app bundle) or Debug says why in a notification: Elide's first error and its
+hint, also logged to the Elide output channel, with **Show Terminal** for the whole output. When the hint names a
+missing keystore (`Create one with: elide build android-keystore-<artifact>`), the notification offers **Create
+Android Signing Keystore**. When a Run or Debug cannot install because the app on the device is signed with another
+key (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, as after a new debug keystore), it offers **Uninstall and Retry**: after a
+confirmation naming the device, since uninstalling erases the app's data there, it runs `adb uninstall` for that
+application ID and the same Run or Debug again. These tasks run in a terminal the extension feeds, with Elide's
+plain-text progress (`ELIDE_PROGRESS=plain`); the `$elide` problem matcher reads it as before.
+
+For Android workspaces, Elide starts the JetBrains Kotlin server with synchronous JDI metadata queries. In
+JetBrains Kotlin 0.0.13, a cold asynchronous renderer-selection future can remain pending after a Kotlin expression
+has already evaluated, leaving even a string literal or `this.getPackageName()` waiting for its presentation.
+The compatibility default changes metadata transport, not expression evaluation or its timeout; synchronous
+queries can be slower on high-latency device connections. It is inherited through the JetBrains launcher's
+`IJ_JAVA_OPTIONS` in this VS Code window only, like the Compose plugin path, without writing user/workspace JVM
+settings. An explicit `-Ddebugger.async.jdi=…` in inherited launcher options or `intellij.additionalJvmArgs`
+takes precedence. Sync restarts an already-running server when needed, and Android attach waits for the new
+daemon's debugger to initialize. The inherited options are restored when the last Android project leaves the
+window or Elide deactivates.
+
+The JetBrains Kotlin debugger cannot bind breakpoints in a folder opened through a symlink (macOS `/tmp` is
+`/private/tmp`): it resolves each breakpoint by the path VS Code sends, logs `Could not find virtual file for
+path`, and the breakpoint silently never binds. Every JVM and Android debug launch from such a folder warns and
+offers **Reopen Folder at Real Path**.
+
+#### Wireless pairing
+
+Use **Elide: Pair Android Device over Wi-Fi…** from the Command Palette or Elide menu, or **Pair device over
+Wi-Fi** in a synced project's Android tree. Requires Android 11+, current SDK Platform-Tools and the device
+and extension host on the same reachable network. No USB cable or Android Studio installation is required.
+
+- Enable **Developer options → Wireless debugging** on the device.
+- **QR code:** generate a code in the panel, then use the device's **Pair device with QR code** scanner.
+- **Six-digit code:** open **Pair device with pairing code** on the device, refresh discovery, select its address
+  (or enter it manually), and enter the six-digit code.
+- ADB normally connects automatically. If it does not, use **Connect an already-paired device** with the
+  **IP address & port** from the main Wireless debugging screen, not the pairing dialog's port.
+- Refresh Android Devices if necessary, then **Select Android Deployment Target…** for Run and Debug.
+  Wireless devices also work with the existing Logcat and database pickers; pairing never replaces a pinned target.
+
+QR discovery expires after two minutes and requires mDNS. Manual pairing/connection addresses work when
+mDNS is blocked; VPNs, firewalls or guest-network isolation can still prevent connections. With Remote SSH
+or containers, ADB runs on the extension host and needs network access to the device from there.
+`elide.android.sdk` overrides the project's SDK for this tooling. Legacy unencrypted `adb tcpip` is not enabled.
+
+Codes are neither saved nor logged and reach ADB through stdin, not process arguments. Cancel or close the
+panel to stop its operations and discard the QR code. This cannot undo pairing already accepted by the device;
+choose **Forget** under **Paired devices** on the phone to revoke the workstation's access.
 
 #### Deployment target and environment
 
@@ -363,13 +467,18 @@ shared by Run and Debug. The selection persists in workspace state. Explicit tre
 otherwise a runnable app owning the active file takes precedence over the remembered app. Library files do not
 accidentally turn their library into a deployment target.
 
-Each deployment validates the artifact against the synced model and checks fresh adb state. If the selected
+Each deployment validates the artifact against the synced model — Run needs the `android-run-<artifact>` target Elide
+lists for it, Debug `android-debug-<artifact>` — and checks fresh adb state. If the selected
 physical device is disconnected, offline or unauthorized, deployment stops rather than silently choosing another
 device. A selected emulator that is not running is booted first: the target remembers the AVD it ran, finds it
-again by that identity (its serial may change), and re-pins the new serial. Run and Debug save dirty file-backed
-documents before building and stop if saving fails. Emulator startup identifies the exact AVD, is cancellable and
-bounded, and rejects ambiguous instances. Android launch configurations also validate their target; `flags`,
-`options` and `env` layer over workspace defaults, with the selected device taking precedence.
+again by that identity (its serial may change), and re-pins the new serial. A ready serial reused by another AVD
+does not count as the selected emulator. Run and Debug save dirty file-backed documents before building and stop
+if saving fails. Emulator startup identifies the exact AVD, is cancellable and bounded, and rejects ambiguous
+instances; cancellation during an adb readiness check prevents deployment. Android launch configurations also
+validate their target; `flags`, `options` and `env` layer over workspace defaults, with the selected device taking precedence.
+Late picker, device-discovery and emulator-startup replies are discarded when a newer selection supersedes them.
+A Run or Debug whose emulator is still starting goes on through a dismissed target picker or a sync; when another
+target is selected meanwhile, it deploys nothing and says so.
 
 **Check Android Environment** works before a successful sync. It reports Elide, JDK, SDK/platform-tools,
 connected devices and Kotlin extension availability; synced declarations additionally enable compile-SDK,
@@ -384,9 +493,15 @@ Device rows refresh after Elide tasks or **Refresh Android Devices**, without ba
 
 #### Compose component preview
 
-Requires the experimental Elide `feat/android` branch with persistent compiler workers,
-transactional incremental compilation, `--warm-incremental`, `--report-abi`, and recorded `kotlinc.args`/`javac.args`,
-an Android SDK for compilation/resource linking, and a JDK 17+ matching the extension
+This section describes the default `layoutlib` engine (`elide.android.composePreview.engine`). The experimental
+live engine is described under [Komodo Compose preview engine](#komodo-compose-preview-engine-experimental).
+
+Requires an Elide build with Android support (currently the internal release's distribution; not yet in a public
+Elide release) with persistent compiler workers,
+transactional incremental compilation, `--warm-incremental`, `--report-abi`, recorded `kotlinc.args`/`javac.args`,
+and `kotlinc.toolchain.json`. Kapt modules additionally need `kapt.args` and `kapt.generated.json`.
+These versioned records identify the actual compiler and processor inputs; rebuild after upgrading Elide.
+An Android SDK is required for compilation/resource linking, with a JDK 17+ matching the extension
 host's architecture. **No device, emulator, Android Studio, signing keystore, debuggable application or
 `PreviewActivity` is required.**
 
@@ -396,10 +511,16 @@ host's architecture. **No device, emulator, Android Studio, signing keystore, de
    annotations, not the renderer's Compose adapter. Keep tooling dependencies out of production artifacts.
 3. Declare an `AndroidApk` artifact as the resource context. The preview builds only its resource/R-class targets
    and the relevant JVM compilation targets; it does not package, sign, install or launch that APK.
-4. Sync, open a Kotlin file and invoke **Elide: Open Compose Preview** from the Command Palette or editor title.
+4. Sync, open a Kotlin file with `@Preview` functions and invoke **Elide: Open Compose Preview** from the Command
+   Palette or editor title. The editor-title button appears only on Kotlin files that declare previews (annotations
+   whose name contains `Preview`, multi-preview annotations included) and that an Android application of the
+   workspace packages; on a file without them the command says so instead of building. Run while the folder's first
+   sync is still running, it waits for that sync (cancellable) and reports the sync's error if it fails. Run again
+   for the file already previewed, it brings that panel forward rather than building again.
    The resource context is chosen automatically: the `AndroidApk` that packages the file's source set, or else the
    nearest application depending on its workspace library; equally near applications go by workspace and artifact
-   declaration order.
+   declaration order. The panel follows the previewed file when it, or a folder containing it, is renamed or moved,
+   and reopens after **Developer: Reload Window**.
 
 The extension uses [Google's standalone Compose renderer](https://android.googlesource.com/platform/tools/base/+/HEAD/standalone-render/compose-cli/README.md)
 and layoutlib—the host rendering engine used by Android Studio—not a JavaScript approximation.
@@ -412,51 +533,104 @@ error rather than falling back to a device.
 Discovery reads compiled annotations, so constant annotation values, repeated `@Preview`, member functions,
 multi-preview meta-annotations and `@PreviewParameter` providers reach the renderer. The gallery displays each
 configuration/provider value, respecting options such as dimensions, background, locale, font scale and UI mode.
-Rendering errors expose diagnostics on the affected card while retaining its last successful image.
+Rendering errors expose diagnostics on the affected card while retaining its last successful image. A card's
+**Details** show the exception and its stack trace once, with frames in the project's sources linked to the line the
+preview compiled.
 
 Kotlin/Java changes refresh live, including unsaved editor buffers. Persistent compiler workers incrementally
 compile private source snapshots; persistent layoutlib workers render the new classes. The gallery keeps its
 previous images while updating, publishes only the latest edit, and reports elapsed time from change detection
 through webview paint. Compiler failures retain the gallery, scroll position and selection, with diagnostics in
 **Details** rather than replacing the images. Fresh PNGs decode before publication; unchanged pixels are reused.
-Preview compilation does not overwrite workspace sources or build outputs.
-Large galleries use up to six renderer JVMs, limited to half the host's available CPUs.
+Preview compilation does not overwrite workspace sources or build outputs. Concurrent requests sharing a backend
+render their own source snapshot, even when another request publishes new classes while they wait.
+Each renderer JVM holds layoutlib and the application's classes, several hundred MB, so a backend runs about one per
+four previews of the gallery it renders, at most four and half the host's available CPUs. A larger gallery starts
+more in the background, joining the next render; JVMs a smaller gallery leaves idle stop after a minute.
 Source ownership follows the synced manifest's source selections. Adding the first Java source
 to a source set without recorded Java compiler inputs requires a save and full rebuild.
+
+Room and other kapt processors can share the preview's module. The worker uses the build's exact managed
+Kotlin compiler classpath or external Kotlin installation, including version-matched Compose/kapt plugins.
+Live compilation first uses a private copy of the last generated sources and paints with *verifying annotation
+processing…*. The project's warm Kotlin worker also generates stubs from the same unsaved source snapshot. Unchanged stubs
+and processing inputs confirm the paint without rerunning processors; changed declarations, handwritten Java,
+or processing dependencies run kapt, replace generated sources/resources, recompile, and repaint.
+The first verification of a compiler session runs processing to establish an authoritative baseline.
+Processor errors remain visible and never confirm or persist a stale gallery. Only confirmed galleries are
+stored, so reverting a schema edit or invalid query can reuse the previous gallery.
+
+Generated files are not editable live inputs. Absolute/path-named processor options, including Room's
+`room.schemaLocation`, are redirected to private copies; preview processing never updates the project's schema
+exports. Processors must declare their inputs through the compiler classpath or those options: arbitrary
+undeclared filesystem/network inputs cannot be tracked. Hilt Android bytecode transformation is a separate
+build step and still requires saving and rebuilding; it is not silently skipped during live compilation.
 
 Opening a preview builds JVM classes and linked resources, but does not wait for that build to paint:
 
 - **Prewarm.** Focusing a Kotlin file with `@Preview` functions in a trusted, synced Android project starts the
   renderer JVMs and compiler workers in the background and renders that file from the last build's classes, so
-  **Elide: Open Compose Preview** typically paints in well under a second. Prewarming never builds and never
-  downloads the renderer runtime; it is off when `elide.android.composePreview.prewarm` is disabled.
+  **Elide: Open Compose Preview** typically paints in well under a second. The status bar shows the warm-up and its
+  current phase; a large project's first one can take a minute. Opening the preview meanwhile joins it rather than
+  starting another. Prewarming never builds and never downloads the renderer runtime; it is off when
+  `elide.android.composePreview.prewarm` is disabled. A prewarm that fails is reported in the `Elide` output channel.
 - **Keep-alive.** Closing the panel keeps its renderer and warm compilers for
   `elide.android.composePreview.keepAliveMinutes` (default 10; `0` stops them with the panel). Reopening reuses them.
   The backend holds several GB of memory while warm; at most one unused backend is kept.
 - **Build outputs as the first generation.** When the last build's classes match the current sources, they are
-  displayed directly instead of a cold compile; the incremental compiler warms in the background afterwards,
-  adding source information for layout inspection without delaying the first image.
-- **Stored galleries.** Each gallery is stored under its exact inputs (build fingerprint, source text, renderer and
-  JDK), so reopening an unchanged file, even after restarting VS Code, or undoing an edit paints immediately.
+  displayed directly instead of waiting for a cold compile. Before confirming readiness for live edits, the backend
+  initializes one instrumented private baseline for the app and its workspace libraries, then verifies processing
+  against those final dependencies while initializing their renderer. Initialization belongs to that private
+  classpath: rendering an earlier build candidate does not warm its replacement. Cached pixels skip rendering
+  disposable seeded classes. Workspace members compiling with managed Compose or the compiler plugins bundled with
+  Elide share one compiler worker, which also runs their kapt; custom plugins retain project-local workers. The
+  initial pixels remain visible throughout initialization.
+- **Stored galleries.** Each gallery is stored under its exact inputs (build fingerprint, source text, renderer,
+  JDK and published instrumentation provenance), so reopening an unchanged file, even after restarting VS Code,
+  or undoing an edit paints immediately. A cold backend can replay an instrumented gallery while initializing. A
+  gallery with a failed card is neither stored nor replayed: it renders again.
 
 Until the build finishes, the status reads *verifying build…*; if the build changes resources, dependencies or
-compiler settings, the gallery re-renders. Saving `.xml` or `.pkl` files, changing the project model, or pressing
-**Rebuild** performs that build again. Projects using generated annotation-processor sources require a save
-and full rebuild; unsaved changes show a save prompt and retain the last successful preview. A first preview of a
-project that was never built, or whose sources changed since its last build without a prewarmed backend, waits
-for the build and a cold renderer.
+compiler settings, the gallery re-renders. A build that changes only input content (linked resources, R classes,
+libraries) keeps the warm compiler: unchanged classes re-render against the new resources at once, and members
+whose classpath changed recompile incrementally. Only changed compiler records or toolchains start a new compiler,
+which initializes again. Reverting such a change reuses its stored gallery once the build confirms it. Saving
+`.xml` or `.pkl` files, changing the project model, or pressing **Rebuild** performs that build again. Opening a
+preview does not save unsaved editor buffers, whatever
+`task.saveBeforeRun` says: the build runs as a background process rather than a VS Code task and supplies the disk
+baseline, then the live compiler applies the editor snapshot. A first preview of a project that was
+never built, or whose sources changed since its last build without a prewarmed backend, waits for the build
+and a cold renderer.
+
+Elide records canonical paths; a workspace opened through a symlink (such as macOS `/tmp`) previews the same
+files. A build record that names another checkout or generated files that no longer exist, as the build cache
+can restore, is reported as stale with **Rebuild without cache**, which rebuilds the preview inputs with
+`--no-cache` to rewrite it.
+
+A failed or cancelled build leaves the gallery unverified; the next refresh retries build/resource preparation
+before confirming it. **Cancel** on the preview's **Activity** row stops whichever step runs, from the runtime
+download to compiler preparation, and **Rebuild** during a build stops that build and starts a new one. Closing the
+panel stops its build and prevents pending runtime preparation from starting another build after the panel closes.
+Backend shutdown cancels its workers and waits for pending setup/compilation cleanup before removing temporary
+files; a later window removes the temporary workspace of a window that closed, reloaded or crashed first. Renderer
+failures retain the originating diagnostic rather than a sibling worker's shutdown error.
 
 While the preview builds, the status line names the tasks Elide has finished so far, the most recent one with its
 duration, and counts the build's elapsed time. **Build log** opens the build's output inside the panel as it
 arrives; **Open in editor** shows the complete log with timestamps, and **Timing** reveals the build in the
-**Activity** view. A failed build quotes the compiler errors under **Details** and lists them in the Problems view.
+**Activity** view; the `Elide` output channel receives the same output. A failed build or live compile shows its
+first compiler error, with file and line, in the status line and the complete compiler output under **Details**; a
+failed build's errors are also listed in the Problems view until the next preview build or until the panel closes.
 Once a gallery paints, the status line breaks its time down by phase (build, compile, render). Builds do not steal
-editor focus; the build's task terminal stays available in the Terminal panel.
+editor focus.
 
 The gallery follows VS Code's light, dark and high-contrast themes. **Fit** constrains images to their cards;
 toggle it for actual pixel size.
 
-**Inspect** overlays Compose's measured layout bounds. Click a component to select it, then choose **Open source**,
+**Inspect**, in the toolbar, overlays Compose's measured layout bounds and adds an inspector below each card (the
+`layoutlib` engine's inspection is described here; the Komodo engine's is above); with it
+off, cards show only the image and its size, and one line above the gallery points to it. Click a component to
+select it, then choose **Open source**,
 double-click, or press Enter to navigate to its call site, including calls in workspace libraries. The component
 picker and **Parent** control select enclosing components. With a preview focused, arrow keys cycle components,
 Home/End select the first/last, and Alt+Up selects an enclosing component.
@@ -465,7 +639,9 @@ Inspection uses real tooling bounds and compiler UTF-16 source ranges, not image
 matches. Only locations uniquely resolved in the preview's compiler inputs are selectable; dependency internals
 and ambiguous source files are omitted. Bounds are rectangular measured layouts, not arbitrary painted contours.
 Private preview compilation enables Compose source information without changing the application's build.
-When displaying last-build classes, outlines may arrive after the background compiler warms.
+**Inspect** requests instrumented app and workspace-library classes even for saved sources; it never treats an
+image-only build gallery as an inspected render. Outlines may arrive after the initial cached/build image while
+the compiler initializes. Unsupported bytecode post-processing is reported rather than silently claiming bounds.
 Source navigation pauses during edits or failed builds so retained images cannot open stale source ranges.
 
 These are design-time snapshots, not interactive animation/click simulation or in-process Live Edit. Each render
@@ -487,6 +663,52 @@ are removed — and relaunches the server once so it applies. A `-Dplugin.path` 
 If opening a source file has already started companion activation, sync waits for that activation before requesting
 the relaunch, so the first server cannot keep outdated plugin arguments. With no open source file, activation
 remains lazy. Other functions with capitalized names are still reported.
+
+#### Compose previews for AI agents (MCP)
+
+The extension serves the Compose preview to AI agents as [MCP](https://modelcontextprotocol.io) tools, so an agent
+can look at the UI it writes. The server is a Streamable HTTP endpoint on `127.0.0.1`, protected by a bearer token
+kept per workspace (port and token stay the same across reloads when the port is free). VS Code's own agents (chat
+agent mode) find it as **Elide Compose Preview** in the MCP server list; agents started in the integrated terminal
+read `ELIDE_COMPOSE_PREVIEW_MCP_URL` and `ELIDE_COMPOSE_PREVIEW_MCP_TOKEN`; for any other client, **Elide: Copy
+Compose Preview MCP Server Configuration** copies an `mcpServers` entry with both (for example
+`claude mcp add --transport http elide-compose-preview "$ELIDE_COMPOSE_PREVIEW_MCP_URL" --header "Authorization:
+Bearer $ELIDE_COMPOSE_PREVIEW_MCP_TOKEN"`). `elide.android.composePreview.mcp.enabled` turns it off. Rendering runs
+the project's code, as the preview panel does: the tools refuse to run in an untrusted workspace.
+
+| Tool | What it does |
+| --- | --- |
+| `compose_preview_render` | Renders up to 12 composables and returns each card's PNG and layout tree. `live: true` keeps a session open. |
+| `compose_preview_interact` | Taps, long presses, drags, scrolls and types into a live card; returns its settled frame and layout. |
+| `compose_preview_refresh` | Renders a session again from the current source, after the agent edited it. |
+| `compose_preview_close` | Ends a live session. |
+| `compose_preview_list` | Lists a file's or the workspace's top-level composables with their parameters and references. |
+
+An agent names a composable by **code reference** (`package.Function`, `Function`, or `path/to/File.kt#Function`,
+optionally `:line` for an overload), never by pasting code, and it does not need a `@Preview`: the extension
+generates a public wrapper that calls it and appends it to the composable's own file **for the preview compile
+only** — it is never saved, and with the Komodo engine the language server never sees it (Komodo applies it to its
+buffer for that compile alone). Because the wrapper lives in the same file, private composables, the file's imports
+and extension receivers (`ColumnScope`, `RowScope`, `BoxScope`, hosted in a `Column`, `Row` or `Box`) work.
+Parameters without defaults get placeholders where the type allows (strings, numbers, booleans, `Modifier`, colors,
+`Dp`, collections, nullable types, `Unit`-returning lambdas); the agent passes others, or better values, as Kotlin
+expressions in `arguments`, which compile in that file. A configuration (`widthDp`, `heightDp`, `darkTheme`,
+`fontScale`, `locale`, `device`, `backgroundColor`, `showSystemUi`, `apiLevel`; `showBackground` defaults to on) and a
+`theme` composable to wrap each one in are optional. A composable that already has `@Preview` and is given neither
+renders its own preview configurations. A compile error in a wrapper is reported with the wrapper's numbered lines.
+
+Each card's layout is a tree of composable calls with their bounds in image pixels and their call sites
+(`file:line:column`), as the preview's **Inspect** locates them; actions can target a node of it (`n3`) instead of
+coordinates. The tools use the configured `elide.android.composePreview.engine`: `layoutlib` renders snapshots
+(sessions only refresh), `komodo` renders live cards in the workspace's Komodo language server and needs a Komodo
+that supports session appendices. Komodo hosts one preview session per window: while an agent renders, or keeps a
+live session open, the preview panel's cards show that they are paused and resume when it ends (**Elide: Close Agent
+Compose Preview Sessions**, or ten minutes unused); opening the panel meanwhile waits the same way. The close
+command also cancels renders still opening a session, so a late result cannot leave a new live session behind.
+One-shot renders keep the agent's Komodo session warm between calls; the panel takes it over whenever it previews. A render uses the
+last build's resources and classes for code outside the previewed files, building first when the project was never
+built; `rebuild: true` builds before rendering (after resource changes). Progress and failures show in the **Activity**
+view and the `Elide` output channel.
 
 #### Dagger and Hilt
 
@@ -519,7 +741,7 @@ The base and features must have disjoint source sets and distinct manifest packa
 The base owns shared Maven/workspace libraries; feature dex and resources stay in their own bundle modules.
 Install-time features remain removable splits so dependent features can reference them. Install the AAB with
 bundletool or Play Feature Delivery: a feature module is not a standalone runnable APK, and APK Run/Debug
-does not download on-demand splits. Requires the experimental `feat/android` Elide branch.
+does not download on-demand splits. Requires an Elide build with Android support.
 
 #### Logcat
 
@@ -539,15 +761,62 @@ URLs and quoted strings.
 
 **Filter Android Logcat**, **Stop Android Logcat**, and **Restart Android Logcat** control that stream.
 **Clear Android Logcat Output** clears only the editor channel, never the device's shared log buffers.
-Restarting or changing filters replays the device's available buffer. Application filtering uses the installed
-UID, so it follows process restarts and secondary processes; apps sharing that UID also share the filtered logs.
-The device must support `logcat --uid`. Removing the project or closing the extension stops its adb clients.
+A new, restarted or refiltered stream requests records since the application's current process start when it is
+running, otherwise since the sampled device clock. Application filtering uses the installed UID, so it follows
+process restarts and secondary processes; apps sharing that UID also share the filtered logs.
+On Android 12+ it uses `logcat --uid`; on Android 7–11 it follows only the app's running main process (`--pid`), so restart logcat after the app restarts. Removing the project or its Android model, or closing the extension,
+stops its adb clients and invalidates pending discovery/filter replies, including application discovery before
+its picker opens. Stop also cancels a pending restart.
+
+The startup header is not a device-side readiness acknowledgement. Android 16 emulator qualification found
+immediate startup records missing from timestamp-filtered live streams but present in later dumps, including
+with direct adb. For startup diagnosis, retain `adb -s <serial> logcat -d -v threadtime` output as well; the
+extension does not mask that boundary with an arbitrary delay.
 
 Ctrl/Cmd-click an application stack frame to open its Kotlin/Java source line, including workspace-library
 frames, nested classes and Kotlin file facades. Resolution uses the synced source roots, package and filename;
 unknown/native frames, out-of-range lines and ambiguous same-package filenames remain unlinked. Source-index
 caches are invalidated when projects or source files change. Obfuscated release traces still need their R8
 mapping; the links do not retrace obfuscated names.
+
+#### Room / SQLite database explorer (experimental)
+
+**Elide: Explore Android Databases** opens a connected app's on-disk Room / SQLite databases. It is also available
+from the Elide menu and as **Explore databases** in the Android tree and in Android/device context menus. Choose an installed application;
+the deployment target's device is preferred, and an unavailable selected device never silently falls back to another.
+
+Requires a trusted, synced Android project, Android 8.0 / API 26+, and a debuggable app with working `adb run-as`.
+Launch the app and exercise the screen that creates its database before inspecting it. The picker lists installed
+third-party apps for the foreground Android user; apps `run-as` refuses (release or otherwise non-debuggable builds)
+are listed apart with its reason and cannot be opened.
+
+The panel provides:
+
+- Database and schema browsing, including tables, views, indexes and trigger SQL.
+- 100-row pages, read-only SQL queries, exact 64-bit integers, NULLs and Base64 BLOBs.
+- Manual refresh and optional 2 / 5 second refresh while visible. Refresh re-runs the last successful read without
+  overwriting an edited SQL draft. Failed or cancelled queries clear that read; Refresh then updates only the catalog
+  until another query succeeds. Pages are independent reads; add `ORDER BY` for predictable paging.
+- **Execute write…**, requiring confirmation of the app/database/device and statement. Each write is a transaction
+  with foreign keys enabled. Cancel stops pending work; a cancelled in-flight write may already have committed,
+  so refresh before retrying.
+
+The bundled helper uses Android's SQLite APIs directly on the live files, including committed WAL contents.
+It does not require root, a device `sqlite3` binary, app instrumentation or database copies. Removing the project
+or closing the panel cancels its requests and attempts to remove the temporary helper from the app cache.
+If Android clears the cached helper, the next helper start reinstalls it within the same panel/session.
+
+Unlike Android Studio's in-process inspector, these external writes **do not invalidate Room observers**. Re-query
+or reopen the relevant app screen to see changes. Only SQLite files under the app's credential-protected
+`databases/` directory are discovered; in-memory, encrypted, device-protected and custom-location databases are
+not supported. Changing the foreground Android user requires reopening the explorer.
+
+Each request uses a fresh connection; temporary tables and other connection-local state are not retained.
+SQL is one statement per request. Query supports `SELECT`, `WITH` and `EXPLAIN`; writes support
+`INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `CREATE`, `ALTER`, `DROP` and `WITH`. No `PRAGMA`, `ATTACH`, transaction control,
+maintenance commands or compound `CREATE TRIGGER` bodies. Results are limited to 4 MiB, 256 columns and 256 KiB
+per text/BLOB cell; the panel reports oversized results rather than truncating them. Change counts include trigger
+and foreign-key effects. On API 26–27, writes preserve WAL but Android may normalize a non-WAL journal mode to DELETE.
 
 
 ## Links

@@ -110,6 +110,8 @@ export interface AndroidArtifact {
   jniLibs: string[];
   /** `minify`: the artifact is shrunk and obfuscated by R8, which also publishes an obfuscation mapping. */
   minify: boolean;
+  /** An APK declaring `instrumentation`: a test APK whose instrumented tests `android-test-<key>` runs. */
+  instrumentation?: boolean;
   /** Dynamic feature artifact keys included by an app bundle. */
   features?: string[];
   /** Base app bundle artifact for a dynamic feature. */
@@ -256,6 +258,7 @@ function decodeAndroidTargets(v: unknown): Record<string, AndroidArtifact> {
       assets: strings(artifact.assets),
       jniLibs: strings(artifact.jniLibs),
       minify: artifact.minify === true,
+      ...(kind === "apk" && isObject(artifact.instrumentation) ? { instrumentation: true } : {}),
       ...(kind === "aab" ? { features: strings(artifact.features) } : {}),
       ...(kind === "feature" ? {
         ...(typeof artifact.base === "string" ? { base: artifact.base } : {}),

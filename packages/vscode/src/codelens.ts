@@ -8,11 +8,15 @@ import {
   isPathUnder,
   normalizePath,
   parseManifestArtifacts,
+  type AndroidDeviceTargets,
   type ManifestArtifact,
 } from "@elide/ide-core";
 import * as vscode from "vscode";
+import { androidApks } from "./androidDeploymentState.js";
 import { readConfig } from "./config.js";
+import { onDidEndDebugRun } from "./debug.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
+import { ELIDE_TASK_TYPE } from "./tasks.js";
 
 /** Kotlin `fun main(`, including the `@JvmStatic fun main(` form used inside an `object`. */
 const KOTLIN_MAIN = /^\s*(?:@JvmStatic\s+)?(?:public\s+)?fun\s+main\s*\(/;
@@ -48,6 +52,11 @@ export class ElideCodeLensProvider implements vscode.CodeLensProvider, vscode.Di
       // A new model can add source roots or change `jvm.main`, both of which decide the lenses below.
       workspace.onDidChange(() => this.changed.fire()),
       workspace.onDidChangeKomodoAvailability(() => this.changed.fire()),
+      // A build can turn out an APK that is not debuggable, which withdraws its Debug lens; a debug run builds too.
+      vscode.tasks.onDidEndTask((event) => {
+        if (event.execution.task.source === ELIDE_TASK_TYPE) this.changed.fire();
+      }),
+      onDidEndDebugRun(() => this.changed.fire()),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("elide.codeLens") || e.affectsConfiguration("elide.debug.adapter")) this.changed.fire();
       }),
@@ -65,7 +74,7 @@ export class ElideCodeLensProvider implements vscode.CodeLensProvider, vscode.Di
     const manifest = path.basename(fsPath) === MANIFEST_NAME;
     const project = manifest ? this.workspace.projectAt(path.dirname(fsPath)) : this.workspace.projectFor(fsPath);
     if (!project) return [];
-    const lenses = manifest ? manifestLenses(document, project.root) : sourceLenses(document, project);
+    const lenses = manifest ? manifestLenses(document, project) : sourceLenses(document, project);
     return this.workspace.komodoDebugAvailable(project.folder) ? lenses : lenses.filter((lens) => lens.command?.command !== "elide.debug");
   }
 }
@@ -84,10 +93,11 @@ function runLenses(line: number, length: number, root: string, args: string[], q
 
 /**
  * Lenses of one `artifacts` entry: a Native Image binary is also runnable and debuggable, an Android application
- * package is runnable on a device, and the rest only build. Run and Debug are named as they are on an entrypoint —
- * the build they need first is part of doing either, not a separate decision.
+ * package offers what Elide lists a device target for — Run, Debug, its instrumented tests — and the rest only
+ * build. Run and Debug are named as they are on an entrypoint — the build they need first is part of doing either,
+ * not a separate decision.
  */
-function artifactLenses(line: number, length: number, root: string, artifact: ManifestArtifact): vscode.CodeLens[] {
+function artifactLenses(line: number, length: number, root: string, artifact: ManifestArtifact, device: AndroidDeviceTargets | undefined): vscode.CodeLens[] {
   const range = new vscode.Range(line, 0, line, length);
   const build = new vscode.CodeLens(range, {
     title: "$(package) Build",
@@ -96,17 +106,13 @@ function artifactLenses(line: number, length: number, root: string, artifact: Ma
   });
   if (isAndroidApk(artifact)) {
     // An APK is installed and launched by a build target of its own, and debugged on the device it was installed on.
-    const run = new vscode.CodeLens(range, {
-      title: "$(play) Run",
-      command: "elide.androidRun",
-      arguments: [{ root, artifact: artifact.name }],
-    });
-    const debug = new vscode.CodeLens(range, {
-      title: "$(debug-alt) Debug",
-      command: "elide.androidDebug",
-      arguments: [{ root, artifact: artifact.name }],
-    });
-    return [run, debug, build];
+    const target = { root, artifact: artifact.name };
+    return [
+      ...(device?.runnable ? [new vscode.CodeLens(range, { title: "$(play) Run", command: "elide.androidRun", arguments: [target] })] : []),
+      ...(device?.debuggable ? [new vscode.CodeLens(range, { title: "$(debug-alt) Debug", command: "elide.androidDebug", arguments: [target] })] : []),
+      ...(device?.instrumented ? [new vscode.CodeLens(range, { title: "$(beaker) Run Instrumented Tests", command: "elide.androidTest", arguments: [target] })] : []),
+      build,
+    ];
   }
   if (!isNativeImageBinary(artifact)) return [build];
   const run = new vscode.CodeLens(range, {
@@ -161,8 +167,12 @@ function entryArgs(document: vscode.TextDocument, project: ElideProject, java: b
 }
 
 /** Entrypoints, scripts and artifacts of `elide.pkl`, found by tracking which block each line sits in. */
-function manifestLenses(document: vscode.TextDocument, root: string): vscode.CodeLens[] {
+function manifestLenses(document: vscode.TextDocument, project: ElideProject): vscode.CodeLens[] {
+  const root = project.root;
   const lenses: vscode.CodeLens[] = [];
+  // What Elide lists for each APK comes from the synced model, an APK added since offers only Build until a sync; its
+  // latest build can withdraw Debug.
+  const devices = new Map(androidApks(project).map((target) => [target.name, target.device] as const));
   const stack: { name: string; depth: number }[] = [];
   // Artifacts carry settings of their own (the image name, the image type), which the core parser reads.
   const artifacts = new Map(parseManifestArtifacts(document.getText()).map((a) => [a.line, a] as const));
@@ -172,7 +182,7 @@ function manifestLenses(document: vscode.TextDocument, root: string): vscode.Cod
     const block = stack[stack.length - 1]?.name;
     const artifact = artifacts.get(i);
     if (artifact) {
-      lenses.push(...artifactLenses(i, text.length, root, artifact));
+      lenses.push(...artifactLenses(i, text.length, root, artifact, devices.get(artifact.name)));
     } else if (block === "jvm" && MANIFEST_MAIN.test(text)) {
       lenses.push(...runLenses(i, text.length, root, []));
     } else if (block === "entrypoint") {

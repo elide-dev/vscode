@@ -82,6 +82,61 @@ test("the client sees only Kotlin files on disk under the Komodo folders, glob c
 });
 
 
+test("preview sessions require protocol 2 and report old servers instead of falling back", () => {
+  expect(run(`
+    const server = Object.create(komodo.KomodoLanguageServer.prototype);
+    const requests = [];
+    let answer = { protocol: 2, port: 12345, token: "secret", pid: 42 };
+    server.clientFor = async (file) => {
+      assert.equal(file, "/workspace/Original.kt");
+      return { uri: "file:///workspace/Original.kt", client: {
+        sendRequest: async (method, params) => { requests.push({ method, params }); return answer; }
+      } };
+    };
+    assert.deepEqual(await server.previewSession("/workspace/Original.kt"), answer);
+    assert.deepEqual(requests, [{ method: "komodo/preview/open", params: { textDocument: { uri: "file:///workspace/Original.kt" } } }]);
+    for (const invalid of [undefined, { ...answer, protocol: 1 }, { ...answer, port: 0 }, { ...answer, token: "" }, { ...answer, token: "bad\\nline" }]) {
+      answer = invalid;
+      await assert.rejects(server.previewSession("/workspace/Original.kt"), /invalid preview session/);
+    }
+    // Import after the harness installs its mocked language-client boundary.
+    const { ResponseError } = await import("vscode-languageclient/node");
+    server.clientFor = async () => ({ uri: "file:///workspace/Original.kt", client: {
+      sendRequest: async () => { const error = new ResponseError("missing"); error.code = -32601; throw error; }
+    } });
+    await assert.rejects(server.previewSession("/workspace/Original.kt"), /too old for the Komodo preview engine.*there is no fallback/);
+  `)).toEqual({ status: 0, stderr: "" });
+});
+
+test("preview sync awaits the same client with original URIs and current buffer versions", () => {
+  expect(run(`
+    const server = Object.create(komodo.KomodoLanguageServer.prototype);
+    const original = "/workspace/Original.kt";
+    editorDocuments.push(
+      { uri: { scheme: "file", fsPath: original, toString: () => "file://" + original }, version: 7, getText: () => "unsaved newest" },
+      { uri: { scheme: "file", fsPath: "/other.kt", toString: () => "file:///other.kt" }, version: 2, getText: () => "unrelated" }
+    );
+    const entered = Promise.withResolvers();
+    let completed = false;
+    const pending = Promise.withResolvers();
+    server.clientFor = async (file) => {
+      assert.equal(file, original);
+      return { client: { sendRequest: async (method, params) => {
+        assert.equal(method, "komodo/preview/sync");
+        assert.deepEqual(params, { documents: [{ uri: "file://" + original, version: 7, text: "unsaved newest" }] });
+        entered.resolve();
+        await pending.promise;
+      } } };
+    };
+    const syncing = server.syncPreview([original]).then(() => { completed = true; });
+    await entered.promise;
+    assert.equal(completed, false);
+    pending.resolve(null);
+    await syncing;
+    assert.equal(completed, true);
+  `)).toEqual({ status: 0, stderr: "" });
+});
+
 test("a client restarting its crashed server is stopped once it is up, and disposed so it never restarts one again", () => {
   expect(run(`
     const server = Object.create(komodo.KomodoLanguageServer.prototype);

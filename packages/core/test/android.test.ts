@@ -1,26 +1,38 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   androidArtifactFile,
   androidClassesJar,
   androidContentDirs,
   androidDebugTask,
+  androidDeviceTargets,
+  androidIncompatibleUpdatePackage,
+  androidKeystoreHintArtifact,
   androidKeystoreTask,
   androidMappingFile,
+  androidMergedManifest,
   androidPlatformApiLevel,
   androidRClasses,
   androidRClassesArtifact,
   androidRunTask,
   androidSdkRoot,
+  currentAndroidDeviceTargets,
   decodeManifest,
   explodedAndroidLibrary,
   isAndroidAab,
   isAndroidAar,
   isAndroidApk,
   isAndroidArtifact,
+  isAndroidDeviceTask,
   parseAdbDevices,
+  parseAndroidManifest,
   parseManifestArtifacts,
+  readAndroidManifest,
+  stagedAndroidDebuggable,
   type AndroidArtifact,
+  type BuildTaskInfo,
 } from "../src/index.js";
 
 /** The single-module APK fixture of Elide's own smoke suite, trimmed to what the parser reads. */
@@ -168,6 +180,143 @@ describe("android build targets", () => {
     expect(androidRunTask("app", "emulator")).toBe("android-run-emulator-app");
     expect(androidKeystoreTask("app")).toBe("android-keystore-app");
     expect(androidDebugTask("app")).toBe("android-debug-app");
+  });
+
+  const task = (name: string, options: string[] = [], project?: string): BuildTaskInfo => ({
+    name: project ? `${project}:${name}` : name,
+    description: "",
+    options: options.map((option) => ({ option, description: "" })),
+    ...(project ? { project } : {}),
+  });
+  const deviceOptions = ["--device", "--window", "--install-sdk"];
+
+  test("an APK offers Run, Debug and instrumented tests only as far as the listing names their targets", () => {
+    const signed = [task("app"), task("android-run-app", deviceOptions), task("android-debug-app", ["--debug", ...deviceOptions]),
+      task("android-test-app", ["--tests", ...deviceOptions])];
+    expect(androidDeviceTargets(signed, "app")).toEqual({ runnable: true, debuggable: true, instrumented: false });
+    expect(androidDeviceTargets(signed, "app", { instrumentation: true })).toEqual({ runnable: true, debuggable: true, instrumented: true });
+    // A manifest setting `android:debuggable="false"` cannot be debugged, whatever an older Elide lists.
+    expect(androidDeviceTargets(signed, "app", { debuggable: false })).toEqual({ runnable: true, debuggable: false, instrumented: false });
+    expect(androidDeviceTargets(signed, "app", { debuggable: true })).toEqual({ runnable: true, debuggable: true, instrumented: false });
+    // An APK Elide cannot install is listed with its packaging targets only.
+    expect(androidDeviceTargets([task("app"), task("android-sign-app")], "app", { instrumentation: true, debuggable: true }))
+      .toEqual({ runnable: false, debuggable: false, instrumented: false });
+    // Another APK's targets say nothing about this one.
+    expect(androidDeviceTargets([task("android-run-other", deviceOptions)], "app")).toEqual({ runnable: false, debuggable: false, instrumented: false });
+  });
+
+  test("a workspace listing names a member's device targets with the member's scope", () => {
+    const listing = [task("android-run-app", deviceOptions, "mobile"), task("android-test-app", deviceOptions, "mobile")];
+    expect(androidDeviceTargets(listing, "app", { instrumentation: true })).toEqual({ runnable: true, debuggable: false, instrumented: true });
+  });
+
+  test("a target taking --device installs onto one device; stopping an emulator does not deploy", () => {
+    expect(isAndroidDeviceTask(task("android-test-app", ["--tests", ...deviceOptions]))).toBe(true);
+    expect(isAndroidDeviceTask(task("android-run-emulator-app", deviceOptions))).toBe(true);
+    expect(isAndroidDeviceTask(task("android-emulator-stop", ["--device"]))).toBe(false);
+    expect(isAndroidDeviceTask(task("android-emulator-stop", ["--device"], "mobile"))).toBe(false);
+    expect(isAndroidDeviceTask(task("android-emulator", ["--window", "--install-sdk"]))).toBe(false);
+    expect(isAndroidDeviceTask(task("compile-kotlin-main"))).toBe(false);
+  });
+
+  test("only an APK declaring instrumentation is a test APK", () => {
+    const manifest = decodeManifest(JSON.stringify({
+      name: "tests",
+      android: { compileSdk: 36 },
+      artifacts: {
+        tests: { "@type": "elide.android.AndroidApk", instrumentation: {} },
+        app: { "@type": "elide.android.AndroidApk" },
+        ui: { "@type": "elide.android.AndroidAar", instrumentation: {} },
+      },
+    }));
+    expect(manifest.androidTargets.tests?.instrumentation).toBe(true);
+    expect(manifest.androidTargets.app?.instrumentation).toBeUndefined();
+    expect(manifest.androidTargets.ui?.instrumentation).toBeUndefined();
+  });
+
+  test("a manifest declares instrumentation and debuggability the way aapt2 reads them", () => {
+    // A project's `apps/android-tests`: a self-instrumenting APK whose Pkl declares no `instrumentation`.
+    const tests = `<?xml version="1.0" encoding="utf-8"?>
+<!-- <instrumentation android:name="commented.Out" /> -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  package="app.acme.android.test" android:versionCode="\${versionCode}">
+  <instrumentation
+    android:name="androidx.test.runner.AndroidJUnitRunner"
+    android:targetPackage="app.acme.android.test" />
+  <application android:label="Acme tests" android:theme="@style/Theme.Acme">
+    <activity android:name="app.acme.android.MainActivity" />
+  </application>
+</manifest>`;
+    expect(parseAndroidManifest(tests)).toEqual({
+      instrumentation: { runner: "androidx.test.runner.AndroidJUnitRunner", targetPackage: "app.acme.android.test" },
+    });
+    expect(parseAndroidManifest(`<manifest><application a:debuggable='true' android:label="x > y"/></manifest>`)).toEqual({ debuggable: true });
+    expect(parseAndroidManifest(`<manifest><application android:debuggable="false"></application></manifest>`)).toEqual({ debuggable: false });
+    // A placeholder is resolved while merging: the source manifest says nothing yet.
+    expect(parseAndroidManifest(`<manifest><application android:debuggable="\${debuggable}" /></manifest>`)).toEqual({});
+    expect(parseAndroidManifest(`<manifest><!-- <application android:debuggable="true"/> --><application/></manifest>`)).toEqual({});
+    expect(parseAndroidManifest(`<manifest><instrumentation/></manifest>`)).toEqual({ instrumentation: {} });
+    expect(readAndroidManifest("/nonexistent/AndroidManifest.xml")).toBeUndefined();
+  });
+
+  test("an Elide hint names the artifact whose keystore to create", () => {
+    expect(androidKeystoreHintArtifact("Create one with: elide build android-keystore-app")).toBe("app");
+    expect(androidKeystoreHintArtifact("Create one with: elide build mobile:android-keystore-acme-dev.")).toBe("acme-dev");
+    expect(androidKeystoreHintArtifact("Set android:debuggable=\"true\"")).toBeUndefined();
+  });
+
+  test("a refused update names the application whose installed copy is signed with another key", () => {
+    expect(androidIncompatibleUpdatePackage("adb failed with exit code 1: adb: failed to install /work/.dev/artifacts/app.apk: "
+      + "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package sample.app signatures do not match newer version; ignoring!]")).toBe("sample.app");
+    expect(androidIncompatibleUpdatePackage("Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Package com.example.app_2 signatures do not match the previously installed version; ignoring!]"))
+      .toBe("com.example.app_2");
+    expect(androidIncompatibleUpdatePackage("Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Package sample.app new version 1 < old version 2]")).toBeUndefined();
+  });
+});
+
+describe("the debuggability of the latest build", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+  const project = () => {
+    const root = mkdtempSync(path.join(tmpdir(), "elide-android-stage-"));
+    dirs.push(root);
+    const source = path.join(root, "src", "main", "AndroidManifest.xml");
+    mkdirSync(path.dirname(source), { recursive: true });
+    writeFileSync(source, `<manifest package="p"><application/></manifest>`);
+    const stage = (application: string, at: number) => {
+      const merged = androidMergedManifest(root, "dev");
+      mkdirSync(path.dirname(merged), { recursive: true });
+      writeFileSync(merged, `<manifest package="p">${application}</manifest>`);
+      utimesSync(merged, at, at);
+    };
+    utimesSync(source, 1_000, 1_000);
+    return { root, source, stage };
+  };
+  const listed = { runnable: true, debuggable: true, instrumented: false };
+
+  test("a merged manifest without android:debuggable=\"true\" withdraws Debug until the source manifest changes", () => {
+    const { root, source, stage } = project();
+    const target = { name: "dev", manifestFile: source, device: listed };
+    expect(androidMergedManifest(root, "dev")).toBe(path.join(root, ".dev", "android", "dev", "AndroidManifest.xml"));
+    // Never built: the listing decides.
+    expect(stagedAndroidDebuggable(root, "dev", source)).toBeUndefined();
+    expect(currentAndroidDeviceTargets(root, target)).toEqual(listed);
+    // Built by an Elide that injects nothing for `release = false`.
+    stage(`<application android:label="dev"/>`, 2_000);
+    expect(stagedAndroidDebuggable(root, "dev", source)).toBe(false);
+    expect(currentAndroidDeviceTargets(root, target)).toEqual({ ...listed, debuggable: false });
+    // The user edited the source manifest since: the next build decides.
+    utimesSync(source, 3_000, 3_000);
+    expect(currentAndroidDeviceTargets(root, target)).toEqual(listed);
+    // Built by an Elide that injects it.
+    stage(`<application android:debuggable="true"/>`, 4_000);
+    expect(stagedAndroidDebuggable(root, "dev", source)).toBe(true);
+    expect(currentAndroidDeviceTargets(root, target)).toEqual(listed);
+    // Nothing to withdraw from an APK Elide lists no debug target for.
+    expect(currentAndroidDeviceTargets(root, { ...target, device: { ...listed, debuggable: false } })).toEqual({ ...listed, debuggable: false });
+    expect(currentAndroidDeviceTargets(root, { name: "dev", manifestFile: source })).toBeUndefined();
   });
 });
 

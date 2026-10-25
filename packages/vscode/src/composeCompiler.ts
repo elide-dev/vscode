@@ -5,9 +5,11 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import * as yauzl from "yauzl";
-import { sourceSelection, type SourceSelection } from "@elide/ide-core";
+import { parseElideOutputLine, sourceSelection, type SourceSelection } from "@elide/ide-core";
 import type { ComposeRenderInputs } from "./composeRender.js";
 import { ComposeWorker } from "./composeWorker.js";
+import { ComposeProcessing, StaleBuildRecordError, kotlinToolchain, toolchainOptions, type KotlinToolchainRecord } from "./composeProcessing.js";
+import { WorkspacePaths, canonicalPath, inside } from "./workspacePaths.js";
 
 type Tool = "kotlinc" | "javac";
 interface Source {
@@ -18,6 +20,9 @@ interface Source {
 interface Unit {
   tool: Tool;
   project: string;
+  toolchain: KotlinToolchainRecord;
+  toolchainKey: string;
+  processing?: ComposeProcessing;
   sourceSet: string;
   original: string;
   /** The build's compiler record (`kotlinc.args`/`javac.args`) for `original`. */
@@ -49,6 +54,7 @@ export interface ComposeSources {
   readonly key: string;
   readonly documents: ReadonlyMap<string, string>;
   readonly files: readonly ReadonlyMap<string, string>[];
+  readonly processingInputs: ReadonlyMap<ComposeProcessing, string>;
 }
 
 const classPathFlags: Record<string, true | undefined> = { "-classpath": true, "-cp": true, "--class-path": true, "--module-path": true, "-p": true, "-Xmodule-path": true };
@@ -58,16 +64,45 @@ const sourceExtension = /\.(?:kt|java)$/;
 const portableKotlinValues = new Set(["-api-version", "-language-version", "-jvm-target", "-module-name"]);
 const portableKotlinSwitches = new Set(["-Xdisable-standard-script", "-no-stdlib", "-no-reflect", "-no-jdk", "-java-parameters", "-nowarn", "-Werror"]);
 
-function inside(directory: string, file: string): boolean {
-  const relative = path.relative(directory, file);
-  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
-}
-
 /** Elide ArgsRecord is argv, one unescaped argument per line, NOT a shell or Java @argfile. */
 function recordedArguments(text: string): string[] {
   const args = text.split("\n");
   if (args.at(-1) === "") args.pop();
   return args;
+}
+
+/**
+ * The first compiler error in `output` as one status line, `File.kt:12 message`. Elide prints a diagnostic as
+ * `error: kotlinc: message` with its `In file: path:line:column` on the next line (indented in a quoted build
+ * failure); javac's own format puts the location first. Notes and warnings, such as Elide's advice about recorded
+ * `-Xplugin` arguments, never stand in for the error.
+ */
+export function firstCompilerError(output: string): string | undefined {
+  const lines = output.split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    const parsed = parseElideOutputLine(line);
+    if (parsed?.kind === "diagnostic" && parsed.severity === "error") {
+      const message = parsed.message.replace(/^(?:kotlinc|javac|kapt):\s+/, "");
+      const location = /^\s*In file:\s+(.+?):(\d+)(?::\d+)?\s*$/.exec(lines[index + 1] ?? "");
+      return location ? `${path.basename(location[1]!)}:${location[2]} ${message}` : message;
+    }
+    const located = /^(.+\.(?:kt|java)):(\d+)(?::\d+)?:\s*error:\s*(.+)$/.exec(line);
+    if (located) return `${path.basename(located[1]!)}:${located[2]} ${located[3]!.trim()}`;
+  }
+  return undefined;
+}
+
+/**
+ * A record must compile into the output it sits beside, physically: Elide records canonical paths, which the
+ * workspace may spell through a symlink. Anything else is another checkout's record.
+ */
+async function verifyDestination(record: string, args: readonly string[], project: string, original: string): Promise<void> {
+  const index = args.findIndex((arg) => arg === "-d" || arg.startsWith("-d="));
+  const destination = index < 0 ? undefined : args[index] === "-d" ? args[index + 1] : args[index]!.slice("-d=".length);
+  if (destination === undefined) throw new Error(`The compiler record at ${record} has no -d destination for ${original}. Rebuild the Elide project.`);
+  if (await canonicalPath(path.resolve(project, destination)) !== await canonicalPath(original)) {
+    throw new StaleBuildRecordError(record, `it compiles into ${destination}, not this checkout's ${original}`);
+  }
 }
 
 function splitOption(arg: string): { flag: string; value?: string } {
@@ -111,8 +146,11 @@ async function walk(directory: string, accept: (file: string) => boolean): Promi
   return files;
 }
 
-/** Only self-contained invocations may share a worker across project directories. */
-function portableKotlinArguments(args: readonly string[]): boolean {
+/**
+ * Only self-contained invocations may share a worker across project directories. `bundledKotlin` is the Kotlin
+ * directory of the Elide distribution running the worker, whose compiler plugins (Compose, serialization, …) are its own.
+ */
+function portableKotlinArguments(args: readonly string[], toolchain: KotlinToolchainRecord, bundledKotlin: string | undefined): boolean {
   const homeIndex = args.indexOf("-kotlin-home");
   const kotlinHome = homeIndex < 0 ? undefined : args[homeIndex + 1];
   for (let index = 0; index < args.length; index++) {
@@ -131,7 +169,11 @@ function portableKotlinArguments(args: readonly string[]): boolean {
     if (option.flag === "-Xplugin") {
       const value = option.value ?? args[++index];
       // Custom plugins may read implicit cwd-relative configuration, even with an absolute jar.
-      if (!kotlinHome || value !== path.join(kotlinHome, "lib", "kotlin-compose-compiler-plugin.jar")) return false;
+      const externalCompose = kotlinHome && value === path.join(kotlinHome, "lib", "kotlin-compose-compiler-plugin.jar");
+      const managedCompose = value && toolchain.kind === "managed" && toolchain.classpath?.includes(value)
+        && /^kotlin-compose-compiler-plugin-embeddable-[\d.]+(?:-[\w.]+)?\.jar$/.test(path.basename(value));
+      const bundled = value && bundledKotlin && inside(bundledKotlin, value) && /^kotlin-[\w-]+-compiler-plugin\.jar$/.test(path.basename(value));
+      if (!externalCompose && !managedCompose && !bundled) return false;
       continue;
     }
     const paths = classPathFlags[option.flag] || sourcePathFlags[option.flag] || outputFlags[option.flag]
@@ -144,6 +186,24 @@ function portableKotlinArguments(args: readonly string[]): boolean {
   return true;
 }
 
+/** What a build contributes to a compiler; a later build that only changed its content replaces it whole. */
+interface BuildInputs {
+  /** Renderer inputs; project classes resolve to the published copies. */
+  inputs: ComposeRenderInputs;
+  /** Renderer inputs over the build's own outputs (project classes and workspace archives as the build wrote them). */
+  built: ComposeRenderInputs;
+  /** Build path → this compiler's stand-ins: private outputs, content-addressed mirrors, extracted archive resources. */
+  replacements: Map<string, string[]>;
+  /** Everything a build contributes besides project classes: inputs, compiler records, resources, libraries. With a source key, determines the classes. */
+  fingerprint: string;
+  /** The parts of `fingerprint` that decide what is compiled and how: records, toolchains, input paths, archive resources. */
+  structure: string;
+  /** Content stamp of each classpath entry that is not a project output. */
+  stamps: ReadonlyMap<string, string>;
+  /** Stamp of the build's project class outputs. */
+  originals: string;
+}
+
 /** A compiler session owns its sources, classes and IC caches. Build outputs remain read-only. */
 export class ComposeCompiler {
   private disposed = false;
@@ -153,30 +213,42 @@ export class ComposeCompiler {
   private current: string | undefined;
   /** Source key the render-facing classes hold. */
   private publishedKey: string | undefined;
+  /** Some generation was published: the render-facing directories hold a complete set of classes. */
+  private populated = false;
+  /** Instrumentation provenance of the published generation, never of an in-flight compile. */
+  publishedInstrumented = false;
   /** Stamp of the build outputs seeded units were copied from. */
   private seededFrom: string | undefined;
+  private verifiedKey: string | undefined;
   readonly rebuildRequired: boolean;
 
   private constructor(
     private readonly bin: string,
     private readonly cwd: string,
-    /** Renderer inputs; project classes resolve to the published copies. */
-    readonly inputs: ComposeRenderInputs,
     private readonly units: Unit[],
-    private readonly replacements: Map<string, string[]>,
     private readonly workers: Map<string, ComposeWorker>,
     private readonly directory: string,
-    /** Everything a build contributes besides project classes: inputs, compiler records, resources, libraries. With a source key, determines the classes. */
-    readonly fingerprint: string,
-    /** Stamp of the build's project class outputs when this compiler was created. */
-    private readonly originals: string,
+    private build: BuildInputs,
+    /** Kotlin directory of the Elide distribution running the workers: its compiler plugins are portable. */
+    private readonly bundledKotlin: string | undefined,
     private readonly signal: AbortSignal,
   ) {
-    // Elide's final kotlinc.args includes generated inputs but overwrites the earlier kapt
-    // processor invocation. Only a fresh build can regenerate those inputs authoritatively.
-    this.rebuildRequired = units.some((unit) => unit.args.some((arg) => /(?:kotlin-annotation-processing|plugin:org\.jetbrains\.kotlin\.kapt3)/.test(arg))
-      || [...unit.explicit].some((file) => inside(path.join(unit.project, ".dev"), file)));
+    // Older builds cannot authorize replay of generated inputs without the processing record.
+    this.rebuildRequired = units.some((unit) => unit.processing?.requiresBytecodeTransform || (!unit.processing
+      && [...unit.explicit].some((file) => inside(path.join(unit.project, ".dev"), file))));
   }
+
+  /** Renderer inputs; project classes resolve to the published copies. */
+  get inputs(): ComposeRenderInputs { return this.build.inputs; }
+
+  /**
+   * Renderer inputs that hold the project's classes now: the published copies once a generation was published, before that the
+   * build's own outputs (a source newer than the build, or an unsaved one, keeps the build's classes from being adopted).
+   */
+  get currentInputs(): ComposeRenderInputs { return this.populated ? this.build.inputs : this.build.built; }
+
+  /** See {@link BuildInputs.fingerprint}; part of every stored gallery key. */
+  get fingerprint(): string { return this.build.fingerprint; }
 
   /**
    * `workers` is shared across compilers of one backend and outlives them; its owner disposes it.
@@ -187,11 +259,24 @@ export class ComposeCompiler {
   ): Promise<ComposeCompiler> {
     signal.throwIfAborted();
     await mkdir(directory, { recursive: true });
-    const mirrors = path.join(path.resolve(directory), "mirror");
     directory = await mkdtemp(path.join(path.resolve(directory), "compiler-"));
+    try {
+      return await ComposeCompiler.createInDirectory(bin, cwd, inputs, directory, signal, workers);
+    } catch (error) {
+      await rm(directory, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+  }
+
+  private static async createInDirectory(
+    bin: string, cwd: string, inputs: ComposeRenderInputs, directory: string, signal: AbortSignal, workers: Map<string, ComposeWorker>,
+  ): Promise<ComposeCompiler> {
+    const mirrors = path.join(path.dirname(directory), "mirror");
     const units: Unit[] = [];
-    for (const originalEntry of new Set(inputs.projectClassPath)) {
-      const original = path.resolve(cwd, originalEntry);
+    const originals = [...new Set(inputs.projectClassPath)].map((entry) => path.resolve(cwd, entry));
+    // Records name canonical paths; outputs are `<project>/.dev/jvm/classes/<source set>/<language>`.
+    const paths = await WorkspacePaths.of([cwd, ...originals.map((original) => path.resolve(original, "../../../../.."))]);
+    for (const original of originals) {
       const language = path.basename(original);
       const parent = path.dirname(original);
       const sourceSet = path.basename(parent);
@@ -203,7 +288,7 @@ export class ComposeCompiler {
       const tool = language === "kotlin" ? "kotlinc" : "javac";
       const record = path.join(parent, `${tool}.args`);
       let args: string[];
-      try { args = recordedArguments(await readFile(record, "utf8")); }
+      try { args = recordedArguments(await readFile(record, "utf8")).map((arg) => paths.argument(arg)); }
       catch (error) {
         throw new Error(`Compose preview needs authoritative compiler arguments at ${record}. Build with an Elide version that records ${tool}.args.`, { cause: error });
       }
@@ -223,6 +308,7 @@ export class ComposeCompiler {
         if (!configured) args.push("-P", `${sourceInformation}true`);
       }
       const project = path.dirname(dev);
+      await verifyDestination(record, args, project, original);
       const explicit = new Set(args.filter((arg) => !arg.startsWith("-") && sourceExtension.test(arg)).map((arg) => path.resolve(project, arg)));
       if (!explicit.size) throw new Error(`Compose preview found no source files in ${record}. Rebuild the Elide project.`);
       const patterns = inputs.sourceSelections?.[original];
@@ -230,8 +316,16 @@ export class ComposeCompiler {
       const selections = patterns.map((pattern) => sourceSelection(project, pattern));
       const roots = [...new Set([...selections.map((selection) => sourceExtension.test(selection.root) ? path.dirname(selection.root) : selection.root), ...[...explicit].map((file) => path.dirname(file))])];
       const privateDirectory = path.join(directory, String(units.length));
+      const toolchain = tool === "kotlinc" ? await kotlinToolchain(path.join(parent, "kotlinc.toolchain.json")) : { version: 1 as const, kind: "embedded" as const };
+      const toolchainFiles = toolchain.kind === "external" ? [path.join(toolchain.home!, "lib")] : toolchain.classpath ?? [];
+      const toolchainHash = createHash("sha256").update(JSON.stringify(toolchain));
+      for (const file of toolchainFiles) toolchainHash.update("\0").update(await stamp(file));
+      const toolchainKey = toolchainHash.digest("hex");
+      const processing = tool === "kotlinc" ? await ComposeProcessing.create(path.join(parent, "kapt.args"), path.join(privateDirectory, "kapt"), project, paths) : undefined;
+      if (processing) await verifyDestination(path.join(parent, "kapt.args"), processing.args, project, original);
+      if (processing && toolchain.kind === "embedded") throw new Error(`kapt requires a recorded managed or external Kotlin toolchain at ${parent}. Rebuild with a current Elide version.`);
       units.push({
-        tool, project, sourceSet, original, record, output: path.join(privateDirectory, language),
+        tool, toolchain, toolchainKey, processing, project, sourceSet, original, record, output: path.join(privateDirectory, language),
         published: path.join(privateDirectory, "published", language), publishedFiles: new Map(), directory: privateDirectory,
         args, selections, roots: roots.filter((root) => !roots.some((other) => other !== root && inside(other, root))),
         explicit, sources: new Map(), dependencies: new Set(), dirty: true, seeded: false, warmed: false,
@@ -240,13 +334,28 @@ export class ComposeCompiler {
     if (!units.length) throw new Error("Compose preview has no project compiler outputs. Rebuild and sync the Elide project.");
     for (const kotlin of units.filter((unit) => unit.tool === "kotlinc")) {
       for (const java of units.filter((unit) => unit.tool === "javac" && sameSourceSet(unit, kotlin))) {
+        java.processing = kotlin.processing;
         for (const file of java.explicit) kotlin.explicit.add(file);
         for (const root of java.roots) if (!kotlin.roots.some((other) => inside(other, root))) kotlin.roots.push(root);
+        if (kotlin.processing) for (const root of kotlin.processing.roots) {
+          if (!java.roots.includes(root)) java.roots.push(root);
+          if (!kotlin.roots.includes(root)) kotlin.roots.push(root);
+        }
       }
     }
+    for (const unit of units) unit.roots = unit.roots.filter((root) => !unit.roots.some((other) => other !== root && inside(other, root)));
 
-    const fingerprint = createHash("sha256").update(`${bin}\0${path.resolve(cwd)}\0`).update(JSON.stringify(inputs));
-    for (const unit of units) fingerprint.update("\0args\0").update(unit.args.join("\n"));
+    // `structure` decides what is compiled and how; the fingerprint adds the content of every input.
+    const structure = createHash("sha256").update(`${bin}\0${path.resolve(cwd)}\0`).update(JSON.stringify(inputs));
+    const fingerprint = createHash("sha256");
+    for (const unit of units) structure.update("\0args\0").update(unit.args.join("\n")).update(unit.toolchainKey);
+    for (const unit of units) {
+      if (unit.processing && unit.tool === "kotlinc") {
+        fingerprint.update(await unit.processing.inputs(stamp));
+        fingerprint.update(await stamp(unit.processing.classes));
+        for (const [file, content] of unit.processing.generated) fingerprint.update(file).update("\0").update(content);
+      }
+    }
     const replacements = new Map(units.map((unit) => [unit.original, [unit.output]]));
     const renderReplacements = new Map(units.map((unit) => [unit.original, [unit.published]]));
     const candidates = new Set([
@@ -266,10 +375,11 @@ export class ComposeCompiler {
       signal.throwIfAborted();
       const resources = path.join(directory, "archives", createHash("sha256").update(archive).digest("hex").slice(0, 16));
       const entries = await archiveResources(archive, resources, signal);
-      // Bytecode comes from this compiler; only packaged resources are build inputs here.
-      fingerprint.update("\0archive\0").update(archive);
+      // Bytecode comes from this compiler; only packaged resources are build inputs here. Their extracted copy is
+      // private to each compiler, so a change cannot carry over to an existing one: structure, not content.
+      structure.update("\0archive\0").update(archive);
       for (const [name, crc] of [...entries].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) {
-        if (!name.endsWith("/") && !/\.(?:class|kotlin_module)$/.test(name)) fingerprint.update(`\0${name}\0${crc}`);
+        if (!name.endsWith("/") && !/\.(?:class|kotlin_module)$/.test(name)) structure.update(`\0${name}\0${crc}`);
       }
       const groups = new Set(owners.map((unit) => unit.sourceSet));
       let selected = owners;
@@ -282,12 +392,15 @@ export class ComposeCompiler {
         selected = owners.filter((unit) => matching.has(unit.sourceSet));
         if (!selected.length) throw new Error(`Compose preview cannot map workspace archive ${archive} to its source sets. Rebuild the artifact.`);
       }
+      structure.update(`\0owners\0${selected.map((unit) => unit.original).join("\0")}`);
       replacements.set(archive, [...selected.map((unit) => unit.output), resources]);
       renderReplacements.set(archive, [...selected.map((unit) => unit.published), resources]);
     }
+    const stamps = new Map<string, string>();
     for (const entry of [...candidates].sort()) {
       if (replacements.has(entry)) continue;
       const content = await stamp(entry);
+      stamps.set(entry, content);
       fingerprint.update(`\0${entry}\0${content}`);
       // Elide rewrites identical build outputs (libraries, R classes) on every build. A content-addressed copy
       // keeps the path and modification time the incremental compiler sees stable until the content changes,
@@ -333,9 +446,16 @@ export class ComposeCompiler {
       }
     }
     const replace = (entries: string[], map: Map<string, string[]>): string[] => [...new Set(entries.flatMap((entry) => map.get(path.resolve(cwd, entry)) ?? [entry]))];
-    const compiler = new ComposeCompiler(bin, path.resolve(cwd), {
-      ...inputs, classPath: replace(inputs.classPath, renderReplacements), projectClassPath: replace(inputs.projectClassPath, renderReplacements),
-    }, ordered, replacements, workers, directory, fingerprint.digest("hex"), await classesStamp(ordered, "original"), signal);
+    const structureKey = structure.digest("hex");
+    const build: BuildInputs = {
+      inputs: { ...inputs, classPath: replace(inputs.classPath, renderReplacements), projectClassPath: replace(inputs.projectClassPath, renderReplacements) },
+      built: { ...inputs, classPath: inputs.classPath.map((entry) => path.resolve(cwd, entry)), projectClassPath: originals },
+      replacements, structure: structureKey, fingerprint: fingerprint.update(structureKey).digest("hex"), stamps,
+      originals: await classesStamp(ordered, "original"),
+    };
+    // Elide bundles its Kotlin compiler plugins at `<distribution>/lib/resources/kotlin/<version>/lib`.
+    const bundledKotlin = path.isAbsolute(bin) ? path.join(path.dirname(path.dirname(await canonicalPath(bin))), "lib", "resources", "kotlin") : undefined;
+    const compiler = new ComposeCompiler(bin, path.resolve(cwd), ordered, workers, directory, build, bundledKotlin, signal);
     // Materialize the full private layout before any worker or renderer sees a classpath entry.
     await Promise.all(units.flatMap((unit) => [mkdir(unit.output, { recursive: true }), mkdir(unit.published, { recursive: true })]));
     signal.throwIfAborted();
@@ -362,10 +482,60 @@ export class ComposeCompiler {
   /** Some units still hold build classes and have not primed their incremental compiler. */
   get seeded(): boolean { return this.units.some((unit) => unit.seeded); }
 
+  /** A complete private baseline (including workspace libraries) has not been compiled yet. */
+  get needsWarmup(): boolean { return !this.rebuildRequired && (!this.initialized || this.seeded); }
+
+  get processingRequired(): boolean { return !this.rebuildRequired && this.units.some((unit) => unit.processing !== undefined); }
+
+  get processingStats(): { stubs: number; apt: number } {
+    let stubs = 0;
+    let apt = 0;
+    for (const unit of this.units) if (unit.tool === "kotlinc" && unit.processing) {
+      stubs += unit.processing.counts.stubs;
+      apt += unit.processing.counts.apt;
+    }
+    return { stubs, apt };
+  }
+
+  isVerified(key: string): boolean { return !this.processingRequired || this.verifiedKey === key; }
+
   /** Whether `candidate`, created after a later build, describes the same compilation as this compiler. */
   sameBuild(candidate: ComposeCompiler): boolean {
     return !this.rebuildRequired && this.fingerprint === candidate.fingerprint
-      && (this.seededFrom === undefined || this.seededFrom === candidate.originals);
+      && (this.seededFrom === undefined || this.seededFrom === candidate.build.originals);
+  }
+
+  /**
+   * Take over the inputs of `candidate`, created after a later build that changed only input content (linked
+   * resources, R classes, libraries) but compiles the same records the same way. This compiler's classes, sources
+   * and incremental caches stay: no cold initialization. Units whose classpath content changed recompile
+   * incrementally on the next update, until which nothing is published. Callers exclude updates and renders;
+   * `candidate` is discarded afterwards. False when `candidate` compiles something else.
+   */
+  rebase(candidate: ComposeCompiler): boolean {
+    if (this.disposed || this.updating || this.rebuildRequired || candidate.rebuildRequired
+      || this.build.structure !== candidate.build.structure
+      || this.seededFrom !== undefined && this.seededFrom !== candidate.build.originals) return false;
+    // Equal structure lays out private directories identically; `candidate`'s are about to be removed.
+    const own = (entry: string): string => inside(candidate.directory, entry) ? path.join(this.directory, path.relative(candidate.directory, entry)) : entry;
+    let invalidated = false;
+    for (const unit of this.units) {
+      const entries = pathArguments(unit.args).map((entry) => path.resolve(unit.project, entry));
+      if (entries.every((entry) => this.build.stamps.get(entry) === candidate.build.stamps.get(entry))) continue;
+      unit.dirty = true;
+      invalidated = true;
+    }
+    const { inputs, replacements } = candidate.build;
+    this.build = {
+      ...candidate.build,
+      inputs: { ...inputs, classPath: inputs.classPath.map(own), projectClassPath: inputs.projectClassPath.map(own) },
+      replacements: new Map([...replacements].map(([entry, targets]) => [entry, targets.map(own)])),
+    };
+    if (invalidated) {
+      this.current = undefined;
+      this.publishedKey = undefined;
+    }
+    return true;
   }
 
   supports(file: string): boolean {
@@ -383,12 +553,17 @@ export class ComposeCompiler {
   async sources(documents: ReadonlyMap<string, string>): Promise<ComposeSources> {
     this.signal.throwIfAborted();
     const files = await Promise.all(this.units.map((unit) => this.collect(unit, documents)));
+    const processingInputs = new Map<ComposeProcessing, string>();
+    for (const unit of this.units) if (unit.tool === "kotlinc" && unit.processing) {
+      processingInputs.set(unit.processing, await this.processingInputFingerprint(unit.processing));
+    }
     const key = createHash("sha256");
     for (const unit of files) {
       for (const [file, content] of unit) key.update(file).update("\0").update(content).update("\0");
       key.update("\u0001");
     }
-    return { key: key.digest("hex"), documents, files };
+    for (const input of processingInputs.values()) key.update("\0processing\0").update(input);
+    return { key: key.digest("hex"), documents, files, processingInputs };
   }
 
   /**
@@ -404,7 +579,7 @@ export class ComposeCompiler {
         if (this.units.some((unit) => this.accepts(unit, file)) && await readFile(file, "utf8") !== text) return false;
       }
       for (const [index, unit] of this.units.entries()) {
-        const files = sources.files[index]!;
+        const files = this.withGenerated(unit, sources.files[index]!);
         if (files.size !== unit.explicit.size || [...files.keys()].some((file) => !unit.explicit.has(file))) return false;
         if (!(await stat(unit.original)).isDirectory()) return false;
         if (!verified) {
@@ -422,7 +597,7 @@ export class ComposeCompiler {
         this.signal.throwIfAborted();
         await this.clean(unit);
         await cp(unit.original, unit.output, { recursive: true });
-        await this.apply(unit, sources.files[index]!);
+        await this.apply(unit, this.withGenerated(unit, sources.files[index]!));
         unit.dirty = false;
         unit.seeded = true;
       }
@@ -446,11 +621,16 @@ export class ComposeCompiler {
 
   /** Compile `sources` into the private outputs. `warm` also compiles seeded units, priming incremental compilation. */
   async update(sources: ComposeSources, warm = false): Promise<void> {
+    await this.compile(sources, warm);
+  }
+
+  private async compile(sources: ComposeSources, warm: boolean, stopBefore?: Unit): Promise<void> {
     this.signal.throwIfAborted();
     if (this.disposed) throw new Error("Compose compiler disposed.");
     if (this.updating) throw new Error("Concurrent Compose compiler updates are not supported.");
     this.updating = true;
     this.current = undefined;
+    if (warm) this.verifiedKey = undefined;
     const documents = sources.documents;
     let failed: Unit | undefined;
     let preserveClasspath = false;
@@ -466,17 +646,17 @@ export class ComposeCompiler {
       if (this.rebuildRequired) {
         for (const [file, text] of documents) {
           if (this.units.some((unit) => this.accepts(unit, file)) && await readFile(file, "utf8") !== text) {
-            throw new Error(`Save ${file} to regenerate annotation-processor inputs before previewing. The final Elide compiler record does not contain the processor invocation.`);
+            throw new Error(`Save ${file} and rebuild the preview. This build needs processing records or bytecode post-processing that live compilation cannot replay.`);
           }
         }
       }
       // Synchronize every source before compiling, so mixed Kotlin/Java sees one document snapshot.
       for (const [index, unit] of this.units.entries()) {
-        if (await this.apply(unit, sources.files[index]!)) unit.dirty = true;
+        if (await this.apply(unit, this.withGenerated(unit, sources.files[index]!))) unit.dirty = true;
         if (warm && unit.seeded) unit.dirty = true;
         if (unit.dirty) changed.add(unit);
         for (const file of unit.sources.keys()) {
-          if (file.endsWith(".java") && !this.units.some((owner) => owner.tool === "javac" && this.accepts(owner, file))) {
+          if (file.endsWith(".java") && !this.units.some((owner) => owner.tool === "javac" && (this.accepts(owner, file) || owner.processing?.owns(file)))) {
             throw new Error(`Save ${file} and rebuild the preview to create its Java compiler inputs.`);
           }
         }
@@ -501,6 +681,7 @@ export class ComposeCompiler {
         return;
       }
       for (const unit of this.units) {
+        if (unit === stopBefore) return;
         if (!unit.dirty) continue;
         this.signal.throwIfAborted();
         if (this.disposed) throw new Error("Compose compiler disposed.");
@@ -525,19 +706,11 @@ export class ComposeCompiler {
         if (unit.tool === "javac") await this.clean(unit);
         const args = this.arguments(unit);
         const options = unit.tool === "kotlinc"
-          ? ["--incremental", "--transactional-incremental", ...(!unit.warmed ? ["--warm-incremental"] : []), `--incremental-cache-dir=${path.join(unit.directory, "incremental")}`, "--plugins=", ...(unit.abiReport ? [`--report-abi=${unit.abiReport}`] : []), "--"]
+          ? [...toolchainOptions(unit.toolchain), "--incremental", "--transactional-incremental", ...(!unit.warmed ? ["--warm-incremental"] : []), `--incremental-cache-dir=${path.join(unit.directory, "incremental")}`, "--plugins=", ...(unit.abiReport ? [`--report-abi=${unit.abiReport}`] : []), "--"]
           : ["--"];
         // Absolute standard Kotlin invocations retain module-local caches but share JVM/JIT/BTA
         // infrastructure. Unknown flags, relative paths and custom plugins keep their own cwd.
-        const cwd = unit.tool === "kotlinc" && portableKotlinArguments(args) ? this.cwd : unit.project;
-        const key = `${this.bin}\0${cwd}\0${unit.tool}`;
-        let worker = this.workers.get(key);
-        if (!worker?.alive) {
-          worker?.dispose();
-          worker = new ComposeWorker(this.bin, unit.tool, cwd, this.signal);
-          this.workers.set(key, worker);
-        }
-        const response = await worker.request([...options, ...args]);
+        const response = await this.worker(unit.tool, this.workerDirectory(unit, args), unit.toolchainKey).request([...options, ...args]);
         if (response.exitCode !== 0) {
           preserveClasspath = response.exitCode === 1;
           const preserved = /^elide: incremental failure state preserved\r?$/m;
@@ -549,6 +722,7 @@ export class ComposeCompiler {
           throw new Error(`${unit.tool} failed for ${unit.project} (${unit.sourceSet}, exit ${response.exitCode}).\n${diagnostic || "Elide returned no compiler diagnostics."}`);
         }
         if (unit.tool === "kotlinc") unit.warmed = true;
+        if (unit.tool === "kotlinc" && unit.processing) await cp(unit.processing.classes, unit.output, { recursive: true });
         if (await this.abiChanged(unit)) {
           for (const consumer of this.units) if (consumer.dependencies.has(unit)) consumer.dirty = true;
         }
@@ -566,6 +740,82 @@ export class ComposeCompiler {
     } finally {
       this.updating = false;
     }
+  }
+
+  /** Confirm processor inputs after the optimistic paint; failures never confirm stale generated code. */
+  async verify(sources: ComposeSources): Promise<boolean> {
+    this.signal.throwIfAborted();
+    if (this.isVerified(sources.key) && this.current === sources.key) return false;
+    if (this.updating || this.disposed) throw new Error("Compose compiler cannot verify during another update or after disposal.");
+    let changed = this.current !== sources.key;
+    this.updating = true;
+    this.verifiedKey = undefined;
+    try {
+      for (const [index, unit] of this.units.entries()) {
+        if (await this.apply(unit, this.withGenerated(unit, sources.files[index]!))) unit.dirty = true;
+      }
+      for (const unit of this.units) {
+        const stage = unit.processing;
+        if (unit.tool !== "kotlinc" || !stage) continue;
+        // Earlier stages may have regenerated inputs since the optimistic compile. Materialize
+        // their Kotlin/Java outputs before this stage inspects the downstream classpath.
+        this.updating = false;
+        try { await this.compile(sources, false, unit); }
+        finally { this.updating = true; }
+        let processingInput = sources.processingInputs.get(stage)!;
+        for (const dependency of unit.dependencies) processingInput += `\0${dependency.original}\0${await stamp(dependency.output)}`;
+        for (const source of unit.sources.values()) {
+          if (source.file.endsWith(".java") && !stage.owns(source.file)) processingInput += `\0${source.file}\0${source.content}`;
+        }
+        // Processors may resolve options against the project directory. The Kotlin worker there serves kapt as well.
+        const worker = this.worker("kotlinc", unit.project, unit.toolchainKey);
+        const regenerated = await stage.verify(this.arguments(unit, stage.args, false), processingInput, async (args) => {
+          const response = await worker.request([...toolchainOptions(unit.toolchain), "--plugins=", "--", ...args]);
+          if (response.exitCode !== 0) {
+            let diagnostic = response.output;
+            for (const owner of this.units) for (const source of owner.sources.values()) diagnostic = diagnostic.replaceAll(source.snapshot, source.file);
+            throw new Error(`kapt failed for ${unit.project} (${unit.sourceSet}, exit ${response.exitCode}).\n${diagnostic}`);
+          }
+        });
+        if (regenerated) {
+          changed = true;
+          for (const owner of this.units) if (owner.processing === stage) {
+            owner.dirty = true;
+            // Removed generated declarations must not survive an incremental cache from the old generation.
+            await this.clean(owner);
+            owner.warmed = false;
+            owner.seeded = false;
+          }
+        }
+      }
+    } finally {
+      this.updating = false;
+    }
+    await this.update(sources);
+    for (const [stage, input] of sources.processingInputs) {
+      if (await this.processingInputFingerprint(stage) !== input) throw new Error("Annotation processor inputs changed during preview verification; refresh the preview.");
+    }
+    this.verifiedKey = sources.key;
+    return changed;
+  }
+
+  private async processingInputFingerprint(stage: ComposeProcessing): Promise<string> {
+    return stage.inputs(async (file) => {
+      const replacement = this.build.replacements.get(file);
+      // Build-owned mirrors are frozen with this resource context. Project-unit outputs are
+      // instead verified in DAG order and separately included in each processing pass's key.
+      if (!replacement || replacement.some((entry) => this.units.some((unit) => unit.output === entry))) return stamp(file);
+      return (await Promise.all(replacement.map(stamp))).join("\0");
+    });
+  }
+
+  private withGenerated(unit: Unit, files: ReadonlyMap<string, string>): ReadonlyMap<string, string> {
+    if (!unit.processing) return files;
+    const result = new Map(files);
+    for (const [file, text] of unit.processing.generated) {
+      if (unit.tool === "kotlinc" || file.endsWith(".java")) result.set(file, text);
+    }
+    return result;
   }
 
   /** Copy changed private classes to the render-facing directories. Callers exclude concurrent renders. */
@@ -592,10 +842,32 @@ export class ComposeCompiler {
       unit.publishedFiles = next;
     }
     this.publishedKey = key;
+    this.populated = true;
+    this.publishedInstrumented = !this.rebuildRequired && this.initialized && !this.seeded;
   }
 
   dispose(): void {
     this.disposed = true;
+  }
+
+  /**
+   * Stop the backend's workers this compiler never uses: a replaced compiler's, for another toolchain, Elide distribution
+   * or working directory. Callers exclude compiles.
+   */
+  pruneWorkers(): void {
+    const used = new Set<string>();
+    for (const unit of this.units) {
+      let args: string[];
+      // Such a unit fails before it starts a worker.
+      try { args = this.arguments(unit); } catch { continue; }
+      used.add(this.workerKey(unit.tool, this.workerDirectory(unit, args), unit.toolchainKey));
+      if (unit.processing) used.add(this.workerKey("kotlinc", unit.project, unit.toolchainKey));
+    }
+    for (const [key, worker] of this.workers) {
+      if (used.has(key)) continue;
+      worker.dispose();
+      this.workers.delete(key);
+    }
   }
 
   /** Delete this compiler's private directory. Only after `dispose` and outside renders using its classes. */
@@ -605,12 +877,14 @@ export class ComposeCompiler {
 
   private accepts(unit: Unit, file: string): boolean {
     return (unit.tool === "kotlinc" ? sourceExtension.test(file) : file.endsWith(".java"))
+      && !unit.processing?.owns(file)
       && (unit.explicit.has(file) || unit.selections.some((selection) => selection.matches(file)));
   }
 
   private async collect(unit: Unit, documents: ReadonlyMap<string, string>): Promise<Map<string, string>> {
     const roots = [...new Set(unit.selections.map((selection) => selection.root))];
-    const files = new Set([...unit.explicit, ...(await Promise.all(roots.map((root) => walk(root, (file) => this.accepts(unit, file))))).flat()]);
+    const files = new Set([...unit.explicit].filter((file) => !unit.processing?.owns(file)));
+    for (const file of (await Promise.all(roots.map((root) => walk(root, (file) => this.accepts(unit, file))))).flat()) files.add(file);
     for (const file of documents.keys()) if (this.accepts(unit, file)) files.add(file);
     const sorted = [...files].sort();
     const contents = await Promise.all(sorted.map(async (file) => {
@@ -656,33 +930,52 @@ export class ComposeCompiler {
     return changed;
   }
 
-  private arguments(unit: Unit): string[] {
+  /** The worker directory `unit` compiles `args` in: the workspace's when they are self-contained, else its project's. */
+  private workerDirectory(unit: Unit, args: readonly string[]): string {
+    return unit.tool === "kotlinc" && portableKotlinArguments(args, unit.toolchain, this.bundledKotlin) ? this.cwd : unit.project;
+  }
+
+  private workerKey(tool: Tool, cwd: string, toolchainKey: string): string {
+    return `${this.bin}\0${cwd}\0${tool}\0${toolchainKey}`;
+  }
+
+  /** The backend's persistent `tool` worker in `cwd`, started on first use or after it died. */
+  private worker(tool: Tool, cwd: string, toolchainKey: string): ComposeWorker {
+    const key = this.workerKey(tool, cwd, toolchainKey);
+    let worker = this.workers.get(key);
+    if (!worker?.alive) {
+      worker?.dispose();
+      worker = new ComposeWorker(this.bin, tool, cwd, this.signal);
+      this.workers.set(key, worker);
+    }
+    return worker;
+  }
+
+  private arguments(unit: Unit, recorded = unit.args, generated = true): string[] {
     const args: string[] = [];
-    let destination = false;
-    for (let index = 0; index < unit.args.length; index++) {
-      const arg = unit.args[index]!;
-      if (unit.explicit.has(path.resolve(unit.project, arg))) continue;
+    for (let index = 0; index < recorded.length; index++) {
+      const arg = recorded[index]!;
+      if (unit.explicit.has(path.resolve(unit.project, arg)) || unit.processing?.owns(path.resolve(unit.project, arg))) continue;
       const option = splitOption(arg);
       const paths = classPathFlags[option.flag] || option.flag === "-Xfriend-paths" || option.flag === "--patch-module";
       const sources = sourcePathFlags[option.flag];
       if (paths || sources || outputFlags[option.flag]) {
-        const value = option.value ?? unit.args[++index];
+        const value = option.value ?? recorded[++index];
         if (value === undefined) throw new Error(`Missing compiler argument after ${option.flag}.`);
         let replaced: string;
         if (paths) {
           const delimiter = option.flag === "-Xfriend-paths" ? "," : path.delimiter;
           const patch = option.flag === "--patch-module" ? patchModule(value) : undefined;
-          replaced = [...new Set((patch?.paths ?? value).split(delimiter).flatMap((entry) => this.replacements.get(path.resolve(unit.project, entry)) ?? [entry]))].join(delimiter);
+          replaced = [...new Set((patch?.paths ?? value).split(delimiter).flatMap((entry) => this.build.replacements.get(path.resolve(unit.project, entry)) ?? [entry]))].join(delimiter);
           if (patch) replaced = `${patch.module}=${replaced}`;
         } else if (sources) {
           const delimiter = option.flag === "-Xjava-source-roots" ? "," : path.delimiter;
-          replaced = unit.roots.map((root) => snapshotRoot(unit, root)).join(delimiter);
+          const roots = unit.roots.filter((root) => generated || !unit.processing?.owns(root));
+          if (!roots.length) continue;
+          replaced = roots.map((root) => snapshotRoot(unit, root)).join(delimiter);
         } else {
-          if (option.flag === "-d") {
-            if (path.resolve(unit.project, value) !== unit.original) throw new Error(`Recorded compiler destination ${value} does not match ${unit.original}.`);
-            destination = true;
-            replaced = unit.output;
-          } else replaced = path.join(unit.directory, "generated", `${option.flag.replace(/^-+/, "")}${option.flag === "--emit-abi" && value.endsWith(".jar") ? ".jar" : ""}`);
+          replaced = option.flag === "-d" ? unit.output
+            : path.join(unit.directory, "generated", `${option.flag.replace(/^-+/, "")}${option.flag === "--emit-abi" && value.endsWith(".jar") ? ".jar" : ""}`);
         }
         if (option.value === undefined) args.push(option.flag, replaced);
         else args.push(`${option.flag}=${replaced}`);
@@ -692,8 +985,7 @@ export class ComposeCompiler {
         args.push(`${arg.slice(0, equals + 1)}${path.join(unit.directory, "plugin-output", createHash("sha256").update(arg.slice(0, equals)).digest("hex").slice(0, 16) + archive)}`);
       } else args.push(arg);
     }
-    if (!destination) throw new Error(`Recorded ${unit.tool} arguments have no -d destination for ${unit.original}.`);
-    const sources = [...unit.sources.values()];
+    const sources = [...unit.sources.values()].filter((source) => generated || !unit.processing?.owns(source.file));
     if (unit.tool === "kotlinc") {
       // Elide's BTA source list contains Kotlin only; explicitly retain Java resolution roots.
       const java = unit.roots.filter((root) => sources.some((source) => source.file.endsWith(".java") && inside(root, source.file))).map((root) => snapshotRoot(unit, root));

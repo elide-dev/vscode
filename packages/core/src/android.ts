@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { unqualifiedTaskName, type BuildTaskInfo } from "./buildTasks.js";
 import { OUTPUT_DIR } from "./elide.js";
 import type { AndroidArtifact, AndroidArtifactKind } from "./manifest.js";
 import { normalizePath } from "./sourceRoots.js";
@@ -26,7 +27,10 @@ export const ANDROID_AVD_TASK = "android-avd";
 /** Boot the project's virtual device and wait for `sys.boot_completed`. */
 export const ANDROID_EMULATOR_TASK = "android-emulator";
 
-/** Shut down every running emulator, through `adb emu kill`. */
+/**
+ * Stop the emulator `--device=<serial>` names, or else the one running the project's own AVD — the device
+ * `android-emulator` boots — leaving every other emulator running.
+ */
 export const ANDROID_EMULATOR_STOP_TASK = "android-emulator-stop";
 
 /**
@@ -39,6 +43,9 @@ export const ANDROID_LIBRARIES_TASK = "android-libraries";
 
 /** `--device=<serial>`: pin an Android target to one attached device or emulator. */
 export const ANDROID_DEVICE_OPTION = "device";
+
+/** `--tests=<class>[#<method>]`: the instrumented tests `android-test-<artifact>` runs, every one when absent. */
+export const ANDROID_TESTS_OPTION = "tests";
 
 /** `--install-sdk`: install the SDK components a target is missing, accepting their licenses. */
 export const ANDROID_INSTALL_SDK_OPTION = "install-sdk";
@@ -82,6 +89,169 @@ export function androidRunTask(artifact: string, mode: AndroidRunMode = "auto"):
  */
 export function androidDebugTask(artifact: string): string {
   return `android-debug-${artifact}`;
+}
+
+/** The target that installs `artifact` on a device and runs the instrumented tests it carries. */
+export function androidTestTask(artifact: string): string {
+  return `android-test-${artifact}`;
+}
+
+/**
+ * Whether `task` installs onto one device, which `--device=<serial>` names: a run, debug or instrumented-test target.
+ * Without the option Elide picks the device itself, so whoever runs it passes the deployment target's serial.
+ *
+ * `android-emulator-stop` takes the option too, but stops rather than deploys: without it, it stops the project's
+ * emulator, which is what running it bare asks for.
+ */
+export function isAndroidDeviceTask(task: BuildTaskInfo): boolean {
+  return unqualifiedTaskName(task) !== ANDROID_EMULATOR_STOP_TASK
+    && task.options.some((option) => option.option === `--${ANDROID_DEVICE_OPTION}`);
+}
+
+/**
+ * What the device targets of a project's task listing let an editor do with APK `artifact`, given what its own
+ * declarations say (`declared`). An action is offered only when Elide lists its target, never assumed from the
+ * artifact's kind: Elide leaves out the targets that cannot succeed for an APK.
+ *
+ * Elide 1.6.1+43bf7ad8d and older list `android-test-<artifact>` for every APK, so the test target counts only for an
+ * APK that carries instrumentation — Pkl `instrumentation`, or an `<instrumentation>` element in its manifest — and
+ * list `android-debug-<artifact>` even for an APK whose manifest sets `android:debuggable="false"`.
+ */
+export function androidDeviceTargets(tasks: readonly BuildTaskInfo[], artifact: string, declared: AndroidDeclaredTargets = {}): AndroidDeviceTargets {
+  const listed = new Set(tasks.map(unqualifiedTaskName));
+  return {
+    runnable: listed.has(androidRunTask(artifact)),
+    debuggable: declared.debuggable !== false && listed.has(androidDebugTask(artifact)),
+    instrumented: declared.instrumentation === true && listed.has(androidTestTask(artifact)),
+  };
+}
+
+/** What an APK's declarations say about its device targets, beyond what Elide lists: see {@link androidDeviceTargets}. */
+export interface AndroidDeclaredTargets {
+  /** The APK carries instrumented tests: Pkl `instrumentation`, or `<instrumentation>` in its manifest. */
+  instrumentation?: boolean;
+  /** `android:debuggable` as its manifest sets it, when it does. */
+  debuggable?: boolean;
+}
+
+/** {@link androidDeviceTargets}: which of Run, Debug and the instrumented tests an APK offers. */
+export interface AndroidDeviceTargets {
+  /** `android-run-<artifact>` installs and launches it. */
+  runnable: boolean;
+  /** `android-debug-<artifact>` installs it and attaches a debugger. */
+  debuggable: boolean;
+  /** `android-test-<artifact>` runs the instrumented tests it declares. */
+  instrumented: boolean;
+}
+
+/** What an Android manifest declares that decides what an editor offers for the APK built from it. */
+export interface AndroidManifestFacts {
+  /** `android:debuggable` of `<application>`, when it is set to a literal rather than a placeholder. */
+  debuggable?: boolean;
+  /** The `<instrumentation>` element of a test APK: the runner it names and the package it instruments. */
+  instrumentation?: { runner?: string; targetPackage?: string };
+}
+
+/** `<application …>` and `<instrumentation …/>`: a quoted value may hold `>` without ending the tag. */
+const APPLICATION_ELEMENT = /<application\b((?:[^"'<>]|"[^"]*"|'[^']*')*)>/;
+const INSTRUMENTATION_ELEMENT = /<instrumentation\b((?:[^"'<>]|"[^"]*"|'[^']*')*)>/;
+const MANIFEST_ATTRIBUTE = /([\w.:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+
+/** Attributes of an element by local name: `android:debuggable` and `a:debuggable` are both `debuggable`. */
+function manifestAttributes(text: string): Map<string, string> {
+  const attributes = new Map<string, string>();
+  for (const match of text.matchAll(MANIFEST_ATTRIBUTE)) {
+    attributes.set(match[1]!.slice(match[1]!.lastIndexOf(":") + 1), match[2] ?? match[3] ?? "");
+  }
+  return attributes;
+}
+
+/**
+ * What a text `AndroidManifest.xml` declares: a source manifest, or the merged one Elide stages and links. Comments
+ * are ignored; a value that is not a literal (`${debuggable}`) says nothing.
+ */
+export function parseAndroidManifest(xml: string): AndroidManifestFacts {
+  const text = xml.replace(/<!--[\s\S]*?-->/g, "");
+  const application = APPLICATION_ELEMENT.exec(text);
+  const debuggable = application ? manifestAttributes(application[1]!).get("debuggable") : undefined;
+  const instrumentation = INSTRUMENTATION_ELEMENT.exec(text);
+  const declared = instrumentation ? manifestAttributes(instrumentation[1]!) : undefined;
+  const runner = declared?.get("name");
+  const targetPackage = declared?.get("targetPackage");
+  return {
+    ...(debuggable === "true" || debuggable === "false" ? { debuggable: debuggable === "true" } : {}),
+    ...(declared ? { instrumentation: { ...(runner ? { runner } : {}), ...(targetPackage ? { targetPackage } : {}) } } : {}),
+  };
+}
+
+/** {@link parseAndroidManifest} of a manifest on disk; `undefined` when it cannot be read. */
+export function readAndroidManifest(file: string): AndroidManifestFacts | undefined {
+  try {
+    return parseAndroidManifest(readFileSync(file, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/** The merged manifest Elide stages for an artifact and links its APK from: `.dev/android/<artifact>/AndroidManifest.xml`. */
+export function androidMergedManifest(root: string, artifact: string): string {
+  return path.join(root, OUTPUT_DIR, ANDROID_STAGE_DIR, artifact, "AndroidManifest.xml");
+}
+
+/**
+ * Whether the APK the last build of `artifact` produced is debuggable, by the merged manifest it was linked from: only
+ * `android:debuggable="true"` on `<application>` makes it so. Newer Elide releases add that attribute to a
+ * `release = false` build; 1.6.1+43bf7ad8d and older never do, yet list `android-debug-<artifact>` all the same.
+ *
+ * `undefined` when no build staged a merged manifest, or `sourceManifest` changed after it was merged: the next
+ * build decides then.
+ */
+export function stagedAndroidDebuggable(root: string, artifact: string, sourceManifest: string): boolean | undefined {
+  const merged = androidMergedManifest(root, artifact);
+  let mergedAt: number;
+  try {
+    mergedAt = statSync(merged).mtimeMs;
+  } catch {
+    return undefined;
+  }
+  try {
+    if (statSync(sourceManifest).mtimeMs > mergedAt) return undefined;
+  } catch {
+    // A merged manifest without its source: the stage is all there is to go by.
+  }
+  const facts = readAndroidManifest(merged);
+  return facts ? facts.debuggable === true : undefined;
+}
+
+/**
+ * What an APK offers now: the device targets of the last sync, without Debug once its latest build turned out not
+ * to be debuggable ({@link stagedAndroidDebuggable}). A Debug of such a build fails on the device after the whole
+ * build; the build after a manifest change offers it again.
+ */
+export function currentAndroidDeviceTargets(
+  root: string,
+  target: { name: string; manifestFile: string; device?: AndroidDeviceTargets },
+): AndroidDeviceTargets | undefined {
+  const device = target.device;
+  if (!device?.debuggable || stagedAndroidDebuggable(root, target.name, target.manifestFile) !== false) return device;
+  return { ...device, debuggable: false };
+}
+
+/**
+ * The artifact whose keystore an Elide hint asks to create: `Create one with: elide build android-keystore-app` names
+ * `app`. A workspace may qualify the target with its member (`mobile:android-keystore-app`).
+ */
+export function androidKeystoreHintArtifact(hint: string): string | undefined {
+  return /(?:^|[\s:`'"])android-keystore-([\w.-]*[\w-])/.exec(hint)?.[1];
+}
+
+/**
+ * The application an install could not update because the copy on the device is signed with another key:
+ * `Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package sample.app signatures do not match newer version;
+ * ignoring!]` names `sample.app` (older Android says `Package sample.app signatures do not match …`).
+ */
+export function androidIncompatibleUpdatePackage(text: string): string | undefined {
+  return /INSTALL_FAILED_UPDATE_INCOMPATIBLE\b[^\]\n]*?\b[Pp]ackage ([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)/.exec(text)?.[1];
 }
 
 /** A dynamic feature stages a bundle module, not a standalone published/installable archive. */

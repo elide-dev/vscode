@@ -4,7 +4,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { writeKomodoProject, type ProjectModel } from "@elide/ide-core";
 import * as vscode from "vscode";
-import { CloseAction, ErrorAction, LanguageClient, State, type LanguageClientOptions, type ServerOptions } from "vscode-languageclient/node";
+import { CloseAction, ErrorAction, ErrorCodes, LanguageClient, ResponseError, State, type LanguageClientOptions, type ServerOptions } from "vscode-languageclient/node";
 import type * as lsp from "vscode-languageclient/node";
 import { KomodoResolutionError, resolveKomodo, type KomodoResolution } from "./komodoDistribution.js";
 import { requireKomodoDebugProtocol } from "./komodoDebug.js";
@@ -92,8 +92,23 @@ interface Running {
   failure?: string;
 }
 
-/** Graceful shutdown includes disposing analysis workspaces. */
+/** Graceful shutdown includes closing preview sessions and disposing analysis workspaces. */
 const EXIT_GRACE_MS = 30_000;
+
+/** A `komodo/previews` answer: entries shaped like compiled discovery's, plus each preview's source ranges. */
+export interface KomodoPreviews {
+  previews: { methodFQN: string; previewId: string; name: string; previewParams: Record<string, string>; methodParams: Record<string, string>[] }[];
+  errors: lsp.Diagnostic[];
+}
+
+/** A `komodo/preview/open` answer: a preview session served in the language server's process, on a loopback port. */
+export interface KomodoPreviewSession {
+  protocol: number;
+  port: number;
+  /** The session's first line from the client: the server serves only the connection that writes it. */
+  token: string;
+  pid?: number;
+}
 
 /**
  * Komodo's language server for this window: one process analyzing the Elide projects of every folder whose
@@ -382,6 +397,65 @@ export class KomodoLanguageServer implements vscode.Disposable {
     if (!client || !this.available) throw new Error(`Komodo is disabled: ${uri.toString()} cannot be read. Sync the project again.`);
     const content = await client.sendRequest<{ text: string; languageId: string }>("komodo/libraryContent", { uri: uri.toString() });
     return content.text;
+  }
+
+  /**
+   * `komodo/previews`: the Compose previews `file` declares, from its resolved source (the open buffer, which the client syncs
+   * before the request), with its error diagnostics. Throws without a running server for the file's folder.
+   */
+  async previews(file: string): Promise<KomodoPreviews> {
+    const { client, uri } = await this.clientFor(file);
+    return client.sendRequest<KomodoPreviews>("komodo/previews", { textDocument: { uri } });
+  }
+
+  /** Opens a preview in the workspace server; an older server must be upgraded, never replaced by a preview child. */
+  async previewSession(file: string): Promise<KomodoPreviewSession> {
+    const { client, uri } = await this.clientFor(file);
+    try {
+      const session = await client.sendRequest<KomodoPreviewSession>("komodo/preview/open", { textDocument: { uri } });
+      if (session?.protocol !== 2 || !Number.isInteger(session.port) || session.port < 1 || session.port > 65535
+        || typeof session.token !== "string" || !session.token || /[\r\n]/.test(session.token)) {
+        throw new Error("Komodo returned an invalid preview session. Use an Elide distribution with a newer Komodo (lib/komodo).");
+      }
+      return session;
+    } catch (error) {
+      if (error instanceof ResponseError && error.code === ErrorCodes.MethodNotFound) {
+        throw new Error("This Komodo language server is too old for the Komodo preview engine. Use an Elide distribution with a newer Komodo (lib/komodo); there is no fallback.");
+      }
+      throw error;
+    }
+  }
+
+  /** Orders versioned editor buffers on the analysis thread before the socket asks it to compile. */
+  async syncPreview(files: readonly string[]): Promise<void> {
+    const file = files[0];
+    if (!file) return;
+    const { client } = await this.clientFor(file);
+    const wanted = new Set(files);
+    const documents = vscode.workspace.textDocuments
+      .filter((document) => document.uri.scheme === "file" && wanted.has(document.uri.fsPath) && document.uri.fsPath.endsWith(".kt"))
+      .map((document) => ({ uri: document.uri.toString(), version: document.version, text: document.getText() }));
+    try {
+      await client.sendRequest("komodo/preview/sync", { documents });
+    } catch (error) {
+      if (error instanceof ResponseError && error.code === ErrorCodes.MethodNotFound) {
+        throw new Error("This Komodo language server is too old to synchronize unsaved edits with the Komodo preview engine. Use an Elide distribution with a newer Komodo (lib/komodo).");
+      }
+      throw error;
+    }
+  }
+
+  /** The running client serving `file`'s folder, started, and the file's protocol URI; throws without a server for it. */
+  private async clientFor(file: string): Promise<{ client: LanguageClient; uri: string }> {
+    await this.queue.catch(() => undefined);
+    const client = this.running?.client;
+    const uri = vscode.Uri.file(file);
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    if (!client || !folder || !this.folders.has(folder.uri.toString())) {
+      throw new Error(`Komodo's language server is not running for ${path.basename(file)}: the Komodo preview engine discovers previews through it (elide.kotlinLsp.server = komodo).`);
+    }
+    if (client.state !== State.Running) await client.start();
+    return { client, uri: client.code2ProtocolConverter.asUri(uri) };
   }
 
   /** The lens command: VS Code's reference peek, from the LSP JSON the server put in the lens. */

@@ -446,6 +446,32 @@ cli
     expect(models[1]!.modules[0]!.compilationTargets).toEqual(["model:compile-kotlin-main"]);
   });
 
+  test("an APK whose manifest declares <instrumentation> is a test APK; android:debuggable=\"false\" withdraws Debug", async () => {
+    const { ws, cliAtRoot } = workspace();
+    const manifest = JSON.parse(readFileSync(path.join(ws, ".fake", "manifest.json"), "utf8"));
+    manifest.android = { compileSdk: 36 };
+    manifest.artifacts = {
+      ...manifest.artifacts,
+      tests: { "@type": "elide.android.AndroidApk", sources: ["main"] },
+      release: { "@type": "elide.android.AndroidApk", sources: ["main"], manifestFile: "release/AndroidManifest.xml" },
+    };
+    writeFileSync(path.join(ws, ".fake", "manifest.json"), JSON.stringify(manifest));
+    mkdirSync(path.join(ws, "src", "main"), { recursive: true });
+    writeFileSync(path.join(ws, "src", "main", "AndroidManifest.xml"), `<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="t">
+  <instrumentation android:name="androidx.test.runner.AndroidJUnitRunner" android:targetPackage="t" />
+  <application />
+</manifest>`);
+    mkdirSync(path.join(ws, "release"));
+    writeFileSync(path.join(ws, "release", "AndroidManifest.xml"), `<manifest package="r"><application android:debuggable="false" /></manifest>`);
+    // Elide 1.6.1+43bf7ad8d lists every device target for both, whatever their manifests say.
+    const listed = ["tests", "release"].flatMap((apk) => ["run", "debug", "test"].map((use) => `  logstat:android-${use}-${apk}  ${use}`));
+    writeFileSync(path.join(ws, ".fake", "build-inspect.txt"), `6 tasks across 1 project:\nlogstat\n${listed.join("\n")}\n`);
+    const [root] = await build(cliAtRoot);
+    const device = (name: string) => root!.android?.targets.find((target) => target.name === name)?.device;
+    expect(device("tests")).toEqual({ runnable: true, debuggable: true, instrumented: true });
+    expect(device("release")).toEqual({ runnable: true, debuggable: false, instrumented: false });
+  });
+
   test("the workspace names every library once, whichever member resolved it", async () => {
     const { cliAtRoot, stdlib } = workspace();
     const models = await build(cliAtRoot);

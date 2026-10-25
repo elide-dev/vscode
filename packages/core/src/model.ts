@@ -5,12 +5,15 @@ import {
   DEFAULT_AVD_NAME,
   androidArtifactFile,
   androidContentDirs,
+  androidDeviceTargets,
   androidMappingFile,
   androidRClasses,
   androidRClassesArtifact,
   androidRTask,
   androidSdkRoot,
   explodedAndroidLibrary,
+  readAndroidManifest,
+  type AndroidDeviceTargets,
 } from "./android.js";
 import { buildTasksOf, unqualifiedTaskName, type BuildTaskInfo } from "./buildTasks.js";
 import { ElideCli, MANIFEST_NAME, isLockfileCurrent, type ClasspathQuery, type RunOptions } from "./elide.js";
@@ -125,6 +128,8 @@ export interface AndroidTargetModel {
   base?: string;
   delivery?: "install-time" | "on-demand";
   featureDependencies?: string[];
+  /** What Elide's task listing offers for an APK — Run, Debug, instrumented tests; absent for every other kind. */
+  device?: AndroidDeviceTargets;
 }
 
 export interface BuildModelOptions {
@@ -704,6 +709,7 @@ function assembleProject(project: ProjectSpec, answers: ProjectAnswers, ctx: Bui
         ...(declared.base ? { base: declared.base } : {}),
         ...(declared.delivery ? { delivery: declared.delivery } : {}),
         ...(declared.featureDependencies ? { featureDependencies: declared.featureDependencies } : {}),
+        ...(declared.kind === "apk" ? { device: apkDeviceTargets(buildTasksOf(ctx.previewTasks ?? [], name), key, declared.instrumentation, path.resolve(root, declared.manifestFile)) } : {}),
       })),
     };
   }
@@ -726,6 +732,18 @@ function assembleProject(project: ProjectSpec, answers: ProjectAnswers, ctx: Bui
     artifacts,
     runtimeArtifacts,
   };
+}
+
+/**
+ * Device targets of an APK, from the targets Elide lists and what its source manifest declares: an `<instrumentation>`
+ * element makes it a test APK as Pkl `instrumentation` does, and `android:debuggable="false"` withdraws Debug.
+ */
+function apkDeviceTargets(tasks: readonly BuildTaskInfo[], artifact: string, instrumentation: boolean | undefined, manifestFile: string): AndroidDeviceTargets {
+  const facts = readAndroidManifest(manifestFile);
+  return androidDeviceTargets(tasks, artifact, {
+    instrumentation: instrumentation === true || facts?.instrumentation !== undefined,
+    ...(facts?.debuggable !== undefined ? { debuggable: facts.debuggable } : {}),
+  });
 }
 
 /**
