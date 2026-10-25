@@ -22,33 +22,44 @@
  * `dist/extension.js`, `dist-test/index.js`) two levels up, `samples/ktjvm` and `samples/workspace` under the runfiles
  * root.
  *
+ * `ELIDE_TEST_SCENARIO=komodo` opens a copy of `samples/ktjvm` with `elide.kotlinLsp.server` set to `komodo` and the
+ * JetBrains extension disabled. `ELIDE_KOMODO_LSP` names its native executable, `ELIDE_KOMODO_PLUGINS` optionally
+ * its compiler plugin directory, and `ELIDE_KOMODO_JAVA_HOME` the JDK resolution inputs.
+ * `ELIDE_TEST_SCENARIO=komodo-debug` debugs the same sample through Komodo's debug adapter.
+ *
  * `ELIDE_TEST_HOME` runs the scenario against another Elide distribution, such as a local build's
  * `.dev/artifacts/dist/current`, through the `elide.home` setting: the extension host does not see an `ELIDE_HOME`
  * set in the shell that starts the run.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync, mkdirSync, rmSync, cpSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { runTests } from "@vscode/test-electron";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
-const extensionDevelopmentPath = path.resolve(here, "..", "..");
-const runfilesRoot = path.resolve(extensionDevelopmentPath, "..", "..");
+const runfilesExtension = path.resolve(here, "..", "..");
+const runfilesRoot = path.resolve(runfilesExtension, "..", "..");
+// Runfiles are links into the output tree, and Node loads `dist/extension.js` at its real path: VS Code must know the
+// extension at that path too, or it attributes the extension's `vscode` API to no extension, and the calls that check
+// their caller's manifest (registering the `komodo-kotlin` debug adapter factory) fail.
+const extensionDevelopmentPath = path.dirname(realpathSync(path.join(runfilesExtension, "package.json")));
 const extensionTestsPath = path.resolve(extensionDevelopmentPath, "dist-test", "index.js");
 
 const vscodeExecutablePath = process.env.VSCODE_EXECUTABLE ?? "/Applications/Visual Studio Code.app/Contents/MacOS/Code";
 
-const scenarios = ["workspace", "compose", "android"] as const;
+const scenarios = ["workspace", "compose", "android", "komodo", "komodo-debug"] as const;
 const scenario = scenarios.find((name) => name === process.env.ELIDE_TEST_SCENARIO) ?? "ktjvm";
+/** Komodo's scenarios: the folder on Komodo's language server, every other extension disabled. */
+const komodo = scenario === "komodo" || scenario === "komodo-debug";
 if (scenario === "android") {
   const missing = ["ELIDE_ANDROID_APP_SAMPLE", "ELIDE_ANDROID_APP_MEMBER", "ELIDE_ANDROID_APP_ARTIFACT", "ELIDE_ANDROID_APP_ID"]
     .filter((name) => !process.env[name]);
   if (missing.length) throw new Error(`Android verification requires an explicit fixture; set ${missing.join(", ")}`);
 }
 
-// The user's extensions dir is used as-is so the already-installed JetBrains extension (1.2 GB) is reused.
+// The user's extensions dir is reused as-is; Komodo's scenarios disable other extensions for this instance.
 const extensionsDir = path.join(homedir(), ".vscode", "extensions");
-if (!readdirSync(extensionsDir).some((d) => d.startsWith("jetbrains.kotlin-server-"))) throw new Error(`JetBrains.kotlin-server is not installed in ${extensionsDir}`);
+if (!komodo && !readdirSync(extensionsDir).some((d) => d.startsWith("jetbrains.kotlin-server-"))) throw new Error(`JetBrains.kotlin-server is not installed in ${extensionsDir}`);
 
 // Keep macOS IPC paths short without overriding TMPDIR: the Kotlin client and JVM must agree on their port-file directory.
 const scratchRoot = process.platform === "darwin" ? "/tmp" : tmpdir();
@@ -71,6 +82,14 @@ writeFileSync(
       "telemetry.telemetryLevel": "off",
       // An emulator the test boots runs headless.
       ...(scenario === "android" ? { "elide.android.emulatorWindow": false } : {}),
+      ...(komodo ? {
+        "elide.kotlinLsp.server": "komodo",
+        ...(process.env.ELIDE_KOMODO_LSP ? { "elide.kotlinLsp.komodo.path": process.env.ELIDE_KOMODO_LSP } : {}),
+        ...(process.env.ELIDE_KOMODO_PLUGINS ? { "elide.kotlinLsp.komodo.pluginDirectory": process.env.ELIDE_KOMODO_PLUGINS } : {}),
+        ...(process.env.ELIDE_KOMODO_JAVA_HOME ? { "elide.kotlinLsp.komodo.javaHome": process.env.ELIDE_KOMODO_JAVA_HOME } : {}),
+        "files.autoSave": "off",
+        ...(process.env.ELIDE_KOMODO_TRACE ? { "elide.komodo.trace.server": "messages" } : {}),
+      } : {}),
       ...(process.env.ELIDE_TEST_HOME ? { "elide.home": process.env.ELIDE_TEST_HOME } : {}),
     },
     null,
@@ -80,12 +99,21 @@ writeFileSync(
 
 // Work on a scratch copy of the sample so the test can mutate elide.pkl freely; the compose sample stays in place.
 const sample = scenario === "compose"
-  ? path.resolve(process.env.ELIDE_ANDROID_SAMPLE ?? path.resolve(repoRoot, "..", "elide-android-sample"))
+  ? composeSampleDirectory()
   : mkdtempSync(path.join(realpathSync(scratchRoot), `elide-${scenario}-`));
 if (scenario === "workspace") prepareWorkspaceSample();
 else if (scenario === "compose") prepareComposeSample();
 else if (scenario === "android") prepareAndroidSample();
+else if (komodo) copyFiles(path.join(runfilesRoot, "samples", "ktjvm"), sample);
 else prepareKtjvmSample();
+
+function composeSampleDirectory(): string {
+  // `bazel run` names the checkout it was started from; the sample sits beside it.
+  const checkout = process.env.BUILD_WORKSPACE_DIRECTORY;
+  const source = process.env.ELIDE_ANDROID_SAMPLE ?? (checkout && path.resolve(checkout, "..", "elide-android-sample"));
+  if (!source) throw new Error("no Elide Android sample; set ELIDE_ANDROID_SAMPLE");
+  return path.resolve(source);
+}
 
 function prepareComposeSample(): void {
   if (!existsSync(path.join(sample, "app", ".dev", "jvm"))) throw new Error(`no built Elide Android sample at ${sample}; set ELIDE_ANDROID_SAMPLE`);
@@ -98,21 +126,33 @@ function prepareAndroidSample(): void {
   if (!existsSync(path.join(source, "elide.pkl"))) throw new Error(`no Elide Android application at ${source}; set ELIDE_ANDROID_APP_SAMPLE`);
   // Build outputs, editor state and the generated workspace.json would stand in for what the sync and build produce.
   const skipped = new Set([".dev", ".git", ".idea", ".vscode", "node_modules", "workspace.json"]);
-  cpSync(source, sample, { recursive: true, filter: (src) => !skipped.has(path.basename(src)) });
+  copyFiles(source, sample, skipped);
 }
 
 function prepareWorkspaceSample(): void {
   const source = process.env.ELIDE_WORKSPACE_SAMPLE ?? path.join(runfilesRoot, "samples", "workspace");
   if (!existsSync(path.join(source, "elide.pkl"))) throw new Error(`no Elide workspace sample at ${source}; set ELIDE_WORKSPACE_SAMPLE`);
   // Build outputs, IDE state and a previously generated workspace.json would stand in for what the sync must produce.
-  // Runfiles are symlinks into the source tree: copy their targets, or the suite's edits would land in the repository.
-  const skipped = new Set([".dev", ".idea", "workspace.json"]);
-  cpSync(source, sample, { recursive: true, dereference: true, filter: (src) => !skipped.has(path.basename(src)) });
+  copyFiles(source, sample, new Set([".dev", ".idea", "workspace.json"]));
+}
+
+/**
+ * Copies `source` into `target` as regular files, leaving out entries named in `skipped`. Runfiles are symlinks into the
+ * source tree, and `cpSync` keeps nested ones as links even with `dereference`: the suite's edits would land in the
+ * repository.
+ */
+function copyFiles(source: string, target: string, skipped: ReadonlySet<string> = new Set()): void {
+  mkdirSync(target, { recursive: true });
+  for (const entry of readdirSync(source)) {
+    if (skipped.has(entry)) continue;
+    const from = path.join(source, entry);
+    if (statSync(from).isDirectory()) copyFiles(from, path.join(target, entry), skipped);
+    else copyFileSync(from, path.join(target, entry));
+  }
 }
 
 function prepareKtjvmSample(): void {
-  // Runfiles are symlinks into the source tree: copy their targets, or the suite's edits would land in the repository.
-  cpSync(path.join(runfilesRoot, "samples", "ktjvm"), sample, { recursive: true, dereference: true });
+  copyFiles(path.join(runfilesRoot, "samples", "ktjvm"), sample);
 
   // The manifest takes its dependency versions from a local module: editing only that module must resync (index.ts 3b).
   const manifest = path.join(sample, "elide.pkl");
@@ -185,7 +225,8 @@ try {
     extensionTestsPath,
     // Webview paint confirmations use requestAnimationFrame, which Chromium suspends in occluded windows.
     launchArgs: [sample, "--extensions-dir", extensionsDir, "--user-data-dir", userDataDir, "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes",
-      ...(scenario === "compose" ? ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"] : [])],
+      ...(scenario === "compose" ? ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"] : []),
+      ...(komodo && !process.env.ELIDE_KOMODO_COEXIST ? ["--disable-extensions"] : [])],
     extensionTestsEnv: { ELIDE_TEST_SAMPLE: sample, ELIDE_TEST_SCENARIO: scenario },
   });
 } finally {

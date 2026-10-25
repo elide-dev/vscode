@@ -1,7 +1,53 @@
-import { describe, expect, test } from "bun:test";
-import { absolutePattern, collectContentRoots, sourceSelection, staticPrefix } from "../src/index.js";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { absolutePattern, collectContentRoots, decodeWorkspaceSources, selectsKotlinSources, sourceSelection, staticPrefix } from "../src/index.js";
 
 const root = "/proj";
+
+describe("decodeWorkspaceSources", () => {
+  const exported = () => ({
+    format: "elide.intellij.workspace", version: 1, root: "/workspace",
+    projects: [{ name: "root", path: "" }, { name: "app", path: "app" }, { name: "components", path: "components" }],
+    modules: [
+      {
+        name: "app.main", project: "app", sourceSet: "main", type: "source",
+        sourceRoots: [{ path: "app/src/main/kotlin" }, { path: "app/src/main/java" }],
+        resourceRoots: [{ path: "app/src/main/resources", relativeOutputPath: "" }],
+        moduleDependencies: [{ module: "components.main" }],
+      },
+      {
+        name: "app.test", project: "app", sourceSet: "test", type: "test",
+        sourceRoots: [{ path: "app/spec/**/*.kt" }], resourceRoots: [],
+        moduleDependencies: [{ module: "app.main" }],
+      },
+      {
+        name: "components.main", project: "components", sourceSet: "main", type: "source",
+        sourceRoots: [{ path: "components/src/main/kotlin" }], resourceRoots: [], moduleDependencies: [],
+      },
+    ],
+  });
+
+  test("keeps resolved language roots, explicit globs, resources and only same-project source edges", () => {
+    const sources = decodeWorkspaceSources(JSON.stringify(exported()));
+    expect(sources.get("/workspace")).toEqual({});
+    expect(sources.get("/workspace/app")).toEqual({
+      main: { type: "source", paths: ["src/main/kotlin", "src/main/java"], resources: { "src/main/resources": "src/main/resources" }, dependsOn: [] },
+      test: { type: "test", paths: ["spec/**/*.kt"], resources: {}, dependsOn: ["main"] },
+    });
+    expect(sources.get("/workspace/components")!.main!.paths).toEqual(["src/main/kotlin"]);
+  });
+
+  test("rejects wrong schemas and incomplete module edges instead of falling back to guessed roots", () => {
+    expect(() => decodeWorkspaceSources("{}")).toThrow();
+    expect(() => decodeWorkspaceSources("not json")).toThrow();
+    expect(() => decodeWorkspaceSources(JSON.stringify({ ...exported(), version: 2 }))).toThrow();
+    const missing = exported();
+    missing.modules[0]!.moduleDependencies = [{ module: "missing.main" }];
+    expect(() => decodeWorkspaceSources(JSON.stringify(missing))).toThrow();
+  });
+});
 
 describe("staticPrefix", () => {
   test("strips the glob tail", () => {
@@ -84,5 +130,28 @@ describe("sourceSelection", () => {
     expect(file.matches("/proj/src/Only.kt")).toBe(true);
     expect(file.matches("/proj/src/Other.kt")).toBe(false);
     expect(() => sourceSelection(root, "src/[unclosed*.kt")).toThrow();
+  });
+});
+
+describe("selectsKotlinSources", () => {
+  const project = mkdtempSync(path.join(tmpdir(), "elide-kotlin-sources-"));
+  afterAll(() => rmSync(project, { recursive: true, force: true }));
+  const file = (relative: string) => {
+    mkdirSync(path.dirname(path.join(project, relative)), { recursive: true });
+    writeFileSync(path.join(project, relative), "");
+  };
+  file("src/main/java/demo/Hello.java");
+  file("src/main/kotlin/demo/Excluded.kt");
+  file("scripts/build.kts");
+
+  test("Java sources alone, or Kotlin ones the selectors leave out, are no Kotlin compilation", async () => {
+    expect(await selectsKotlinSources(project, ["src/main/java/**", "src/main/kotlin/Included*.kt"])).toBe(false);
+    expect(await selectsKotlinSources(project, ["src/main/kotlin/**/*.java", "missing"])).toBe(false);
+  });
+
+  test("a selected Kotlin source or script is, through globs, literal trees and literal files", async () => {
+    expect(await selectsKotlinSources(project, ["src/**.*"])).toBe(true);
+    expect(await selectsKotlinSources(project, ["scripts"])).toBe(true);
+    expect(await selectsKotlinSources(project, ["scripts/build.kts"])).toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import {
   ANDROID_LIBRARIES_TASK,
@@ -17,7 +17,7 @@ import { ElideCli, MANIFEST_NAME, isLockfileCurrent, type ClasspathQuery, type R
 import { resolveJdk, type Jdk, type ResolveJdkOptions } from "./jdk.js";
 import { DEFAULT_LIBRARIES_ROOT, libraryFor, type LibraryModel } from "./libraries.js";
 import { effectiveType, type AndroidArtifactKind, type Manifest, type SourceSet, type SourceSetType } from "./manifest.js";
-import { collectContentRoots, isPathUnder, normalizePath } from "./sourceRoots.js";
+import { collectContentRoots, isPathUnder, normalizePath, selectsKotlinSources } from "./sourceRoots.js";
 import {
   ArtifactIndex,
   artifactProjectRoot,
@@ -240,6 +240,18 @@ export async function buildProjectModels(cli: ElideCli, manifest: Manifest, opts
   );
   const projects: ProjectSpec[] = [{ name: projectName(manifest, root), root, cli, manifest }, ...members];
 
+  // JSON exports declarations, not resolved conventions. The IDE export resolves all members in one invocation.
+  opts.onProgress?.("Resolving source sets");
+  const resolvedSources = await cli.workspaceSources(run);
+  if (resolvedSources) {
+    for (const project of projects) {
+      // The CLI canonicalizes its workspace; keep editor paths lexical but match the same physical project.
+      const sources = resolvedSources.get(project.root) ?? resolvedSources.get(normalizePath(realpathSync(project.root)));
+      if (!sources) throw new Error(`Resolved source export does not contain project ${project.root}`);
+      project.manifest = { ...project.manifest, sources };
+    }
+  }
+
   const manifests = projects.map((p) => path.join(p.root, MANIFEST_NAME));
   if (!opts.skipInstall && (opts.forceInstall || !(await isLockfileCurrent(root, manifests)))) {
     opts.onProgress?.("Installing dependencies");
@@ -364,6 +376,8 @@ interface ProjectAnswers {
   runtimeClasspaths: Map<string, string[]>;
   provided: Map<string, string[]>;
   jdk: Jdk | undefined;
+  /** Whether some source set holds a Kotlin source, which makes Elide compile the project with kotlinc too. */
+  compilesKotlin: boolean;
   warnings: string[];
 }
 
@@ -489,14 +503,19 @@ async function queryProject(project: ProjectSpec, ctx: BuildContext, progress?: 
 
   step?.(`Resolving JDK: ${name}`);
   const jdk = await resolveJdk(manifest, cli.dist, opts.jdk);
-  return { sets, classpaths, runtimeClasspaths, provided, jdk, warnings };
+  let compilesKotlin = false;
+  for (const { set } of sets) {
+    compilesKotlin = await selectsKotlinSources(cli.projectRoot, set.paths);
+    if (compilesKotlin) break;
+  }
+  return { sets, classpaths, runtimeClasspaths, provided, jdk, compilesKotlin, warnings };
 }
 
 /** The model of `project` from what {@link queryProject} found; libraries are named in the registry as they are met. */
 function assembleProject(project: ProjectSpec, answers: ProjectAnswers, ctx: BuildContext): ResolvedProject {
   const { root, cli, manifest, name } = project;
   const { opts } = ctx;
-  const { sets, classpaths, runtimeClasspaths, provided, jdk, warnings } = answers;
+  const { sets, classpaths, runtimeClasspaths, provided, jdk, compilesKotlin, warnings } = answers;
   const fileExists = opts.exists ?? existsSync;
 
   // `res/` and `assets/` are the artifact's, not a source set's: the manifest declares them per Android artifact,
@@ -635,7 +654,8 @@ function assembleProject(project: ProjectSpec, answers: ProjectAnswers, ctx: Bui
   }
 
   const libraries = ctx.libraries.models(used);
-  if (!libraries.some((l) => /kotlin-stdlib/.test(l.classes))) {
+  // Only a project compiling Kotlin needs the Kotlin standard library; a Java one never has it.
+  if (compilesKotlin && !libraries.some((l) => /kotlin-stdlib/.test(l.classes))) {
     warnings.push("Compile classpath contains no kotlin-stdlib jar; Kotlin symbol resolution may be incomplete.");
   }
 

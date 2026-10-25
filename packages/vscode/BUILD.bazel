@@ -37,15 +37,23 @@ ts_project(
         "src/debug.ts",
         "src/explorer.ts",
         "src/extension.ts",
+        "src/failures.ts",
+        "src/gitExclude.ts",
         "src/jetbrains.ts",
+        "src/komodoDebug.ts",
+        "src/komodoDistribution.ts",
+        "src/komodoLsp.ts",
+        "src/kotlinAnalysis.ts",
         "src/kotlinLspPlugin.ts",
         "src/manifestModules.ts",
+        "src/mcpServer.ts",
         "src/nativeDebug.ts",
         "src/newProject.ts",
         "src/output.ts",
         "src/projects.ts",
         "src/tasks.ts",
         "src/testing.ts",
+        "src/workspacePaths.ts",
     ],
     declaration = False,
     no_emit = True,
@@ -58,6 +66,7 @@ ts_project(
         ":node_modules/@types/node",
         ":node_modules/@types/vscode",
         ":node_modules/@types/yauzl",
+        ":node_modules/vscode-languageclient",
         ":node_modules/yauzl",
     ],
 )
@@ -92,6 +101,7 @@ esbuild(
     tsconfig = "tsconfig.json",
     deps = [
         ":node_modules/@elide/ide-core",
+        ":node_modules/vscode-languageclient",
         ":node_modules/yauzl",
     ],
 )
@@ -106,6 +116,7 @@ copy_to_bin(
         "icon.png",
         "package.json",
     ] + glob([
+        "language-configuration/**",
         "media/**",
         "syntaxes/**",
     ]),
@@ -151,6 +162,7 @@ bun_test(
         [
             "media/**",
             "src/**/*.ts",
+            "test/fixtures/**",
         ],
     ) + [
         "package.json",
@@ -178,7 +190,10 @@ esbuild(
     platform = "node",
     target = "node22",
     tsconfig = "tsconfig.json",
-    deps = [":node_modules/@elide/ide-core"],
+    deps = [
+        ":node_modules/@elide/ide-core",
+        ":node_modules/vscode-languageclient",
+    ],
 )
 
 esbuild(
@@ -209,5 +224,8 @@ js_binary(
         "//samples/ktjvm",
         "//samples/workspace",
     ],
+    # The runner resolves the extension's real path in the output tree (runner.ts), which the fs patch would keep inside
+    # the runfiles.
+    patch_node_fs = False,
     tags = ["manual"],
 )

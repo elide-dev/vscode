@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync, execSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { compareElideVersions, parseElideVersion, resolveElideDistribution } from "@elide/ide-core";
@@ -13,6 +13,8 @@ import type { ElideExtensionApi as ElideApi } from "../../src/extension.js";
 import { errorsOf, hoverAt, log, waitFor } from "./helpers.js";
 import { runAndroidScenario } from "./android.js";
 import { runComposeScenario } from "./compose.js";
+import { runKomodoScenario } from "./komodo.js";
+import { runKomodoDebugScenario } from "./komodoDebug.js";
 import { runWorkspaceScenario } from "./workspace.js";
 
 const sample = process.env.ELIDE_TEST_SAMPLE!;
@@ -21,6 +23,8 @@ export async function run(): Promise<void> {
   if (process.env.ELIDE_TEST_SCENARIO === "workspace") return await runWorkspaceScenario();
   if (process.env.ELIDE_TEST_SCENARIO === "compose") return await runComposeScenario();
   if (process.env.ELIDE_TEST_SCENARIO === "android") return await runAndroidScenario();
+  if (process.env.ELIDE_TEST_SCENARIO === "komodo") return await runKomodoScenario();
+  if (process.env.ELIDE_TEST_SCENARIO === "komodo-debug") return await runKomodoDebugScenario();
   const folder = vscode.workspace.workspaceFolders?.[0];
   assert.ok(folder, "sample workspace folder open");
   assert.equal(folder.uri.fsPath, sample);
@@ -45,6 +49,7 @@ export async function run(): Promise<void> {
     return typeof i?.globalValue === "string" && i.globalValue.length > 0 ? i.globalValue : undefined;
   }, 60_000, 500);
   assert.ok(existsSync(jdkSetting), "the JDK written to user settings exists on this machine");
+  assert.equal(jdkSetting, realpathSync(jdkSetting), "the JDK is written with its symlinks resolved (SDKMAN `current` is a link)");
   assert.ok(
     !readFileSync(path.join(sample, ".vscode", "settings.json"), "utf8").includes("jdkForSymbolResolution"),
     "no machine-specific path left in the workspace settings",
@@ -363,8 +368,11 @@ export async function run(): Promise<void> {
   assert.deepEqual(entrypoints.map((n) => [n.label, n.args]), [["sample.MainKt", []]], "the manifest's jvm.main entrypoint");
   const taskNodes = await childrenOf("Tasks");
   assert.deepEqual(taskNodes.map((n) => n.label), ["build", "test", "install", "Build targets"]);
-  const targets = (await explorer.getChildren(taskNodes[3])) as { kind: string; label: string; debuggable?: boolean }[];
-  assert.ok(targets.length > 0 && targets.every((n) => n.kind === "buildTarget"), `elide build --inspect targets, got ${JSON.stringify(targets)}`);
+  const targetRows = (await explorer.getChildren(taskNodes[3])) as { kind: string; label: string; group?: string; debuggable?: boolean }[];
+  // Described targets are rows; the ones Elide gives no description (its internal targets) sit in one group after them.
+  const targets = targetRows.filter((n) => n.kind === "buildTarget");
+  assert.ok(targets.length > 0 && targetRows.every((n) => n.kind === "buildTarget" || n.group === "otherBuildTargets"),
+    `elide build --inspect targets, got ${JSON.stringify(targetRows)}`);
   // Only targets that start a JVM declare `--debugger`, and those are the ones the tree offers a Debug action on.
   assert.deepEqual(
     targets.filter((n) => n.debuggable).map((n) => n.label).sort(),
@@ -600,6 +608,36 @@ export async function run(): Promise<void> {
   assert.equal(readFileSync(workspaceJson, "utf8"), before, "workspace.json untouched after failed sync");
   await vscode.workspace.getConfiguration("elide").update("home", undefined, vscode.ConfigurationTarget.Global);
   log("failed sync left workspace.json intact");
+
+  // 6b. A manifest Elide rejects is reported in Elide's words, located on elide.pkl, and cleared by the next sync.
+  {
+    const manifestFile = path.join(sample, "elide.pkl");
+    const manifestUri = vscode.Uri.file(manifestFile);
+    const goodManifest = readFileSync(manifestFile, "utf8");
+    const errorApi: { showErrorMessage: unknown } = vscode.window;
+    const errors: string[] = [];
+    const realError = errorApi.showErrorMessage;
+    errorApi.showErrorMessage = (message: string) => {
+      errors.push(message);
+      return Promise.resolve(undefined);
+    };
+    try {
+      writeFileSync(manifestFile, `${goodManifest}\nkotlin {\n  features {\n    compose = "yes"\n  }\n}\n`);
+      const badLine = readFileSync(manifestFile, "utf8").split("\n").findIndex((line) => line.includes('compose = "yes"'));
+      await vscode.commands.executeCommand("elide.sync");
+      const located = await waitFor("manifest error diagnostic", () =>
+        vscode.languages.getDiagnostics(manifestUri).find((d) => d.source === "elide" && d.message.includes("Expected value of type `Boolean`")), 60_000, 500);
+      assert.equal(located.range.start.line, badLine, "diagnostic on the offending line");
+      assert.equal(located.range.start.character, 14, "diagnostic under the value");
+      assert.ok(errors.some((m) => m.includes(`elide.pkl:${badLine + 1}:15: Expected value of type \`Boolean\``)), `Elide's message in the notification, got ${JSON.stringify(errors)}`);
+    } finally {
+      errorApi.showErrorMessage = realError;
+      writeFileSync(manifestFile, goodManifest);
+    }
+    await vscode.commands.executeCommand("elide.sync");
+    await waitFor("manifest error cleared", () => vscode.languages.getDiagnostics(manifestUri).every((d) => d.source !== "elide") || undefined, 60_000, 500);
+    log("manifest error located and cleared");
+  }
 
   // 7. An Elide older than the extension's minimum warns the user, and the sync still completes against it.
   const stubHome = path.join(tmpdir(), `elide-old-${process.pid}`);

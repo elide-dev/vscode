@@ -67,6 +67,9 @@ export function pklBlock(text: string, name: string, from = 0, to = text.length)
       word = "";
       ended = false;
       assigned = "";
+    } else if (c === "/" && text[i + 1] === "*") {
+      i = endOfBlockComment(text, i, to);
+      ended = word.length > 0;
     } else if (IDENTIFIER.test(c)) {
       word = ended ? c : word + c;
       ended = false;
@@ -112,6 +115,8 @@ export function pklStrings(text: string, from = 0, to = text.length): string[] {
       const newline = text.indexOf("\n", i);
       if (newline < 0 || newline >= to) return found;
       i = newline;
+    } else if (c === "/" && text[i + 1] === "*") {
+      i = endOfBlockComment(text, i, to);
     }
   }
   return found;
@@ -145,6 +150,8 @@ function matchingBrace(text: string, open: number, to: number): number | undefin
       const newline = text.indexOf("\n", i);
       if (newline < 0) return undefined;
       i = newline;
+    } else if (c === "/" && text[i + 1] === "*") {
+      i = endOfBlockComment(text, i, to);
     } else if (c === "{") depth++;
     else if (c === "}" && --depth === 0) return i;
   }
@@ -159,4 +166,10 @@ function endOfString(text: string, open: number, to: number): number {
     else if (c === '"') return i;
   }
   return to;
+}
+
+/** Offset of the `/` closing the block comment opened at `open`; the end of the region when it is never closed. */
+function endOfBlockComment(text: string, open: number, to: number): number {
+  const close = text.indexOf("*/", open + 2);
+  return close < 0 || close + 1 >= to ? to : close + 1;
 }

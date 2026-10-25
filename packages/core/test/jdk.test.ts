@@ -42,6 +42,15 @@ describe("resolveJdk", () => {
     expect((await resolveJdk(manifest, dist, { ...fs, env: { HOME: "/home/u", JAVA_HOME: "/opt/jdk17" } }))?.home).toBe("/opt/jdk17");
   });
 
+  test("returns the JDK home with symlinks resolved, such as SDKMAN's `current`", async () => {
+    const manifest = decodeManifest("{}");
+    const realpath = (p: string) => (p === `${sdkRoot}/current` ? `${sdkRoot}/25` : p);
+    const current = { ...fs, exists: (p: string) => files.has(p.replace(`${sdkRoot}/current/`, `${sdkRoot}/25/`)), realpath };
+    const env = { HOME: "/home/u", JAVA_HOME: `${sdkRoot}/current` };
+    expect((await resolveJdk(manifest, dist, { ...current, env }))?.home).toBe(`${sdkRoot}/25`);
+    expect((await resolveJdk(manifest, dist, { ...current, listDir: () => ["current"] }))?.home).toBe(`${sdkRoot}/25`);
+  });
+
   test("majorOf handles legacy and vendor-prefixed strings", () => {
     expect(majorOf("1.8.0_292")).toBe(8);
     expect(majorOf("21.0.1")).toBe(21);

@@ -96,7 +96,7 @@ const VERDICT_TAIL = new RegExp(`^(.*?) in \\(?${DURATION}\\)?$`);
 const TASK_TAIL = new RegExp(`^(.*?) \\(${DURATION}\\)$`);
 const SKIP_TAIL = /^(.*?) \(([^()]*)\)$/;
 const SCOPE = /^\[([^\]]+)\]\s+(.*)$/;
-const IN_FILE = /^In file:\s+\S+$/;
+const IN_FILE = /^In file:\s+\S.*$/;
 
 /** Milliseconds of an Elide duration label: `431ms`, `1.6s`, `1m`, `1m 30s`. */
 export function parseElideDuration(text: string): number | undefined {
@@ -221,6 +221,62 @@ export function elideRecordOutput(record: ElideRecord): ElideOutputLine | undefi
       };
     default:
       return undefined;
+  }
+}
+
+/** What went wrong in a failed Elide build, as it said: its first error, and the hint that came with it. */
+export interface ElideFailure {
+  /** First error message, without its `error:` label. */
+  error?: string;
+  /** The hint printed right after that error, else the build's first hint. */
+  hint?: string;
+  /** How many errors the build reported in all. */
+  errors: number;
+}
+
+/**
+ * Collects the errors and hints of one build's output, in either form: records, or the text an older CLI prints. Once
+ * a record arrives, text lines are what records render to and are not read again.
+ */
+export class ElideFailureReport {
+  private structured = false;
+  private errors = 0;
+  private error: string | undefined;
+  private errorHint: string | undefined;
+  private firstHint: string | undefined;
+  /** Whether the last thing reported was the first error, whose hint, if any, comes next. */
+  private afterFirstError = false;
+
+  record(record: ElideRecord): void {
+    this.structured = true;
+    this.accept(elideRecordOutput(record));
+  }
+
+  line(line: string): void {
+    if (!this.structured) this.accept(parseElideOutputLine(line));
+  }
+
+  get failure(): ElideFailure {
+    const hint = this.errorHint ?? this.firstHint;
+    return { errors: this.errors, ...(this.error ? { error: this.error } : {}), ...(hint ? { hint } : {}) };
+  }
+
+  private accept(output: ElideOutputLine | undefined): void {
+    // Progress interleaves with anything; only another report or the end of a task separates an error from its hint.
+    if (!output || (output.kind !== "diagnostic" && output.kind !== "task" && output.kind !== "verdict")) return;
+    const afterFirstError = this.afterFirstError;
+    this.afterFirstError = false;
+    if (output.kind !== "diagnostic") return;
+    if (output.severity === "error") {
+      this.errors++;
+      if (this.error === undefined) {
+        this.error = output.message;
+        this.afterFirstError = true;
+      }
+    } else if (output.severity === "hint") {
+      this.firstHint ??= output.message;
+      if (afterFirstError) this.errorHint = output.message;
+    }
   }
 }
 

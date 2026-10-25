@@ -1,4 +1,63 @@
+import type { Dirent } from "node:fs";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
+import { ManifestParseError } from "./errors.js";
+import type { SourceSet } from "./manifest.js";
+
+/** Read the CLI's resolved source sets once for every project in its workspace, without re-inferring conventions. */
+export function decodeWorkspaceSources(json: string): Map<string, Record<string, SourceSet>> {
+  const object = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const fail = (): never => { throw new ManifestParseError("invalid resolved source sets in project export --format=intellij"); };
+  let raw: unknown;
+  try { raw = JSON.parse(json); } catch { return fail(); }
+  if (!object(raw) || raw.format !== "elide.intellij.workspace" || raw.version !== 1 ||
+      typeof raw.root !== "string" || !path.isAbsolute(raw.root) || !Array.isArray(raw.projects) || !Array.isArray(raw.modules)) return fail();
+  const workspaceRoot = raw.root;
+  const projects = new Map<string, { root: string; sources: Record<string, SourceSet> }>();
+  const result = new Map<string, Record<string, SourceSet>>();
+  for (const project of raw.projects) {
+    if (!object(project) || typeof project.name !== "string" || typeof project.path !== "string" || projects.has(project.name)) return fail();
+    const root = normalizePath(path.resolve(workspaceRoot, project.path));
+    const sources: Record<string, SourceSet> = Object.create(null);
+    projects.set(project.name, { root, sources });
+    result.set(root, sources);
+  }
+  const modules = new Map<string, { project: string; sourceSet: string }>();
+  for (const module of raw.modules) {
+    if (!object(module) || typeof module.name !== "string" || typeof module.project !== "string" || typeof module.sourceSet !== "string") return fail();
+    if (modules.has(module.name)) return fail();
+    modules.set(module.name, { project: module.project, sourceSet: module.sourceSet });
+  }
+  for (const module of raw.modules) {
+    if (!object(module) || typeof module.project !== "string" || typeof module.sourceSet !== "string" ||
+        (module.type !== "source" && module.type !== "test" && module.type !== "example") ||
+        !Array.isArray(module.sourceRoots) || !Array.isArray(module.resourceRoots) || !Array.isArray(module.moduleDependencies)) return fail();
+    const project = projects.get(module.project);
+    if (!project || module.sourceSet in project.sources) return fail();
+    const relative = (value: string): string => normalizePath(path.relative(project.root, path.resolve(workspaceRoot, value))) || ".";
+    const paths = module.sourceRoots.map((root: unknown) => {
+      if (!object(root) || typeof root.path !== "string") return fail();
+      return relative(root.path);
+    });
+    const resources: Record<string, string> = Object.create(null);
+    for (const root of module.resourceRoots) {
+      if (!object(root) || typeof root.path !== "string") return fail();
+      const from = relative(root.path);
+      resources[from] = from;
+    }
+    const dependsOn: string[] = [];
+    for (const dependency of module.moduleDependencies) {
+      if (!object(dependency) || typeof dependency.module !== "string") return fail();
+      const target = modules.get(dependency.module);
+      if (!target) return fail();
+      // Sibling artifact edges are already handled by the project model's classpath wiring.
+      if (target.project === module.project) dependsOn.push(target.sourceSet);
+    }
+    project.sources[module.sourceSet] = { type: module.type, paths, resources, dependsOn };
+  }
+  return result;
+}
 
 const DRIVE_LETTER = /^[A-Za-z]:\//;
 
@@ -134,4 +193,35 @@ export function sourceSelection(project: string, pattern: string): SourceSelecti
   if (group) throw new Error(`Unclosed group in source selector: ${pattern}`);
   const matcher = new RegExp(`${expression}$`);
   return { root, matches: (file) => matcher.test(path.relative(project, file).split(path.sep).join("/")) };
+}
+
+/** Extensions of the sources Elide compiles with kotlinc: Kotlin, script or otherwise. */
+const KOTLIN_SOURCE = /\.kts?$/;
+
+/**
+ * Whether the files `patterns` select under `project` include a Kotlin source — what gives a source set a Kotlin
+ * compilation in Elide, which otherwise compiles it with javac alone. Stops at the first one; symlinked directories
+ * are not followed.
+ */
+export async function selectsKotlinSources(project: string, patterns: readonly string[]): Promise<boolean> {
+  for (const pattern of patterns) {
+    const selection = sourceSelection(project, pattern);
+    const pending = [selection.root];
+    for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
+      let entries: Dirent[];
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch (e) {
+        // A literal selector may name a single file.
+        if (dir === selection.root && (e as NodeJS.ErrnoException).code === "ENOTDIR" && KOTLIN_SOURCE.test(dir)) return true;
+        continue;
+      }
+      for (const entry of entries) {
+        const file = path.join(dir, entry.name);
+        if (entry.isDirectory()) pending.push(file);
+        else if (KOTLIN_SOURCE.test(entry.name) && selection.matches(file)) return true;
+      }
+    }
+  }
+  return false;
 }

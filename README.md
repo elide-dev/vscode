@@ -24,10 +24,12 @@ and a pinned (`&version=`) link.
 
 - Elide **1.5+** installed (`~/.local/share/elide`, `$ELIDE_HOME`, or `elide` on `PATH`). **1.6.1+** adds live task
   progress and batched classpath queries; older releases work without them.
-- The **Kotlin by JetBrains** extension (`JetBrains.kotlin-server`, ≥ 0.0.11), installed automatically as a companion
-  extension. Complete its one-time region / data-sharing setup for Kotlin/Java analysis and JVM debugging. Elide
-  activates independently: sync, build, previews and environment diagnostics do not wait for the language server.
-  Opening an Elide Kotlin or Java source document starts the companion when needed.
+- For the default language server, the **Kotlin by JetBrains** extension (`JetBrains.kotlin-server`, ≥ 0.0.11),
+  installed separately from the Marketplace. Complete its one-time region / data-sharing setup for Kotlin/Java
+  analysis and JVM debugging. Elide activates independently: sync, build, previews and environment diagnostics do not
+  wait for the language server. Opening an Elide Kotlin or Java source document starts the companion when needed.
+  It is not needed with Komodo (`elide.kotlinLsp.server` = `komodo`), which instead needs an Elide distribution that
+  ships `lib/komodo` (macOS arm64 is currently the qualified platform).
 - A JDK for symbol resolution (`$JAVA_HOME`, SDKMAN, `/Library/Java/JavaVirtualMachines`, `/usr/lib/jvm`, …). Elide's
   bundled JDK image cannot serve this role: it ships without a `release` file, which IntelliJ needs to enumerate modules.
 
@@ -35,9 +37,11 @@ and a pinned (`&version=`) link.
 
 Opening a folder that contains `elide.pkl` runs a **sync**:
 
-1. `elide project export` — the resolved project manifest as JSON (source sets, Kotlin compiler options,
-   entrypoints). Elide 1.5 answers the same document to `elide manifest`, which 1.6 retired; the reported version
-   decides which is run.
+1. `elide project export` — the project manifest as JSON (declared source sets, Kotlin compiler options,
+   entrypoints). One additional `elide project export --format=intellij` per workspace supplies Elide's resolved
+   source conventions for every member, including `src/main/kotlin`; the extension does not reconstruct them
+   from raw manifest defaults. Explicit source selectors remain intact. Elide 1.5 uses its legacy `elide manifest`
+   command and source schema instead.
 2. `elide install` — only when the lockfile (`.dev/elide.lock*.bin`) is older than the manifest.
 3. The compile classpath of every compilable source set (plus the runtime and Android `provided` ones an Android
    project needs): one `elide classpath --json <set>:<usage>…` per project on Elide 1.6.1+, one
@@ -158,8 +162,9 @@ settings supply the defaults (`elide.flags`, `elide.build.options`, `elide.run.o
 Every task reports through the `$elide` problem matcher, so compiler errors and warnings land in **Problems** and on
 the offending line. It matches the two-line kotlinc shape Elide prints — `[212ms] error: kotlinc: <message>` followed
 by `In file: <path>[:<line>[:<col>]]` — and resolves the path by searching the workspace folder (skipping `.dev`,
-`.git` and `node_modules`), so relative paths reported from a project root in a subdirectory still resolve. `javac`
-diagnostics interleave `symbol:`/`location:` lines between the two and are shown in the terminal only.
+`.git` and `node_modules`), so relative paths reported from a project root in a subdirectory still resolve. Paths
+containing spaces are supported in regular task terminals. `javac` diagnostics
+interleave `symbol:`/`location:` lines between the two and are shown in the terminal only.
 
 ## Run and debug code lenses
 
@@ -241,8 +246,13 @@ Launch configuration type `elide`:
 
 The extension runs `elide run --debugger [flags] [options] [entrypoint] [-- args]` in a terminal, waits for the JDWP
 agent's `Listening for transport dt_socket at address: <port>` line, then attaches the JetBrains JVM debugger
-(`elide.debug.adapter`: `intellij`) or Debugger for Java (`java`, requires `vscjava.vscode-java-debug`). Stopping the
+(`elide.debug.adapter`: `intellij`), Debugger for Java (`java`, requires `vscjava.vscode-java-debug`) or Komodo's
+Kotlin debugger (`komodo`, the default for a folder on Komodo's language server). Stopping the
 session terminates the Elide process. The JDWP agent always binds port 5005, so one debug session at a time.
+The JetBrains debugger is activated before launch even when no Kotlin file is open. If attachment fails, the
+extension reports the adapter error and terminates its launched Elide process rather than leaving it waiting.
+Closing its terminal also cancels a pending attachment or stops the attached debugger. Launches with the same
+display name keep separate ownership of their processes and debug sessions.
 
 `args` are the debugged application's own arguments; `elideArgs` adds further positional arguments to the Elide
 command itself. `flags`, `options` and `env` layer over `elide.flags` and `elide.<command>.options` exactly as in a
@@ -431,7 +441,9 @@ unlinked. Obfuscated release traces still require the matching R8 mapping; this 
 | `elide.jdk.home` | `""` | JDK for symbol resolution; else `jvm.javaHome`, `$JAVA_HOME`, installed JDKs matching `jvm.target`. |
 | `elide.sync.onStartup` | `true` | Sync when the workspace opens. |
 | `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` changes, or when the lockfile's resolved dependencies do. Every `elide` invocation rewrites `.dev/elide.lock*.bin`, so rewrites with unchanged content are ignored. |
-| `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json`. |
+| `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json` for the JetBrains server; never for a Komodo folder. |
+| `elide.kotlinLsp.server` | `"jetbrains"` | `komodo` (experimental): Komodo's native language server from the Elide distribution's `lib/komodo` instead. |
+| `elide.kotlinLsp.komodo.path`, `.pluginDirectory`, `.javaHome`, `.maxHeap` | `""` | Overrides for Komodo's executable, compiler plugins, JDK inputs and heap. Leave empty to use the Elide distribution's `lib/komodo` and JDK. |
 | `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
 | `elide.flags` | `[]` | `-f NAME[=VALUE]` build flags for every invocation, sync included; changing them marks the model stale. |
 | `elide.build.options` | `{}` | Default options for `elide build`, e.g. `{ "no-cache": true }`. |
@@ -439,9 +451,15 @@ unlinked. Obfuscated release traces still require the matching R8 mapping; this 
 | `elide.test.options` | `{}` | Default options for `elide test`; Test Explorer runs use them too, except `reporter`. |
 | `elide.install.options` | `{}` | Default options for the `elide install` task. |
 | `elide.codeLens.enabled` | `true` | Show the Run/Debug code lenses described above. |
-| `elide.debug.adapter` | `"intellij"` | `intellij` or `java`. |
+| `elide.debug.adapter` | `"intellij"` | `intellij`, `java` or `komodo`; unset, a Komodo folder uses `komodo`. |
+| `elide.debug.nativeMiMode`, `elide.debug.miDebuggerPath` | `"auto"`, `""` | GDB/LLDB selection for `elide-native` Native Image sessions. |
 | `elide.android.sdk` | `""` | SDK root the device list is read from; empty resolves the one a build would use. |
 | `elide.android.emulatorWindow` | `true` | Boot the emulator with a window; off passes `--no-window`. |
+| `elide.android.composePreview.prewarm` | `true` | Start the Compose preview backend when a file with `@Preview` functions is focused. |
+| `elide.android.composePreview.keepAliveMinutes` | `10` | Minutes an unused Compose preview backend stays warm; `0` stops it with its panel. |
+| `elide.android.composePreview.engine` | `layoutlib` | `komodo` (opt-in, experimental) adds a `komodo-preview` daemon: cards it hosts are live, the rest keep their layoutlib snapshot. |
+| `elide.android.composePreview.komodo.path` | `""` | The `komodo-preview` daemon; empty resolves it beside the Elide binary, then on `PATH`. |
+| `elide.android.composePreview.komodo.fallback` | `true` | Cards Komodo cannot render keep their layoutlib snapshot; off shows the reason on the card. |
 
 ## Repository layout
 

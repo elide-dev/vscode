@@ -29,7 +29,7 @@ import { entrypointArgs } from "./tasks.js";
 export const PROJECTS_VIEW_ID = "elide.projects";
 
 /** The fixed sections of a project, plus the lazily loaded build targets and Android devices nested under them. */
-type GroupKind = "entrypoints" | "android" | "androidDevices" | "tasks" | "buildTargets" | "sourceSets" | "dependencies";
+type GroupKind = "entrypoints" | "android" | "androidDevices" | "tasks" | "buildTargets" | "otherBuildTargets" | "sourceSets" | "dependencies";
 
 const GROUP_LABELS: Record<GroupKind, string> = {
   entrypoints: "Entrypoints",
@@ -37,6 +37,7 @@ const GROUP_LABELS: Record<GroupKind, string> = {
   androidDevices: "Devices",
   tasks: "Tasks",
   buildTargets: "Build targets",
+  otherBuildTargets: "Other targets",
   sourceSets: "Source sets",
   dependencies: "Dependencies",
 };
@@ -47,6 +48,7 @@ const GROUP_ICONS: Record<GroupKind, string> = {
   androidDevices: "plug",
   tasks: "tools",
   buildTargets: "list-tree",
+  otherBuildTargets: "ellipsis",
   sourceSets: "folder-library",
   dependencies: "library",
 };
@@ -278,7 +280,9 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
           { kind: "group", label: GROUP_LABELS.buildTargets, root: node.root, group: "buildTargets" },
         ];
       case "buildTargets":
-        return await this.buildTargetNodes(project);
+        return await this.buildTargetNodes(project, true);
+      case "otherBuildTargets":
+        return await this.buildTargetNodes(project, false);
       case "sourceSets":
         return (model?.modules ?? []).map((module) => ({ kind: "module", label: module.sourceSet, root: node.root, module }));
       case "android":
@@ -298,7 +302,11 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
     }
   }
 
-  private async buildTargetNodes(project: ElideProject): Promise<ElideNode[]> {
+  /**
+   * The project's build targets: the ones Elide describes, then a group of the rest. Elide gives its internal
+   * targets — indexing, classpath files, the source rewriter — no description, and among ~30 rows those are noise.
+   */
+  private async buildTargetNodes(project: ElideProject, described: boolean): Promise<ElideNode[]> {
     let tasks: BuildTaskInfo[];
     try {
       tasks = await this.inspectBuild(project);
@@ -309,7 +317,8 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
     // A build target takes the name of the artifact it produces, so the manifest says which ones are binaries.
     const images = new Map((await this.manifestArtifacts(project)).filter(isNativeImageBinary).map((a) => [a.name, a] as const));
     const name = project.model?.name ?? path.basename(project.root);
-    return buildTasksOf(tasks, name).map((target) => {
+    const own = buildTasksOf(tasks, name);
+    const nodes: ElideNode[] = own.filter((target) => (target.description.length > 0) === described).map((target) => {
       // Tasks run in the project's own directory, which focuses the CLI on it: a bare name then resolves to this
       // project's task rather than to a same-named one of the root, and stays the artifact's key in the manifest.
       const label = unqualifiedTaskName(target);
@@ -327,6 +336,10 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         ...(image?.outputName ? { outputName: image.outputName } : {}),
       };
     });
+    if (described && own.some((target) => target.description.length === 0)) {
+      nodes.push({ kind: "group", label: GROUP_LABELS.otherBuildTargets, root: project.root, group: "otherBuildTargets" });
+    }
+    return nodes;
   }
 
   /**

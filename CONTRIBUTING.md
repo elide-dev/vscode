@@ -17,9 +17,11 @@ everything you need to build, test, and submit changes.
 
 - `packages/core` — `@elide/ide-core`, an editor-agnostic library consumed by the extension. Built
   with `tsc`; unit-tested with `bun test`.
-- `packages/vscode` — the VS Code extension itself. Bundled with esbuild, packaged with `vsce`.
+- `packages/vscode` — the VS Code extension itself. Bundled with esbuild, packaged with `vsce`; unit-tested with
+  `bun test`.
 - `samples/ktjvm` — a sample Kotlin/JVM project used to exercise the extension during development and
   by the local-only integration test.
+- `samples/workspace` — an Elide workspace for the integration test's `workspace` scenario.
 - `tools/deploy.sh` — release/deploy helper script.
 - `tools/bazel` — repository-local Bazel rules (the hermetic Bun used by `bun_test`).
 
@@ -32,6 +34,7 @@ The build is [Bazel](https://bazel.build) with [rules_js](https://github.com/asp
 ```sh
 bazel test //...                                  # build and type-check everything, package the .vsix, run unit tests
 bazel test //packages/core:test                   # unit tests for packages/core only
+bazel test //packages/vscode:test                 # unit tests for packages/vscode only
 bazel build //packages/vscode:extension           # the extension, at bazel-bin/packages/vscode
 bazel build //packages/vscode:vsix                # bazel-bin/packages/vscode/elide.vsix
 ```
@@ -86,6 +89,31 @@ scenario instead, against `samples/workspace` or the directory `ELIDE_WORKSPACE_
 ```sh
 ELIDE_TEST_SCENARIO=workspace bazel run //packages/vscode:integration_test
 ```
+
+`ELIDE_TEST_SCENARIO=komodo` drives `samples/ktjvm` through Komodo's language server instead of the JetBrains one,
+with every installed extension disabled (as on a machine without the JetBrains extension), and exercises each
+capability the server advertises through VS Code's provider commands, logging `PASS`/`FAIL`/`SKIP` per check and a
+count. It also exercises repeated reloads with unsaved declarations, CodeLens after declaration edits/reverts, and
+failed-sync activity reporting/recovery. By default the extension runs the `komodo` executable of the Elide distribution under test (`lib/komodo`).
+To test a Komodo build of your own, install it into an Elide distribution from a Komodo checkout with
+`bazel run --config=local //tools/vscode:install` (`-- <elide home>` for another distribution than the default
+one, then point `ELIDE_TEST_HOME` or `elide.home` at it), and run `lib/komodo/bin/komodo --version` once: macOS
+verifies the new executable's signature on its first run, which can take more than ten seconds. Alternatively
+`ELIDE_KOMODO_LSP` names a `komodo` executable elsewhere (keep its bundle directory intact),
+`ELIDE_KOMODO_JAVA_HOME` the JDK 25 whose modules it resolves against, and `ELIDE_KOMODO_PLUGINS` optionally a compiler
+plugin directory.
+`ELIDE_KOMODO_TRACE=1` records the protocol in the `Elide: Komodo` output channel's log, and `ELIDE_KOMODO_COEXIST=1`
+keeps the JetBrains extension enabled and logs which `kotlin` grammar VS Code applies:
+
+```sh
+ELIDE_TEST_SCENARIO=komodo \
+ELIDE_TEST_HOME="${ELIDE_TEST_HOME:?set to an Elide distribution with lib/komodo}" \
+bazel run //packages/vscode:integration_test
+```
+
+`ELIDE_TEST_SCENARIO=komodo-debug` takes the same `ELIDE_KOMODO_*` variables and debugs a copy of `samples/ktjvm`
+through Komodo's debug adapter (`komodo --dap`): `Elide: Run (debug)` stops at a Kotlin line breakpoint, reads
+a local, evaluates, steps and runs the program to its end.
 
 Android app verification has no default fixture. Select an Elide Android application explicitly, including its
 workspace-relative member directory, APK artifact name, and application ID:

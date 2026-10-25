@@ -21,6 +21,7 @@ import {
 import * as vscode from "vscode";
 import { configuredInvocation, readConfig } from "./config.js";
 import { launchWithJdwp, resolveAttachType } from "./debug.js";
+import { isJetBrainsDebugger } from "./jetbrains.js";
 import type { ElideUi } from "./output.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
 
@@ -293,13 +294,35 @@ export class ElideTestController implements vscode.Disposable {
    * `elide test` run whole at a workspace root runs the tests of every member as well: a member is then not run on
    * its own a second time, and all of its tests are reported by the root's run. Run with a `-t` pattern, the root's
    * invocation stays its own, since the pattern only names what was selected there.
+   *
+   * A whole run cannot leave out excluded tests, so a project with any of them in reach runs a pattern of the tests
+   * still included instead, and each of its members then runs on its own.
    */
   private absorbMembers(groups: Map<string, RunGroup>, excluded: ReadonlySet<string>): void {
-    for (const group of [...groups.values()]) {
+    const pending = [...groups.values()];
+    for (let group = pending.shift(); group; group = pending.shift()) {
       if (!group.wholeProject) continue;
-      for (const member of this.workspace.membersOf(group.project.root)) {
-        const memberItem = this.controller.items.get(projectItemId(member.root));
-        if (!memberItem) continue;
+      const memberItems = this.workspace
+        .membersOf(group.project.root)
+        .map((member) => this.controller.items.get(projectItemId(member.root)))
+        .filter((item): item is vscode.TestItem => item !== undefined);
+      if (excluded.size > 0 && [group.projectItem, ...memberItems].some((item) => reachesExcluded(item, excluded))) {
+        group.wholeProject = false;
+        group.targets = [];
+        includedTargets(group.projectItem, excluded, group.targets);
+        if (group.targets.length === 0) groups.delete(group.projectItem.id);
+        for (const memberItem of memberItems) {
+          if (groups.has(memberItem.id) || excluded.has(memberItem.id)) continue;
+          const project = this.workspace.projectAt(memberItem.id.slice(2));
+          if (!project) continue;
+          const member: RunGroup = { project, projectItem: memberItem, coveredItems: [memberItem], wholeProject: true, targets: [], leaves: [] };
+          collectLeaves(memberItem, excluded, member.leaves);
+          groups.set(memberItem.id, member);
+          pending.push(member);
+        }
+        continue;
+      }
+      for (const memberItem of memberItems) {
         groups.delete(memberItem.id);
         group.coveredItems.push(memberItem);
         const leaves = new Set(group.leaves);
@@ -341,6 +364,12 @@ export class ElideTestController implements vscode.Disposable {
 
     const index = classIndex(group.coveredItems);
     const selectedIds = new Set(leaves.map((l) => l.id));
+    // A pattern can only select a whole method, so an excluded invocation of it still runs: its result is not shown.
+    const excluded = new Set((request.exclude ?? []).map((i) => i.id));
+    const isExcluded = (item: vscode.TestItem): boolean => {
+      for (let current: vscode.TestItem | undefined = item; current; current = current.parent) if (excluded.has(current.id)) return true;
+      return false;
+    };
     const byNumber = new Map<number, vscode.TestItem>();
     /** Items a start event announced, per label, consumed in settle order by the matching result. */
     const started = new Map<string, vscode.TestItem[]>();
@@ -353,11 +382,17 @@ export class ElideTestController implements vscode.Disposable {
       const base = this.matchLabel(index, projectItem, project.root, label, selectedIds);
       const seen = (invocations.get(base.id) ?? 0) + 1;
       invocations.set(base.id, seen);
-      if (seen === 1) return base;
+      // A test template's invocations (`MyTest > param(int) > [1] 1`) are each a test under their method.
+      const template = base.id.startsWith("m:") ? parseTapLabel(label).invocation : undefined;
+      if (seen === 1 && template === undefined) return base;
       const id = `${base.id}[${seen}]`;
+      const name = template ?? `${base.label}[${seen}]`;
       const existing = base.children.get(id);
-      if (existing) return existing;
-      const invocation = this.controller.createTestItem(id, `${base.label}[${seen}]`, base.uri);
+      if (existing) {
+        if (existing.label !== name) existing.label = name;
+        return existing;
+      }
+      const invocation = this.controller.createTestItem(id, name, base.uri);
       invocation.range = base.range;
       base.children.add(invocation);
       return invocation;
@@ -371,7 +406,7 @@ export class ElideTestController implements vscode.Disposable {
           const queue = started.get(event.label);
           if (queue) queue.push(item);
           else started.set(event.label, [item]);
-          run.started(item);
+          if (!isExcluded(item)) run.started(item);
           return;
         }
         case "output":
@@ -380,6 +415,7 @@ export class ElideTestController implements vscode.Disposable {
         case "result": {
           sawResult = true;
           const item = started.get(event.label)?.shift() ?? claim(event.label);
+          if (isExcluded(item)) return;
           const skip = event.directive?.type === "skip";
           const todo = event.directive?.type === "todo";
           if (skip || (todo && !event.ok)) this.settle(run, summary, "skipped", item);
@@ -412,7 +448,7 @@ export class ElideTestController implements vscode.Disposable {
     const startedAt = Math.floor(Date.now() / 1000) * 1000;
     let failure: string | undefined;
     if (debug) {
-      const attachType = await resolveAttachType(settings);
+      const attachType = await resolveAttachType(settings, project.folder, this.workspace);
       if (!attachType) {
         run.appendOutput(terminalText("No JVM debugger available; see elide.debug.adapter"));
         return;
@@ -429,6 +465,7 @@ export class ElideTestController implements vscode.Disposable {
           folder: project.folder,
           attachType,
           onLine,
+          ...(isJetBrainsDebugger(attachType) ? { ready: (signal: AbortSignal) => this.workspace.kotlinDebuggerReady(project.root, signal) } : {}),
         },
         this.ui,
         this.sessions,
@@ -634,6 +671,27 @@ function collectLeaves(item: vscode.TestItem, excluded: ReadonlySet<string>, out
     return;
   }
   for (const [, child] of item.children) collectLeaves(child, excluded, out);
+}
+
+/** Whether an item or any of its descendants is excluded from the run. */
+function reachesExcluded(item: vscode.TestItem, excluded: ReadonlySet<string>): boolean {
+  if (excluded.has(item.id)) return true;
+  for (const [, child] of item.children) if (reachesExcluded(child, excluded)) return true;
+  return false;
+}
+
+/**
+ * The fewest `-t` targets that select every test under `item` except the excluded ones. An excluded invocation can
+ * only be left out with its whole method, which the pattern cannot split, so that method is still selected.
+ */
+function includedTargets(item: vscode.TestItem, excluded: ReadonlySet<string>, out: { binaryName: string; method?: string }[]): void {
+  if (excluded.has(item.id)) return;
+  const target = targetOf(item);
+  if (target && (target.method !== undefined || !reachesExcluded(item, excluded))) {
+    out.push(target);
+    return;
+  }
+  for (const [, child] of item.children) includedTargets(child, excluded, out);
 }
 
 /** The `-t` target an item selects, or `undefined` for a project or dynamic label item. */

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ElideFailureReport,
   elideRecordOutput,
   formatElideDuration,
   parseElideDuration,
@@ -113,6 +114,19 @@ describe("progress records", () => {
       .toEqual(["warning: androidx.core 1.18.0 upgraded", "In file: /p/elide.pkl"]);
   });
 
+  test("a spaced source path replaces the relative location without duplicating it", () => {
+    expect(renderElideRecord({
+      type: "message", level: "error", time: 1,
+      text: "Unresolved reference\nIn file: src/main/My Screen.kt:3:16\n\nsource excerpt",
+      file: "/tmp/My Project/src/main/My Screen.kt", line: 3, column: 16,
+    })).toEqual([
+      "error: Unresolved reference",
+      "In file: /tmp/My Project/src/main/My Screen.kt:3:16",
+      "",
+      "source excerpt",
+    ]);
+  });
+
   test("rendered as text, finished tasks and the verdict parse back to what the record maps to", () => {
     const records = [
       `{"type":"task-finished","task":"android:android-dex-app","project":"android","message":"Dexed 'app' into 3 dex files","outcome":"success","durationMs":17700,"time":1}`,
@@ -139,5 +153,51 @@ describe("progress records", () => {
       { type: "build-progress", completedTasks: 1, time: 1 },
     ];
     for (const record of silent) expect(renderElideRecord(record)).toEqual([]);
+  });
+});
+
+describe("failure report", () => {
+  test("the first error and the hint after it, as `elide build app` printed them for a missing keystore", () => {
+    const text = new ElideFailureReport();
+    for (const line of [
+      "[ 16.3s] ✓ [app] Assembled 'app' from 193 entries (620ms)",
+      "[16.4s] ⇥ [app] android-align-app (From cache)",
+      "[16.4s] error: Keystore /private/tmp/extrun/sample/app/.dev/crypto/debug.keystore not found",
+      "[16.4s] hint: Create one with: elide build android-keystore-app",
+      "[16.4s] ✗ [app] android-sign-app (4ms)",
+      "[16.5s] ✗ Build failed in 16.5s",
+    ]) text.line(line);
+    const expected = {
+      errors: 1,
+      error: "Keystore /private/tmp/extrun/sample/app/.dev/crypto/debug.keystore not found",
+      hint: "Create one with: elide build android-keystore-app",
+    };
+    expect(text.failure).toEqual(expected);
+
+    // The same build under `ELIDE_PROGRESS=json`: the rendered text that follows each record is not read twice.
+    const records = new ElideFailureReport();
+    for (const line of [
+      `{"type":"task-started","task":"app:android-sign-app","project":"app","message":"Signing APK","time":1}`,
+      `{"type":"message","level":"error","text":"Keystore /private/tmp/extrun/sample/app/.dev/crypto/debug.keystore not found","task":"app:android-sign-app","project":"app","time":2}`,
+      `{"type":"message","level":"hint","text":"Create one with: elide build android-keystore-app","task":"app:android-sign-app","project":"app","time":2}`,
+      `{"type":"build-finished","outcome":"failure","exitCode":1,"durationMs":249,"message":"Build failed","time":3}`,
+    ]) {
+      const record = parseElideRecord(line)!;
+      records.record(record);
+      for (const rendered of renderElideRecord(record)) records.line(rendered);
+    }
+    expect(records.failure).toEqual(expected);
+  });
+
+  test("a hint that follows a later report is the build's hint only when the first error had none", () => {
+    const report = new ElideFailureReport();
+    for (const line of [
+      "error: kotlinc: Unresolved reference 'x'.",
+      "In file: src/main/Main.kt:3:5",
+      "error: kotlinc: Unresolved reference 'y'.",
+      "hint: unrelated",
+    ]) report.line(line);
+    expect(report.failure).toEqual({ errors: 2, error: "kotlinc: Unresolved reference 'x'.", hint: "unrelated" });
+    expect(new ElideFailureReport().failure).toEqual({ errors: 0 });
   });
 });

@@ -3,12 +3,14 @@ import path from "node:path";
 import {
   ElideCli,
   ElideCommandFailedError,
+  ElideFailureReport,
   elideInvocationArgs,
   elideInvocationOptionsFrom,
   mergeElideInvocationOptions,
   resolveElideDistribution,
   type ElideCommand,
   type ElideDistribution,
+  type ElideFailure,
   type ElideInvocationOptions,
   type Entrypoint,
   type RunOptions,
@@ -268,14 +270,88 @@ export class ElideTaskProvider implements vscode.TaskProvider<vscode.Task> {
     return candidates[0] ?? { root: folder.uri.fsPath, manifestPath: path.join(folder.uri.fsPath, "elide.pkl"), folder };
   }
 
-  private createTask(project: ElideProject, def: ElideTaskDefinition, label?: string, name?: string): vscode.Task {
+  /**
+   * The task a definition stands for. With `onFailure` the extension runs the process itself, in a pseudoterminal,
+   * and reports a failure with what Elide printed; a process task's output reaches only its terminal.
+   */
+  createTask(project: ElideProject, def: ElideTaskDefinition, label?: string, name?: string, onFailure?: (failed: ElideTaskFailure) => void): vscode.Task {
     const rel = path.relative(project.folder.uri.fsPath, project.root);
     const suffix = rel ? ` (${rel})` : "";
     const taskName = name ?? `${label ?? [def.command, ...(def.args ?? [])].join(" ")}${suffix}`;
-    const { dist, cwd, argv, env } = taskProcess(project, def);
-    const execution = new vscode.ProcessExecution(dist.bin, argv, { cwd, ...(env ? { env } : {}) });
+    const elide = taskProcess(project, def);
+    const execution = onFailure ? reportedExecution(taskName, elide, onFailure)
+      : new vscode.ProcessExecution(elide.dist.bin, elide.argv, { cwd: elide.cwd, ...(elide.env ? { env: elide.env } : {}) });
     const task = new vscode.Task(def, project.folder, taskName, ELIDE_TASK_TYPE, execution, ["$elide"]);
     task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, clear: true };
     return task;
   }
+}
+
+/** A task {@link executeReportedElideTask} ran that failed: what Elide said, and the terminal it said it in. */
+export interface ElideTaskFailure {
+  /** The task's name, which its terminal is titled with. */
+  name: string;
+  /** Elide's exit code; `undefined` when it could not be started. */
+  exitCode: number | undefined;
+  failure: ElideFailure;
+  /** Bring the task's terminal forward. */
+  reveal(): void;
+}
+
+/**
+ * Run one `elide` task like {@link executeElideTask}, reporting a failure to `onFailure` with Elide's error and hint.
+ * Its terminal shows Elide's plain-text progress (`ELIDE_PROGRESS=plain`) — the form it prints without a terminal of
+ * its own — which the `$elide` problem matcher reads as before. VS Code ends it with `onDidEndTaskProcess` and the
+ * exit code, as it does a process task.
+ */
+export async function executeReportedElideTask(
+  workspace: ElideWorkspace,
+  project: ElideProject,
+  command: ElideCommand,
+  invocation: ElideInvocationOptions,
+  onFailure: (failed: ElideTaskFailure) => void,
+): Promise<vscode.TaskExecution> {
+  const { definition, label } = taskDefinition(project, command, invocation);
+  return await vscode.tasks.executeTask(new ElideTaskProvider(workspace).createTask(project, definition, undefined, label, onFailure));
+}
+
+function reportedExecution(name: string, { dist, cwd, argv, env }: TaskProcess, onFailure: (failed: ElideTaskFailure) => void): vscode.CustomExecution {
+  return new vscode.CustomExecution(async () => {
+    const write = new vscode.EventEmitter<string>();
+    const close = new vscode.EventEmitter<number>();
+    const abort = new AbortController();
+    const report = new ElideFailureReport();
+    const run = async () => {
+      write.fire(`\x1b[2m$ elide ${argv.join(" ")}\x1b[0m\r\n`);
+      let exitCode: number | undefined = 0;
+      try {
+        await new ElideCli(dist, cwd).run(argv, {
+          signal: abort.signal,
+          env: { ELIDE_PROGRESS: "plain", ...env },
+          onLine: (line) => {
+            report.line(line);
+            write.fire(`${line}\r\n`);
+          },
+        });
+      } catch (error) {
+        if (abort.signal.aborted) return;
+        exitCode = error instanceof ElideCommandFailedError ? error.exitCode ?? 1 : undefined;
+        if (exitCode === undefined) {
+          const message = error instanceof Error ? error.message : String(error);
+          report.line(`error: ${message}`);
+          write.fire(`\x1b[31mFailed to start elide: ${message}\x1b[0m\r\n`);
+        }
+      }
+      close.fire(exitCode ?? 1);
+      if (exitCode !== 0) onFailure({ name, exitCode, failure: report.failure, reveal: () => revealTerminal(name) });
+    };
+    return { onDidWrite: write.event, onDidClose: close.event, open: () => void run(), close: () => abort.abort() };
+  });
+}
+
+/** The terminal a task ran in, which VS Code titles with the task's name; else the terminal panel. */
+export function revealTerminal(name: string): void {
+  const terminal = vscode.window.terminals.find((candidate) => candidate.name.includes(name));
+  if (terminal) terminal.show();
+  else void vscode.commands.executeCommand("workbench.action.terminal.focus");
 }

@@ -4,24 +4,28 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/elide-dev/vscode/blob/main/LICENSE)
 
 VS Code integration for the [Elide](https://elide.dev) build tool. Any folder containing an `elide.pkl` manifest
-becomes a real project: resolved dependencies and source roots are handed to the
-[Kotlin language server by JetBrains](https://marketplace.visualstudio.com/items?itemName=JetBrains.kotlin-server), and
-Elide's build, run, test, and debug commands are available from the editor.
+becomes a real project: resolved dependencies and source roots are handed to a Kotlin language server — the
+[JetBrains Kotlin LSP](https://marketplace.visualstudio.com/items?itemName=JetBrains.kotlin-server) by default, or
+the experimental Komodo language server shipped with Elide (`elide.kotlinLsp.server`) — and Elide's build, run,
+test, and debug commands are available from the editor.
 
 ## Features
 
 - **Project sync.** Opening a folder with `elide.pkl` resolves the manifest, installs dependencies when the lockfile is
-  stale, and reads the compile classpath of every source set. Manifests nested inside another project (vendored
-  checkouts, samples) are separate builds and are not imported, unless that project declares them as workspace
-  members.
+  stale, and reads the compile classpath of every source set. Modern Elide's resolved source export supplies
+  conventional roots such as `src/main/kotlin` for all members in one call, while retaining explicit selectors.
+  Manifests nested inside another project (vendored checkouts, samples) are separate builds and are not imported,
+  unless that project declares them as workspace members.
 - **Multi-project workspaces.** A manifest declaring `workspace.members` is synced as one build: a single install at
   the root, then every member's own source sets, classpath and JDK. A member consuming a sibling's artifact with
   `project("name")` depends on the sibling's modules, along with any siblings that artifact brings in the way Elide
   resolves the classpath, so code intelligence works across the workspace without first publishing those artifacts. Each member
   is also a project of its own in the sidebar (nested under the root), the Test Explorer, tasks, code lenses and
   debug configurations. Editing any member's manifest reloads the workspace. `Elide: Add Workspace Member…` generates
-  a new member from a template and declares it in the root's manifest; opening a member's directory on its own
-  offers to open the workspace root instead, since only the root resolves the siblings it depends on.
+  a new member from a template and declares it in the root's manifest as it stands when the wizard finishes — edits
+  made meanwhile, unsaved ones in an open editor included, are kept and saved with it, and the declaration can be
+  undone in that editor; opening a member's directory on its own offers to open the workspace root instead, since
+  only the root resolves the siblings it depends on.
 - **Kotlin/Java code intelligence.** The project model is written as a `workspace.json` the Kotlin LSP imports —
   modules per source set, libraries with attached sources and javadoc, the selected JDK, and the manifest's Kotlin
   compiler options.
@@ -59,13 +63,15 @@ Elide's build, run, test, and debug commands are available from the editor.
 | | |
 | --- | --- |
 | [Elide](https://elide.dev) **1.5+** | Found via `elide.home`, `$ELIDE_HOME`, the platform install locations, or `PATH`. **1.6.1+** reports live task progress and resolves a project's classpaths in one call; older releases sync with one call per classpath and show tasks once they finish. |
-| **Kotlin by JetBrains** (`JetBrains.kotlin-server`, ≥ 0.0.11) | Installed automatically as a companion extension. Complete its one-time region / data-sharing prompt for Kotlin/Java analysis and JVM debugging. |
+| **Kotlin by JetBrains** (`JetBrains.kotlin-server`, ≥ 0.0.11), for the default language server | Install it from the Marketplace. Complete its one-time region / data-sharing prompt for Kotlin/Java analysis and JVM debugging. Not needed with Komodo's language server (`elide.kotlinLsp.server` = `komodo`), which instead needs an Elide distribution that ships `lib/komodo`. |
 | A JDK | `$JAVA_HOME`, SDKMAN, `/Library/Java/JavaVirtualMachines`, `/usr/lib/jvm`, or `elide.jdk.home`. Elide's bundled JDK image cannot be used for symbol resolution: it ships without a `release` file. |
 | An Android SDK, for Android projects | `android.sdk` in the manifest, `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or where the SDK installs itself on this platform. `Elide: Install Android SDK Components` installs what a build is missing. |
 
 Elide activates independently of the Kotlin language server: sync, build, previews and environment diagnostics
 remain available while it starts or if it is unavailable. Opening an Elide Kotlin or Java source document starts
-the companion when needed, including Java-first projects.
+the JetBrains companion when its folder uses it, including Java-first projects. The extension contributes the
+`kotlin` language itself (`.kt`, `.kts`: comments, brackets, indentation, a TextMate grammar), so Kotlin files are
+highlighted without the JetBrains extension.
 
 The extension needs a trusted workspace and a local filesystem — syncing runs the workspace's Elide CLI.
 
@@ -73,7 +79,9 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 
 1. Open a folder containing `elide.pkl`. While it syncs, the status bar names the step in progress and the time
    so far; a sync that takes more than a couple of seconds also shows a cancellable notification. Click the status
-   bar item for the Elide actions, or open the **Activity** view to see where a sync's time went.
+   bar item for the Elide actions, or open the **Activity** view to see where a sync's time went. When Elide rejects
+   the manifest, the notification carries its message and location, and the error is marked in `elide.pkl` (or the
+   local Pkl module it is in) until the next successful sync.
 2. Open a Kotlin or Java file. Once the Kotlin LSP has imported the generated `workspace.json`, completion and
    navigation resolve against the project's dependencies.
 3. Open the **Elide** view in the activity bar to run entrypoints, tasks and build targets, or press F5 with an
@@ -81,7 +89,10 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 
    The **Get started with Elide** walkthrough (Help → Get Started) covers the same ground step by step.
 
-`workspace.json` is a generated artifact — add it to `.gitignore`.
+Sync writes one file into the project: the generated `workspace.json` at the folder root, which is the only place
+the Kotlin LSP imports it from without a project setting. In a Git clone where it would show up as untracked, the
+extension offers once to add it to that clone's `.git/info/exclude` (never committed; nothing is written unless you
+accept); add it to `.gitignore` instead to cover every clone.
 
 ## Commands
 
@@ -92,7 +103,7 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `Elide: Run Elide Command…` | Pick `build`, `test`, `install`, or `run <entrypoint>` and run it as a task. |
 | `Elide: New Project…` | Create a project from an Elide template in a directory you pick. |
 | `Elide: Add Workspace Member…` | Create a project inside an existing one and declare it in `workspace.members`. |
-| `Elide: Open generated Kotlin LSP workspace` | Open the generated `workspace.json`. |
+| `Elide: Open Generated Kotlin LSP Workspace` | Open the generated `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel. |
 | `Elide: Show Activity` | Reveal the **Activity** view: syncs and preview builds, step by step, with durations. |
 | `Elide: Open Activity Log` | Open the latest operation's output, with timestamps, in an editor. |
@@ -114,16 +125,22 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | --- | --- | --- |
 | `elide.home` | `""` | Distribution root containing `bin/elide`. |
 | `elide.jdk.home` | `""` | JDK for symbol resolution; else `jvm.javaHome`, `$JAVA_HOME`, installed JDKs matching `jvm.target`. |
-| `elide.sync.onStartup` | `true` | Sync when the workspace opens. |
+| `elide.sync.onStartup` | `true` | Sync when the workspace opens, or when the folder is added to it. |
 | `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl`, a local Pkl module it imports, amends or extends, or the lockfile changes. |
 | `elide.sync.showProgressNotification` | `true` | Show a notification with the step in progress and a Cancel button while a sync runs for more than two seconds. |
-| `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json`. |
-| `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
+| `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json` for the JetBrains server; never for a Komodo folder. |
+| `elide.kotlinLsp.server` | `"jetbrains"` | `komodo` (experimental) replaces the JetBrains server for the folder with Komodo's native language server. See below. |
+| `elide.kotlinLsp.komodo.path` | `""` | Leave empty: the Elide distribution's `lib/komodo/bin/komodo` (else `bin/komodo`), then `PATH`. |
+| `elide.kotlinLsp.komodo.pluginDirectory` | `""` | Compose and kotlinx.serialization compiler plugin jars built for Komodo's compiler; empty: the ones Komodo ships under `plugins/`. |
+| `elide.kotlinLsp.komodo.javaHome` | `""` | JDK 25 whose classes and modules Komodo resolves against (not a JVM it runs). Leave empty: the Elide distribution's JDK for its own `komodo`, else the environment's `JAVA_HOME`. |
+| `elide.kotlinLsp.komodo.maxHeap` | `""` | Native heap cap (`768m`, `1g`); empty leaves Komodo's default. |
+| `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`), by sync and the `install` task (`--slim --with …`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
 | `elide.flags` | `[]` | `-f NAME[=VALUE]` build flags for every Elide invocation, project sync included. |
 | `elide.build.options`, `elide.run.options`, `elide.test.options`, `elide.install.options` | `{}` | Default CLI options per command. |
-| `elide.debug.adapter` | `"intellij"` | Attach with the JetBrains JVM debugger (`intellij`) or Debugger for Java (`java`). |
+| `elide.debug.adapter` | `"intellij"` | Attach with the JetBrains JVM debugger (`intellij`), Debugger for Java (`java`) or Komodo's Kotlin debugger (`komodo`). Unset, a Komodo folder uses `komodo`. |
 | `elide.debug.nativeMiMode` | `"auto"` | Debugger an `elide-native` session drives: `gdb`, `lldb`, or `auto` (a GDB on `PATH`, else LLDB on macOS). |
 | `elide.debug.miDebuggerPath` | `""` | `gdb` / `lldb-mi` binary for `elide-native` sessions; empty resolves `gdb` on `PATH`. |
+| `elide.codeLens.enabled` | `true` | Run/Debug code lenses above JVM `main` functions and on entrypoints, scripts and artifacts in `elide.pkl`. |
 | `elide.android.sdk` | `""` | SDK root the device list is read from; empty resolves the one the build would use. |
 | `elide.android.emulatorWindow` | `true` | Boot the emulator with a window; off passes `--no-window`. |
 | `elide.android.composePreview.prewarm` | `true` | Start the Compose preview backend when a file with `@Preview` functions is focused. |
@@ -132,9 +149,88 @@ The extension needs a trusted workspace and a local filesystem — syncing runs 
 | `elide.android.composePreview.komodo.path` | `""` | The `komodo-preview` daemon; empty resolves it beside the Elide binary, then on `PATH`. |
 | `elide.android.composePreview.komodo.fallback` | `true` | Cards Komodo cannot render keep their layoutlib snapshot; off shows the reason on the card. |
 
-The extension also maintains two Kotlin LSP settings: `intellij.buildTool` (pinned to `json` in workspace settings) and
-`intellij.jdkForSymbolResolution` (an absolute path, written to user settings only). Explicit values you set by hand
-are never overwritten.
+In a multi-root workspace each folder can set its own value of every setting except
+`elide.sync.showProgressNotification`, `elide.android.emulatorWindow` and the `elide.android.composePreview.*`
+settings, which apply to the whole window, and `elide.kotlinLsp.komodo.*`, read for the window: it runs one Komodo
+server.
+
+The extension also maintains two Kotlin LSP settings, and explicit values you set by hand are never overwritten:
+
+- `intellij.buildTool` is pinned to `json` in workspace settings, which creates `.vscode/settings.json`, only when the
+  folder also holds another build's files (`pom.xml`, `build.gradle[.kts]`, `settings.gradle[.kts]`, `.idea`,
+  `MODULE.bazel`, `WORKSPACE[.bazel]`) that the server's auto-detection would import instead of `workspace.json`.
+- `intellij.jdkForSymbolResolution` is the project JDK's real path (symlinks such as SDKMAN's `current` resolved),
+  written to user settings only, since a committed absolute path breaks other checkouts. The server reads one JDK
+  for the window: in a multi-root window it is that of the first folder whose projects it imports.
+
+### Komodo language server (experimental)
+
+Komodo is a native Kotlin language server and debugger shipped with Elide. It is
+opt-in; the JetBrains Kotlin LSP stays the default. To use it, set:
+
+```jsonc
+"elide.kotlinLsp.server": "komodo" // per folder: Kotlin language server and debugger
+```
+
+Komodo needs an Elide distribution that ships it under `lib/komodo`; macOS arm64 is currently the qualified
+platform. Leave `elide.kotlinLsp.komodo.path` and `elide.kotlinLsp.komodo.javaHome` empty: the extension runs
+`<elide home>/lib/komodo/bin/komodo` from the distribution it resolves (`elide.home`, `$ELIDE_HOME`, the platform
+install locations, `PATH`) and gives it that distribution's JDK to resolve platform classes against.
+
+With `elide.kotlinLsp.server` set to `komodo`, `komodo` is the folder's Kotlin language server. Each sync writes a
+Komodo project manifest into the extension's storage (nothing in the project: no `workspace.json`) and starts the
+server, or makes it reload the manifest without a restart. One server serves the whole window: every Komodo
+folder's projects go into one manifest. The server keeps one analysis session over the folders' source sets and
+workspace members, unsaved text included. A rejected server start or reload marks the sync and its language-server
+step as failed in Activity; it does not discard the resolved build models or report `reloaded`. The server answers:
+
+- diagnostics of the compiler and its extended checkers (pulled per file: the edited file first), quick fixes
+  (missing imports, overrides, types, Compose annotations…), organize imports and generated members;
+- completion with auto-import and snippets, signature help, hover with KDoc, inlay hints;
+- Go to Definition / Type Definition / Implementation (into Java sources such as Room's kapt output too), Find
+  References, highlights, rename across modules (and `package` updates when a file moves), call and type hierarchies,
+  "N references" / "N implementations" code lenses, document and workspace symbols, folding and selection ranges;
+- formatting with ktfmt (document, range, on type);
+- semantic tokens, with `composable` (a `@Composable` function or call), `extension` and `mutable` modifiers. The
+  extension colours composable calls green by default (`editor.semanticTokenColorCustomizations`, rule
+  `function.composable:kotlin`; your own value of that setting replaces it), and maps the modifiers to TextMate
+  scopes (`entity.name.function.composable.kotlin`, …) for themes that style them.
+
+Navigation keeps working while a file has errors. A library declaration opens read-only from its `-sources.jar`
+(`elide.install.classifiers` installs them for declared Maven packages), or as signatures rendered from the class
+files when there are none; these documents have `komodo-library:` URIs and are served by the server
+(`komodo/libraryContent`), never synchronized with it. Library items of a type or call hierarchy carry `jar:` URIs that
+VS Code cannot open.
+
+**Runtime.** `komodo` is a native executable: it does not start a JVM, and it ships its libraries and compiler plugins
+beside it in `lib/komodo`; keep that directory together. It compiles with its own pinned Kotlin
+compiler and applies its bundled Compose and kotlinx.serialization plugins to modules whose classpath has their
+runtime (`elide.kotlinLsp.komodo.pluginDirectory` overrides them); `elide.kotlinLsp.komodo.maxHeap` caps its heap.
+When no `komodo` is found, the sync says so and names the settings above.
+
+**Coexistence with the JetBrains extension.** The JetBrains extension is not required and no longer installed with
+this one. A Komodo folder gets no `workspace.json` and never starts the JetBrains server, but the JetBrains extension
+activates itself on any Kotlin file when it is enabled, and then both servers analyze the folder (errors and
+completions twice); the extension says so once and offers to show the JetBrains extension, so you can disable it for
+the workspace. Both extensions contribute the `kotlin` language and a `source.kotlin` grammar: VS Code merges the
+language contributions, and with both installed (JetBrains.kotlin-server 0.0.13, VS Code 1.142) it applies this
+extension's grammar; semantic tokens from either server are drawn on top of it.
+
+**Debugging.** The JetBrains debugger runs inside the JetBrains server, so a Komodo folder attaches with Komodo's own
+Kotlin debugger (debug type `komodo-kotlin`) unless `elide.debug.adapter` says otherwise. It is served by the same
+executable as the language server (`komodo --dap`, with the folder's Komodo project manifest and JDK inputs) and
+maps the JVM's source paths (`pkg/File.kt`) to the manifest's source roots, so line breakpoints bind in Kotlin and Java
+files, with conditions, hit counts and log points; it breaks on caught and uncaught exceptions, shows stack and
+variables (which it can set), evaluates expressions and steps. Debugging needs the folder's sync to have written the
+manifest: a launch before that says so instead of starting Elide. The JetBrains extension is not needed for any of it.
+On Android, binding asks only the project's own classes for source mappings, so the first breakpoint stops about a
+second after attach.
+`elide.debug.adapter` = `java` attaches with Debugger for Java instead, which cannot bind line breakpoints in Kotlin
+files (it maps a breakpoint to a class by parsing the file as Java). A `komodo-kotlin` configuration of your own can
+also attach to any JDWP port (`hostName`, `port`, `timeout`, `sourceRoots`) or launch a main class (`mainClass`,
+`classPaths`, `vmArgs`, `args`, `cwd`, `env`, `javaHome`) in a Komodo folder.
+
+A folder opened through a symlinked path is not matched to the manifest's paths.
 
 ## Tasks and debugging
 
@@ -142,7 +238,8 @@ Task type `elide` takes `command` (`build` | `run` | `test` | `install`), `proje
 workspace folder) and the invocation itself: `args` (positional arguments), `flags` (`-f NAME[=VALUE]` build flags),
 `options` (CLI options as a name/value object), `programArgs` (arguments after `--`) and `env`. Workspace defaults
 come from `elide.flags` and `elide.build.options` / `elide.run.options` / `elide.test.options` /
-`elide.install.options`; a definition overrides them per key.
+`elide.install.options`; a definition overrides them per key. The `install` task also takes `elide.install.classifiers`
+as its `slim` and `with` options, so it fetches what sync does.
 
 ```jsonc
 { "type": "elide", "command": "test", "args": ["src/api"], "options": { "bail": 3 } }
@@ -160,6 +257,18 @@ ending the session stops the Elide process. The JDWP agent binds port 5005 by de
 time. `"command": "test"` debugs `elide test` instead, and `"command": "build"` debugs the build targets listed in
 `targets` (`run`, `jvm-test`, … — `elide build --inspect` lists them); the Elide sidebar offers a Debug action on
 every build target that supports it.
+
+The session VS Code shows is that attach, so a configuration's `postDebugTask` runs when it ends. `preLaunchTask`
+is not run for `elide` and `elide-android` configurations that start Elide: VS Code runs it only for a configuration
+that it launches itself, and these hand over to the attach session once Elide listens. Run such a task before the
+launch. An `elide-android` configuration with `port` builds nothing, and runs both tasks around its attach.
+
+A JetBrains debug session analyzes the program with the workspace the Kotlin language server holds when the session
+starts, for as long as it runs: one started before the server has imported `workspace.json` skips breakpoints, and
+one started while it is still indexing cannot evaluate expressions. Every Elide debug session — launch
+configurations, build-target and code-lens Debug, Test Explorer Debug and Android debugging — therefore attaches
+only once the server has imported the project and finished indexing; the Elide process waits meanwhile, and a
+notification with **Cancel** shows when that takes longer than a moment. Cancelling ends the launch.
 
 ### Native Image
 
@@ -354,12 +463,17 @@ sync again; Elide's output channel identifies the missing plugin.
 The Kotlin LSP's `FunctionName` inspection ("Function name should start with a lowercase letter") is suppressed on
 `@Composable` functions, as in Android Studio. For Compose projects, sync builds a small language-server plugin
 against the installed JetBrains Kotlin LSP (cached in Elide's global storage), lists it as `-Dplugin.path` in the
-user setting `intellij.additionalJvmArgs` (other entries are kept) and relaunches the server once so it applies.
-Other functions with capitalized names are still reported.
+server's inherited `IJ_JAVA_OPTIONS` for this window only — the path is local to this machine and VS Code profile,
+so it is never written to settings, and entries earlier releases wrote to the user setting `intellij.additionalJvmArgs`
+are removed — and relaunches the server once so it applies. A `-Dplugin.path` of your own in
+`intellij.additionalJvmArgs` comes later and replaces it; the Elide output channel then names the entry to add.
+If opening a source file has already started companion activation, sync waits for that activation before requesting
+the relaunch, so the first server cannot keep outdated plugin arguments. With no open source file, activation
+remains lazy. Other functions with capitalized names are still reported.
 
 #### Dagger and Hilt
 
-Use the experimental Elide `feat/android` branch. Put `dagger-compiler` or `hilt-compiler` in
+Requires an Elide build with Android support. Put `dagger-compiler` or `hilt-compiler` in
 `dependencies.maven.processors`, keeping its version aligned with the runtime dependency. Kotlin processing
 requires a managed Kotlin toolchain or an external distribution containing kapt; it is not KSP execution.
 Set `android.hilt = true` for Hilt's Android superclass/lifecycle transformation; plain Dagger needs no Hilt flag.

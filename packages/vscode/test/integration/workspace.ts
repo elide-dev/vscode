@@ -35,16 +35,13 @@ export async function runWorkspaceScenario(): Promise<void> {
     const json = readWorkspace();
     return json?.modules.some((m) => m.name === "cli.main") ? json : undefined;
   }, 300_000);
-  // One module per declared source set; the root declares none, so it gets the default `main` and `test`.
+  // One module per source set Elide resolves: the root declares no sources and holds none, so its export resolves no
+  // source set for it and it contributes no module.
   assert.deepEqual(
     ws.modules.map((m) => m.name),
-    [
-      "logstat.main",
-      "logstat.test",
-      ...MEMBERS.flatMap((p) =>
-        [...readFileSync(path.join(member(p), "elide.pkl"), "utf8").matchAll(/\["(\w+)"\] = new Sources\.SourceSetSpec/g)].map((m) => `${p}.${m[1]}`),
-      ),
-    ],
+    MEMBERS.flatMap((p) =>
+      [...readFileSync(path.join(member(p), "elide.pkl"), "utf8").matchAll(/\["(\w+)"\] = new Sources\.SourceSetSpec/g)].map((m) => `${p}.${m[1]}`),
+    ),
   );
   const exported = (name: string, scope: string) => ({ type: "module", name, scope, isExported: true, isTestJar: false });
   assert.deepEqual(moduleDeps(ws, "parser.main"), [exported("model.main", "compile")], "parser.main depends on model");
@@ -80,6 +77,10 @@ export async function runWorkspaceScenario(): Promise<void> {
     return /summary/.test(text) ? text : undefined;
   }, 120_000, 3_000);
   log("hover(Reports.summary):", summaryHover.slice(0, 200).replace(/\n/g, " "));
+  // Nothing but workspace.json lands in the project: with no other build's files beside it, the server's
+  // auto-detection already imports workspace.json, so no importer pin (and no `.vscode/settings.json`) is written.
+  assert.equal(existsSync(path.join(sample, ".vscode", "settings.json")), false, "no .vscode/settings.json written");
+  assert.equal(vscode.workspace.getConfiguration("intellij").inspect<string>("buildTool")?.workspaceValue, undefined, "intellij.buildTool not pinned");
   await new Promise((r) => setTimeout(r, 5_000));
   for (const uri of [commandKt, testKt]) {
     assert.deepEqual(errorsOf(uri).map((d) => d.message), [], `no errors in ${path.basename(uri.fsPath)}`);
@@ -110,10 +111,10 @@ export async function runWorkspaceScenario(): Promise<void> {
     "members nested in declaration order",
   );
   // A section with nothing under it is left out: the root runs no entrypoint of its own, while `cli` declares a main
-  // class, and the root's Maven block only pins its members' versions — with no sources, its classpath is empty.
-  // Build targets are read once for the whole workspace and listed per project.
+  // class; it has no source set, and the root's Maven block only pins its members' versions — with no sources, its
+  // classpath is empty. Build targets are read once for the whole workspace and listed per project.
   const rootGroups = ((await explorer.getChildren(roots[0])) as Node[]).filter((n) => n.kind === "group");
-  assert.deepEqual(rootGroups.map((g) => g.group), ["tasks", "sourceSets"], "the root offers no entrypoints or dependencies section");
+  assert.deepEqual(rootGroups.map((g) => g.group), ["tasks"], "the root offers no entrypoints, source sets or dependencies section");
   const cliGroups = (await explorer.getChildren(members[3])) as Node[];
   assert.deepEqual(
     cliGroups.filter((n) => n.kind === "group").map((g) => g.group),
@@ -121,7 +122,8 @@ export async function runWorkspaceScenario(): Promise<void> {
     "a member shows every section it has",
   );
   const tasks = (await explorer.getChildren(cliGroups.find((g) => g.group === "tasks"))) as Node[];
-  const targets = (await explorer.getChildren(tasks.find((t) => t.group === "buildTargets"))) as Node[];
+  // Described targets are rows; the undescribed ones Elide uses internally sit in one group after them.
+  const targets = ((await explorer.getChildren(tasks.find((t) => t.group === "buildTargets"))) as Node[]).filter((t) => t.kind === "buildTarget");
   const labels = targets.map((t) => t.label);
   assert.ok(labels.includes("cli") && labels.includes("run"), `cli's own targets listed, got ${JSON.stringify(labels)}`);
   assert.ok(labels.every((l) => !l.includes(":")), `labels carry no project scope, got ${JSON.stringify(labels)}`);
@@ -165,17 +167,37 @@ export async function runWorkspaceScenario(): Promise<void> {
 
   // 7. `Elide: Add Workspace Member…` generates a project inside the root and declares it there. The extension host
   //    shares this `vscode` module object with the extension, so its prompts are answered by standing in for the API.
+  //    While the wizard is open the root manifest is edited in an editor, once saved and once not: the member is
+  //    declared in the manifest as it then stands, keeping both edits.
+  const rootManifest = vscode.Uri.file(path.join(sample, "elide.pkl"));
+  const editRoot = async (from: string, to: string) => {
+    const document = await vscode.workspace.openTextDocument(rootManifest);
+    const at = document.getText().indexOf(from);
+    assert.ok(at >= 0, `the root manifest holds ${from}`);
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(rootManifest, new vscode.Range(document.positionAt(at), document.positionAt(at + from.length)), to);
+    assert.ok(await vscode.workspace.applyEdit(edit), `edited ${from}`);
+    return document;
+  };
+  const savedEdit = `description = "Access-log reporting CLI, edited while a member is added"`;
+  const unsavedEdit = "// The root declares its members by hand;";
+  let editedDuringWizard = false;
   const windowStubs: Record<string, unknown> = vscode.window;
   const realQuickPick = windowStubs.showQuickPick;
   const realInputBox = windowStubs.showInputBox;
   const prompts: string[] = [];
   let nameProblems: (string | undefined)[] = [];
   try {
-    windowStubs.showQuickPick = (items: unknown, options?: vscode.QuickPickOptions) => {
+    windowStubs.showQuickPick = async (items: unknown, options?: vscode.QuickPickOptions) => {
+      if (!editedDuringWizard) {
+        editedDuringWizard = true;
+        assert.ok(await (await editRoot(`description = "Access-log reporting CLI, built as an Elide workspace"`, savedEdit)).save(), "saved the root manifest");
+        assert.ok((await editRoot("// The root declares its members explicitly;", unsavedEdit)).isDirty, "the root manifest has unsaved edits");
+      }
       const list = items as (string | { label: string; description?: string })[];
       const chosen = list.find((i) => typeof i !== "string" && i.description === "java") ?? list[0]!;
       prompts.push(`pick ${options?.title ?? options?.placeHolder}: ${typeof chosen === "string" ? chosen : chosen.label}`);
-      return Promise.resolve(chosen);
+      return chosen;
     };
     windowStubs.showInputBox = (options?: vscode.InputBoxOptions) => {
       prompts.push(`input ${options?.title ?? options?.prompt}: ${options?.value ?? ""}`);
@@ -192,7 +214,10 @@ export async function runWorkspaceScenario(): Promise<void> {
   log("add member prompts:", JSON.stringify(prompts));
   for (const problem of nameProblems) assert.equal(typeof problem, "string", `rejected member name reported, got ${JSON.stringify(nameProblems)}`);
   assert.ok(existsSync(path.join(member("metrics"), "elide.pkl")), "the member was generated");
-  assert.match(readFileSync(path.join(sample, "elide.pkl"), "utf8"), /"cli"\n\s+"metrics"/, "the root declares the new member last");
+  const declared = readFileSync(path.join(sample, "elide.pkl"), "utf8");
+  assert.match(declared, /"cli"\n\s+"metrics"/, "the root declares the new member last");
+  assert.ok(declared.includes(savedEdit) && declared.includes(unsavedEdit), `edits made during the wizard are kept, got ${declared}`);
+  assert.ok(!(await vscode.workspace.openTextDocument(rootManifest)).isDirty, "the root manifest is saved");
   const withMember = await waitFor("metrics in workspace.json", () => {
     const json = readWorkspace();
     return json?.modules.some((m) => m.name.startsWith("metrics.")) ? json : undefined;

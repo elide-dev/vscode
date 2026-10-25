@@ -57,12 +57,11 @@
     "workspace"
   ],
   "main": "./dist/extension.js",
-  "extensionPack": [
-    "JetBrains.kotlin-server"
-  ],
   "activationEvents": [
     "workspaceContains:**/elide.pkl",
     "onDebugResolve:elide",
+    "onDebugResolve:elide-native",
+    "onDebugResolve:komodo-kotlin",
     "onTaskType:elide",
     "onView:elide.projects",
     "onView:elide.activity"
@@ -71,9 +70,13 @@
     "languages": [
       {
         "id": "elide-android-logcat",
-        "aliases": [
-          "Elide Android Logcat"
-        ]
+        "aliases": ["Elide Android Logcat"]
+      },
+      {
+        "id": "kotlin",
+        "aliases": ["Kotlin", "kotlin"],
+        "extensions": [".kt", ".kts"],
+        "configuration": "./language-configuration/kotlin.json"
       }
     ],
     "grammars": [
@@ -81,11 +84,50 @@
         "language": "elide-android-logcat",
         "scopeName": "source.elide-android-logcat",
         "path": "./syntaxes/elide-android-logcat.tmLanguage.json"
+      },
+      {
+        "language": "kotlin",
+        "scopeName": "source.kotlin",
+        "path": "./syntaxes/kotlin.tmLanguage.json"
+      }
+    ],
+    "semanticTokenModifiers": [
+      {
+        "id": "composable",
+        "description": "A `@Composable` function, or a call of one."
+      },
+      {
+        "id": "extension",
+        "description": "An extension function or property."
+      },
+      {
+        "id": "mutable",
+        "description": "A `var`: a variable or property that can be reassigned."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "kotlin",
+        "scopes": {
+          "function.composable": ["entity.name.function.composable.kotlin"],
+          "method.composable": ["entity.name.function.composable.kotlin"],
+          "function.extension": ["entity.name.function.extension.kotlin"],
+          "method.extension": ["entity.name.function.extension.kotlin"],
+          "property.extension": ["variable.other.property.extension.kotlin"],
+          "variable.mutable": ["variable.other.readwrite.kotlin"],
+          "property.mutable": ["variable.other.property.readwrite.kotlin"]
+        }
       }
     ],
     "configurationDefaults": {
       "[elide-android-logcat]": {
         "editor.guides.indentation": false
+      },
+      "editor.semanticTokenColorCustomizations": {
+        "rules": {
+          "function.composable:kotlin": "#4CAF50",
+          "method.composable:kotlin": "#4CAF50"
+        }
       }
     },
     "configuration": {
@@ -105,11 +147,13 @@
         },
         "elide.sync.onStartup": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
           "description": "Sync Elide projects when the workspace opens."
         },
         "elide.sync.onManifestChange": {
           "type": "string",
+          "scope": "resource",
           "enum": [
             "always",
             "prompt",
@@ -120,29 +164,71 @@
         },
         "elide.sync.showProgressNotification": {
           "type": "boolean",
+          "scope": "window",
           "default": true,
           "markdownDescription": "Show a notification with the step in progress, and a Cancel button, while a sync runs for more than a couple of seconds. The status bar and the **Elide › Activity** view show progress either way."
         },
         "elide.kotlinLsp.writeWorkspaceJson": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
-          "markdownDescription": "Write `workspace.json` at the workspace folder root so the Kotlin LSP imports the Elide project model."
+          "markdownDescription": "Write `workspace.json` at the workspace folder root so the JetBrains Kotlin LSP imports the Elide project model. Folders on Komodo's language server (`#elide.kotlinLsp.server#` = `komodo`) never get one."
+        },
+        "elide.kotlinLsp.server": {
+          "type": "string",
+          "scope": "resource",
+          "enum": ["jetbrains", "komodo"],
+          "enumDescriptions": [
+            "The JetBrains Kotlin LSP (`JetBrains.kotlin-server`, installed separately) imports the generated `workspace.json`.",
+            "Experimental: Komodo's native language server (`komodo`), shipped by the Elide distribution under `lib/komodo`, analyzes the folder's Kotlin sources from the Elide project model: no `workspace.json`, no JetBrains server for the folder. One server serves every Komodo folder of the window."
+          ],
+          "default": "jetbrains",
+          "markdownDescription": "Kotlin language server for the folder's Elide projects. `komodo` requires an Elide distribution that ships Komodo (`lib/komodo`). With `komodo`, `#elide.debug.adapter#` defaults to `komodo`, Komodo's own Kotlin debugger (the JetBrains debugger runs inside the JetBrains server)."
+        },
+        "elide.kotlinLsp.komodo.path": {
+          "type": "string",
+          "scope": "machine-overridable",
+          "default": "",
+          "markdownDescription": "Komodo `komodo` executable. Leave empty to use the one the Elide distribution ships (`lib/komodo/bin/komodo`, else `bin/komodo`), then `PATH`. Applies to the whole window, which runs one Komodo server."
+        },
+        "elide.kotlinLsp.komodo.pluginDirectory": {
+          "type": "string",
+          "scope": "machine-overridable",
+          "default": "",
+          "markdownDescription": "Kotlin compiler plugin jars built for Komodo's compiler (`kotlin-compose-compiler-plugin[-embeddable][-<version>].jar`, `kotlin-serialization-compiler-plugin[-embeddable][-<version>].jar`). Leave empty to use the plugins Komodo ships under `plugins/`."
+        },
+        "elide.kotlinLsp.komodo.javaHome": {
+          "type": "string",
+          "scope": "machine-overridable",
+          "default": "",
+          "markdownDescription": "JDK 25 home whose platform classes and modules Komodo resolves against (passed as `JAVA_HOME`); Komodo does not run a JVM. Leave empty: a `komodo` from the Elide distribution uses the distribution's own JDK, any other inherits `JAVA_HOME` from the environment."
+        },
+        "elide.kotlinLsp.komodo.maxHeap": {
+          "type": "string",
+          "scope": "machine-overridable",
+          "default": "",
+          "pattern": "^(\\d+[kKmMgG]?)?$",
+          "markdownDescription": "Maximum heap of the native Komodo server (`-Xmx`), such as `768m` or `1g`. Empty: the native image's default."
         },
         "elide.debug.adapter": {
           "type": "string",
+          "scope": "resource",
           "enum": [
             "intellij",
-            "java"
+            "java",
+            "komodo"
           ],
           "enumDescriptions": [
-            "Attach with the Kotlin LSP's JVM debugger (JetBrains.kotlin-server).",
-            "Attach with Debugger for Java (vscjava.vscode-java-debug)."
+            "Attach with the JetBrains Kotlin LSP's JVM debugger (`JetBrains.kotlin-server`).",
+            "Attach with Debugger for Java (vscjava.vscode-java-debug).",
+            "Attach with Komodo's Kotlin debugger (`komodo --dap`), which maps the target JVM's classes to the folder's sources."
           ],
           "default": "intellij",
-          "description": "Debug adapter used to attach to the JVM started by `elide run --debugger`."
+          "markdownDescription": "Debug adapter used to attach to the JVM started by `elide run --debugger`. Unset: `komodo` for a folder on Komodo's language server (`#elide.kotlinLsp.server#`), `intellij` otherwise. `komodo` is served by the same executable as Komodo's language server and needs the folder on that server."
         },
         "elide.debug.nativeMiMode": {
           "type": "string",
+          "scope": "resource",
           "enum": [
             "auto",
             "gdb",
@@ -164,6 +250,7 @@
         },
         "elide.install.classifiers": {
           "type": "array",
+          "scope": "resource",
           "items": {
             "type": "string",
             "enum": [
@@ -185,22 +272,26 @@
         },
         "elide.android.emulatorWindow": {
           "type": "boolean",
+          "scope": "window",
           "default": true,
           "markdownDescription": "Boot the Android emulator with a window. Off passes `--no-window`, which runs it headless."
         },
         "elide.android.composePreview.prewarm": {
           "type": "boolean",
+          "scope": "window",
           "default": true,
           "markdownDescription": "Start the Compose preview renderer and compiler in the background when a Kotlin file with `@Preview` functions is focused in a trusted Android project, so **Elide: Open Compose Preview** opens in about a second. Runs the file's previews from the last build's classes; never builds, and never downloads the renderer runtime. Requires `#elide.android.composePreview.keepAliveMinutes#` above 0."
         },
         "elide.android.composePreview.keepAliveMinutes": {
           "type": "number",
+          "scope": "window",
           "default": 10,
           "minimum": 0,
           "markdownDescription": "Minutes an unused Compose preview backend (render JVMs and compiler workers, several GB of memory) stays warm after its panel closes or after prewarming. `0` stops it with its panel and disables prewarming."
         },
         "elide.android.composePreview.engine": {
           "type": "string",
+          "scope": "window",
           "enum": ["layoutlib", "komodo"],
           "enumDescriptions": ["Design-time snapshots rendered by layoutlib.", "Opt-in, experimental: live cards rendered by a Komodo preview daemon, with layoutlib snapshots for the cards it cannot render."],
           "default": "layoutlib",
@@ -219,6 +310,7 @@
         },
         "elide.flags": {
           "type": "array",
+          "scope": "resource",
           "items": {
             "type": "string"
           },
@@ -227,6 +319,7 @@
         },
         "elide.build.options": {
           "type": "object",
+          "scope": "resource",
           "default": {},
           "additionalProperties": {
             "type": [
@@ -246,6 +339,7 @@
         },
         "elide.run.options": {
           "type": "object",
+          "scope": "resource",
           "default": {},
           "additionalProperties": {
             "type": [
@@ -265,6 +359,7 @@
         },
         "elide.test.options": {
           "type": "object",
+          "scope": "resource",
           "default": {},
           "additionalProperties": {
             "type": [
@@ -284,6 +379,7 @@
         },
         "elide.install.options": {
           "type": "object",
+          "scope": "resource",
           "default": {},
           "additionalProperties": {
             "type": [
@@ -299,10 +395,11 @@
               ]
             }
           },
-          "markdownDescription": "Default options for the `elide install` task, keyed by option name. Project sync installs dependencies itself, driven by `elide.install.classifiers`."
+          "markdownDescription": "Default options for `elide install`, keyed by option name. The `install` task fetches the classifiers `#elide.install.classifiers#` names, as project sync does; `slim` and `with` here override that."
         },
         "elide.codeLens.enabled": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
           "description": "Show Run/Debug code lenses above JVM main functions and on entrypoints, scripts and artifacts in elide.pkl."
         }
@@ -353,7 +450,7 @@
       {
         "command": "elide.openWorkspaceJson",
         "category": "Elide",
-        "title": "Open generated Kotlin LSP workspace"
+        "title": "Open Generated Kotlin LSP Workspace"
       },
       {
         "command": "elide.runTask",
@@ -803,7 +900,7 @@
             "message": 2
           },
           {
-            "regexp": "^In file:\\s+(?:file://)?(\\S+?)(?::(\\d+))?(?::(\\d+))?\\s*$",
+            "regexp": "^In file:\\s+(?:file://)?(.+?)(?::(\\d+))?(?::(\\d+))?\\s*$",
             "file": 1,
             "line": 2,
             "column": 3
@@ -1164,6 +1261,105 @@
             }
           }
         ]
+      },
+      {
+        "type": "komodo-kotlin",
+        "label": "Komodo Kotlin Debugger",
+        "languages": [
+          "kotlin",
+          "java"
+        ],
+        "configurationAttributes": {
+          "attach": {
+            "required": [
+              "port"
+            ],
+            "properties": {
+              "hostName": {
+                "type": "string",
+                "default": "127.0.0.1",
+                "description": "Host of the JDWP agent to attach to."
+              },
+              "port": {
+                "type": "number",
+                "description": "Port of the JDWP agent to attach to."
+              },
+              "timeout": {
+                "type": "number",
+                "default": 30000,
+                "description": "Milliseconds to keep retrying the connection."
+              },
+              "sourceRoots": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "markdownDescription": "Further source directories to resolve the JVM's source paths (`pkg/File.kt`) against, besides the module source roots of the Komodo project manifest."
+              }
+            }
+          },
+          "launch": {
+            "required": [
+              "mainClass",
+              "classPaths"
+            ],
+            "properties": {
+              "mainClass": {
+                "type": "string",
+                "description": "Fully qualified main class (for a top-level Kotlin `main`, `pkg.FileKt`)."
+              },
+              "classPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Class path entries of the program."
+              },
+              "vmArgs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "JVM options of the program."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Arguments passed to the program."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory of the program."
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Extra environment variables for the program."
+              },
+              "javaHome": {
+                "type": "string",
+                "description": "JDK to run the program on; defaults to the one the debugger runs on."
+              }
+            }
+          }
+        },
+        "configurationSnippets": [
+          {
+            "label": "Komodo Kotlin: Attach",
+            "description": "Attach Komodo's Kotlin debugger to a JVM listening for JDWP.",
+            "body": {
+              "type": "komodo-kotlin",
+              "request": "attach",
+              "name": "Komodo Kotlin: Attach",
+              "hostName": "127.0.0.1",
+              "port": "^${1:5005}"
+            }
+          }
+        ]
       }
     ],
     "walkthroughs": [
@@ -1207,8 +1403,8 @@
           },
           {
             "id": "sync",
-            "title": "Sync with the Kotlin LSP",
-            "description": "Syncing writes `workspace.json` so the Kotlin LSP resolves your sources and dependencies.\n[Sync now](command:elide.sync)",
+            "title": "Sync with the Kotlin language server",
+            "description": "Syncing hands the project model to the Kotlin language server so it resolves your sources and dependencies.\n[Sync now](command:elide.sync)",
             "media": {
               "markdown": "media/walkthrough/sync.md"
             },
@@ -1255,6 +1451,7 @@
   },
   "dependencies": {
     "@elide/ide-core": "workspace:*",
+    "vscode-languageclient": "^9.0.1",
     "yauzl": "^3.2.0"
   },
   "devDependencies": {

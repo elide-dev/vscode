@@ -92,7 +92,7 @@ export class ElideAndroidDebugConfigurationProvider implements vscode.DebugConfi
     }
 
     const settings = readConfig(targetFolder);
-    const attachType = await resolveAttachType(settings);
+    const attachType = await resolveAttachType(settings, targetFolder, this.workspace);
     if (!attachType) return undefined;
     const name = typeof launch.name === "string" && launch.name ? launch.name : `Elide: Debug ${launch.artifact}`;
 

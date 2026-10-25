@@ -84,34 +84,47 @@ export function findEnclosingWorkspace(dir: string, readManifest: (file: string)
   }
 }
 
+/** A change to a text: what stands between `start` and `end` replaced with `text`. */
+export interface TextSplice {
+  start: number;
+  end: number;
+  text: string;
+}
+
 /**
- * The manifest text with `member` declared as a workspace member, in the block the manifest already has: added to
- * `workspace.members`, or written whole when the manifest declares no workspace, which turns a standalone project
- * into the root of one. A member already declared leaves the text untouched.
+ * The change declaring `member` as a workspace member of the manifest `text`, in the block the manifest already has:
+ * added to `workspace.members`, or written whole when the manifest declares no workspace, which turns a standalone
+ * project into the root of one. `undefined` when the member is already declared.
+ *
+ * A change rather than the new text, so that it applies to the manifest as it stands when it is applied — an editor
+ * buffer holding edits of its own — and touches nothing but the members.
  */
-export function withWorkspaceMember(text: string, member: string): string {
-  if (parseWorkspaceMembers(text).includes(member)) return text;
+export function workspaceMemberSplice(text: string, member: string): TextSplice | undefined {
+  if (parseWorkspaceMembers(text).includes(member)) return undefined;
   const entry = `"${member}"`;
   const workspace = pklBlock(text, "workspace");
   if (!workspace) {
     const separator = text.length === 0 || text.endsWith("\n\n") ? "" : text.endsWith("\n") ? "\n" : "\n\n";
-    return `${text}${separator}workspace {\n  members {\n    ${entry}\n  }\n}\n`;
+    return { start: text.length, end: text.length, text: `${separator}workspace {\n  members {\n    ${entry}\n  }\n}\n` };
   }
   const members = pklBlock(text, "members", workspace.start, workspace.end);
   if (!members) {
     const indent = indentOfLineAt(text, workspace.start);
-    const rest = text.slice(workspace.start);
+    const block = `\n${indent}  members {\n${indent}    ${entry}\n${indent}  }`;
     // Whatever the workspace block already held keeps a line of its own, wherever it stood before.
-    const tail = rest.startsWith("\n") ? rest : `\n${indent}  ${rest.trimStart()}`;
-    return `${text.slice(0, workspace.start)}\n${indent}  members {\n${indent}    ${entry}\n${indent}  }${tail}`;
+    if (text.startsWith("\n", workspace.start)) return { start: workspace.start, end: workspace.start, text: block };
+    const rest = text.slice(workspace.start);
+    return { start: workspace.start, end: workspace.start + rest.length - rest.trimStart().length, text: `${block}\n${indent}  ` };
   }
   const closeIndent = indentBefore(text, members.end);
   // A block written on one line (`members { "a" "b" }`) keeps its shape; one spread over lines gets another row.
-  if (closeIndent === undefined) return `${text.slice(0, members.end).replace(/\s+$/, "")} ${entry} ${text.slice(members.end)}`;
+  if (closeIndent === undefined) {
+    return { start: text.slice(0, members.end).trimEnd().length, end: members.end, text: ` ${entry} ` };
+  }
   const body = text.slice(members.start, members.end);
   const entryIndent = /\n([ \t]*)"/.exec(body)?.[1] ?? `${closeIndent}  `;
   const closeLine = text.lastIndexOf("\n", members.end) + 1;
-  return `${text.slice(0, closeLine)}${entryIndent}${entry}\n${text.slice(closeLine)}`;
+  return { start: closeLine, end: closeLine, text: `${entryIndent}${entry}\n` };
 }
 
 /** Indentation of the line holding `offset`. */

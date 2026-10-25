@@ -1,6 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import {
+  ElideFailureReport,
   LineSplitter,
   elideInvocationArgs,
   elideInvocationOptionsFrom,
@@ -9,19 +12,32 @@ import {
   mergeElideInvocationOptions,
   resolveElideDistribution,
   type ElideCommand,
+  type ElideFailure,
   type ElideInvocationOptions,
   type ElideOptionValue,
 } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { configuredInvocation, readConfig, type ElideConfig } from "./config.js";
-import { jetBrainsDebuggerType, notifyKotlinSetupPending, pendingKotlinSetup } from "./jetbrains.js";
+import { showElideFailure, type FailureAction } from "./failures.js";
+import { isJetBrainsDebugger, jetBrainsDebuggerType, jetBrainsExtension, notifyKotlinSetupPending, pendingKotlinSetup } from "./jetbrains.js";
+import type { KomodoDebugTargets } from "./komodoDebug.js";
 import type { ElideUi } from "./output.js";
 import type { ElideWorkspace } from "./projects.js";
 
 export const ELIDE_DEBUG_TYPE = "elide";
+/** Komodo's Kotlin debug adapter, served by the language server's executable (`komodo --dap`). */
+export const KOMODO_DEBUG_TYPE = "komodo-kotlin";
 const JAVA_DEBUG_EXTENSION = "vscjava.vscode-java-debug";
 /** Banner printed by the JDWP agent (`server=y`) once it is ready for a client. */
 const JDWP_BANNER = /Listening for transport dt_socket at address:\s*(\d+)/;
+
+const debugRunsEnded = new vscode.EventEmitter<void>();
+/**
+ * Fires when the Elide process of a {@link launchWithJdwp} run ends, attached or not: the build it ran can change
+ * what an APK offers — a build that is not debuggable withdraws Debug.
+ */
+export const onDidEndDebugRun = debugRunsEnded.event;
+
 /**
  * Subcommands with a JVM to attach to, and the session name each gets when the configuration leaves `name` empty.
  * `install` downloads dependencies: there is nothing to debug.
@@ -69,6 +85,15 @@ export interface JdwpLaunch {
   attachType: string;
   /** Receives every output line of the Elide process, as it arrives. */
   onLine?: (line: string, stderr: boolean) => void;
+  /** Settles once the debugger may attach; `false` abandons the launch, ending the Elide process. */
+  ready?: (signal: AbortSignal) => Promise<boolean>;
+  /** Fixes to offer when Elide fails before the JVM listens, for what it said. */
+  failureActions?: (failure: ElideFailure) => FailureAction[];
+  /**
+   * The launch configuration's `postDebugTask`, which VS Code runs when the attach session ends. Its `preLaunchTask`
+   * cannot be honored: VS Code would run it only once the launch configuration resolved, and it never does.
+   */
+  postDebugTask?: string | Record<string, unknown>;
 }
 
 export interface JdwpSession {
@@ -79,15 +104,65 @@ export interface JdwpSession {
 }
 
 /**
+ * The real path of a workspace folder opened through a symlink — `/tmp/app` on macOS is `/private/tmp/app` — or
+ * `undefined` when it is opened at its real path.
+ */
+export function symlinkedFolderTarget(folder: vscode.WorkspaceFolder): string | undefined {
+  const opened = path.resolve(folder.uri.fsPath);
+  let real: string;
+  try {
+    real = realpathSync(opened);
+  } catch {
+    return undefined;
+  }
+  const same = process.platform === "win32" ? opened.toLowerCase() === real.toLowerCase() : opened === real;
+  return same ? undefined : real;
+}
+
+const REOPEN_AT_REAL_PATH = "Reopen Folder at Real Path";
+
+/**
+ * The JetBrains Kotlin debugger resolves a breakpoint by the path VS Code sends, which is the folder's symlinked
+ * spelling, while its project model holds real paths: it logs `Could not find virtual file for path` and the
+ * breakpoint never binds, with no error in VS Code. Say so before a launch, and offer to reopen the folder at its real
+ * path; the launch goes on, since everything but breakpoints works.
+ */
+export function warnSymlinkedFolder(folder: vscode.WorkspaceFolder, attachType: string): void {
+  if (!isJetBrainsDebugger(attachType)) return;
+  const real = symlinkedFolderTarget(folder);
+  if (!real) return;
+  void vscode.window.showWarningMessage(
+    `Elide: '${folder.uri.fsPath}' is opened through a symlink to '${real}'; the Kotlin debugger cannot bind breakpoints in it. Reopen the folder at its real path to debug with breakpoints.`,
+    REOPEN_AT_REAL_PATH,
+  ).then((pick) => {
+    if (pick === REOPEN_AT_REAL_PATH) {
+      void vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(real), { forceNewWindow: (vscode.workspace.workspaceFolders?.length ?? 0) > 1 });
+    }
+  });
+}
+
+/**
  * The JVM debugger to attach with, or `undefined` when none is usable (the user has been told why).
  *
  * `intellij` borrows the debugger the JetBrains Kotlin extension contributes; `java` needs Debugger for Java, and
- * offers to install it when it is missing.
+ * offers to install it when it is missing; `komodo` is Komodo's own adapter, which needs the launcher and project
+ * manifest of the folder's Komodo language server. A folder on Komodo's language server defaults to `komodo`: the
+ * JetBrains debugger runs inside the JetBrains server.
  */
-export async function resolveAttachType(settings: ElideConfig): Promise<string | undefined> {
+export async function resolveAttachType(settings: ElideConfig, folder: vscode.WorkspaceFolder, komodo: KomodoDebugTargets): Promise<string | undefined> {
+  if (settings.debugAdapter === "komodo") {
+    // Checked before Elide starts a JVM that would wait for a debugger that cannot start.
+    try {
+      await komodo.komodoDebugLaunch(folder);
+    } catch (error) {
+      void vscode.window.showErrorMessage(`Elide: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+    return KOMODO_DEBUG_TYPE;
+  }
   const attachType = settings.debugAdapter === "java" ? "java" : jetBrainsDebuggerType();
   if (!attachType) {
-    void vscode.window.showErrorMessage("Elide: the JetBrains Kotlin extension contributes no JVM debugger; set `elide.debug.adapter` to `java`.");
+    void vscode.window.showErrorMessage("Elide: the JetBrains Kotlin extension contributes no JVM debugger; set `elide.debug.adapter` to `java` or `komodo`.");
     return undefined;
   }
   if (attachType === "java" && !vscode.extensions.getExtension(JAVA_DEBUG_EXTENSION)) {
@@ -95,7 +170,13 @@ export async function resolveAttachType(settings: ElideConfig): Promise<string |
     if (pick === "Install") void vscode.commands.executeCommand("workbench.extensions.installExtension", JAVA_DEBUG_EXTENSION);
     return undefined;
   }
-  if (attachType !== "java") {
+  if (settings.debugAdapter !== "java") {
+    try {
+      await jetBrainsExtension()?.activate();
+    } catch (error) {
+      void vscode.window.showErrorMessage(`Elide: could not activate the Kotlin debugger: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
     const steps = await pendingKotlinSetup();
     if (steps) {
       notifyKotlinSetupPending(steps);
@@ -117,17 +198,33 @@ export async function resolveAttachType(settings: ElideConfig): Promise<string |
  * ending the debug session ends the process too.
  */
 export function launchWithJdwp(launch: JdwpLaunch, ui: ElideUi, sessions: Map<string, ChildProcess>): JdwpSession {
+  warnSymlinkedFolder(launch.folder, launch.attachType);
   const writeEmitter = new vscode.EventEmitter<string>();
   const closeEmitter = new vscode.EventEmitter<number | void>();
   const { promise: exit, resolve: settle } = Promise.withResolvers<number | null>();
+  // What Elide said before the JVM listened, in case it never does.
+  const report = new ElideFailureReport();
   let child: ChildProcess | undefined;
   let attached = false;
   let closed = false;
+  let cancelled = false;
+  let attachment: vscode.Disposable | undefined;
+
+  const cancel = () => {
+    if (closed) return;
+    cancelled = true;
+    closed = true;
+    attachment?.dispose();
+    if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) killProcessTree(child.pid, "SIGTERM");
+    closeEmitter.fire();
+    settle(null);
+  };
 
   const pty: vscode.Pseudoterminal = {
     onDidWrite: writeEmitter.event,
     onDidClose: closeEmitter.event,
     open: () => {
+      if (closed || child) return;
       writeEmitter.fire(`\x1b[2m$ elide ${launch.argv.join(" ")}\x1b[0m\r\n`);
       child = spawn(launch.dist, launch.argv, {
         cwd: launch.cwd,
@@ -135,45 +232,55 @@ export function launchWithJdwp(launch: JdwpLaunch, ui: ElideUi, sessions: Map<st
         stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
       });
+      const onLine = (line: string, stderr: boolean) => {
+        launch.onLine?.(line, stderr);
+        if (!attached) report.line(line);
+        if (attached || closed || !child) return;
+        const match = JDWP_BANNER.exec(line);
+        if (!match?.[1]) return;
+        attached = true;
+        attachment = attach(Number(match[1]), launch, child, ui, sessions);
+      };
       const splitters = {
-        stdout: new LineSplitter((line) => launch.onLine?.(line, false)),
-        stderr: new LineSplitter((line) => launch.onLine?.(line, true)),
+        stdout: new LineSplitter((line) => onLine(line, false)),
+        stderr: new LineSplitter((line) => onLine(line, true)),
       };
-      const onChunk = (chunk: Buffer, stderr: boolean) => {
-        const text = chunk.toString("utf8");
+      const onChunk = (text: string, stderr: boolean) => {
         writeEmitter.fire(text.replace(/\r?\n/g, "\r\n"));
-        if (launch.onLine) splitters[stderr ? "stderr" : "stdout"].push(text);
-        if (!attached) {
-          const m = JDWP_BANNER.exec(text);
-          if (m?.[1] && child) {
-            attached = true;
-            void attach(Number(m[1]), launch, child, ui, sessions);
-          }
-        }
+        splitters[stderr ? "stderr" : "stdout"].push(text);
       };
-      child.stdout?.on("data", (chunk: Buffer) => onChunk(chunk, false));
-      child.stderr?.on("data", (chunk: Buffer) => onChunk(chunk, true));
+      // Decoded per stream, so a character split across two reads (Elide's `✓`) is not mangled.
+      child.stdout?.setEncoding("utf8").on("data", (chunk: string) => onChunk(chunk, false));
+      child.stderr?.setEncoding("utf8").on("data", (chunk: string) => onChunk(chunk, true));
+      let spawnFailed = false;
       child.once("error", (e) => {
+        closed = true;
+        attachment?.dispose();
+        if (cancelled) return;
+        spawnFailed = child?.pid === undefined;
         writeEmitter.fire(`\r\n\x1b[31mFailed to start elide: ${e.message}\x1b[0m\r\n`);
         closeEmitter.fire(1);
         settle(null);
+        debugRunsEnded.fire();
       });
       child.once("close", (code) => {
+        // A process that never started still closes (with a negative errno); the error above reported it.
+        if (spawnFailed) return;
         closed = true;
+        attachment?.dispose();
         splitters.stdout.flush();
         splitters.stderr.flush();
         writeEmitter.fire(`\r\n\x1b[2m[elide exited with code ${code ?? "signal"}]\x1b[0m\r\n`);
-        if (!attached) {
-          void vscode.window.showErrorMessage(`Elide exited with code ${code ?? "signal"} before opening a JDWP port.`, "Show Output").then((pick) => {
-            if (pick === "Show Output") ui.output.show(true);
-          });
+        if (!attached && !cancelled) {
+          const failure = report.failure;
+          showElideFailure(ui, failure, `the debug run exited with code ${code ?? "signal"} before opening a JDWP port.`,
+            () => terminal.show(), launch.failureActions?.(failure));
         }
         settle(code);
+        debugRunsEnded.fire();
       });
     },
-    close: () => {
-      if (child && !closed && child.pid !== undefined) killProcessTree(child.pid, "SIGTERM");
-    },
+    close: cancel,
     handleInput: (data) => {
       child?.stdin?.write(data.replace(/\r/g, "\n"));
     },
@@ -183,17 +290,16 @@ export function launchWithJdwp(launch: JdwpLaunch, ui: ElideUi, sessions: Map<st
   terminal.show(true);
   return {
     exit,
-    cancel: () => {
-      if (child && !closed && child.pid !== undefined) killProcessTree(child.pid, "SIGTERM");
-      closed = true;
-      closeEmitter.fire();
-      settle(null);
-    },
+    cancel,
   };
 }
 
-async function attach(port: number, launch: JdwpLaunch, child: ChildProcess, ui: ElideUi, sessions: Map<string, ChildProcess>): Promise<void> {
+function attach(port: number, launch: JdwpLaunch, child: ChildProcess, ui: ElideUi, sessions: Map<string, ChildProcess>): vscode.Disposable {
   ui.log(`debug: JDWP listening on ${port}; attaching with ${launch.attachType}`);
+  const launchId = randomUUID();
+  let stopped = false;
+  let attachedSession: vscode.DebugSession | undefined;
+  const waiting = new AbortController();
   const config: vscode.DebugConfiguration = {
     type: launch.attachType,
     request: "attach",
@@ -201,19 +307,54 @@ async function attach(port: number, launch: JdwpLaunch, child: ChildProcess, ui:
     hostName: "127.0.0.1",
     port,
     ...(launch.attachType === "java" ? {} : { timeout: 30_000 }),
+    ...(launch.postDebugTask !== undefined ? { postDebugTask: launch.postDebugTask } : {}),
+    __elideLaunchId: launchId,
   };
   const listener = vscode.debug.onDidStartDebugSession((session) => {
-    if (session.name === launch.name && session.type === launch.attachType) {
-      sessions.set(session.id, child);
+    if (session.configuration.__elideLaunchId === launchId) {
+      attachedSession = session;
+      if (stopped) void vscode.debug.stopDebugging(session);
+      else sessions.set(session.id, child);
       listener.dispose();
     }
   });
-  const started = await vscode.debug.startDebugging(launch.folder, config);
-  if (!started) {
-    listener.dispose();
-    ui.log("debug: attach session did not start");
-    void vscode.window.showErrorMessage(`Elide: could not attach ${launch.attachType} debugger to port ${port}.`);
-  }
+  void (async () => {
+    let started = false;
+    let failure: string | undefined;
+    try {
+      if (launch.ready && !await launch.ready(waiting.signal)) {
+        listener.dispose();
+        if (!stopped && child.exitCode === null && child.signalCode === null && child.pid !== undefined) killProcessTree(child.pid, "SIGTERM");
+        return;
+      }
+      if (stopped) {
+        listener.dispose();
+        return;
+      }
+      started = await vscode.debug.startDebugging(launch.folder, config);
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    if (!started) {
+      listener.dispose();
+      if (stopped) return;
+      if (child.exitCode === null && child.signalCode === null && child.pid !== undefined) killProcessTree(child.pid, "SIGTERM");
+      const message = `Elide: could not attach ${launch.attachType} debugger to port ${port}${failure ? `: ${failure}` : "."}`;
+      ui.log(message);
+      void vscode.window.showErrorMessage(message);
+    }
+  })();
+  return {
+    dispose: () => {
+      if (stopped) return;
+      stopped = true;
+      waiting.abort();
+      if (attachedSession && sessions.get(attachedSession.id) === child) {
+        sessions.delete(attachedSession.id);
+        void vscode.debug.stopDebugging(attachedSession);
+      }
+    },
+  };
 }
 
 /**
@@ -237,7 +378,7 @@ export class ElideDebugConfigurationProvider implements vscode.DebugConfiguratio
         const child = this.sessions.get(session.id);
         if (!child) return;
         this.sessions.delete(session.id);
-        if (child.exitCode === null && child.pid !== undefined) killProcessTree(child.pid, "SIGTERM");
+        if (child.exitCode === null && child.signalCode === null && child.pid !== undefined) killProcessTree(child.pid, "SIGTERM");
       }),
     );
   }
@@ -261,7 +402,7 @@ export class ElideDebugConfigurationProvider implements vscode.DebugConfiguratio
       : (this.workspace.projectsIn(targetFolder)[0]?.root ?? targetFolder.uri.fsPath);
 
     const settings = readConfig(targetFolder);
-    const attachType = await resolveAttachType(settings);
+    const attachType = await resolveAttachType(settings, targetFolder, this.workspace);
     if (!attachType) return undefined;
 
     let dist;
@@ -299,7 +440,17 @@ export class ElideDebugConfigurationProvider implements vscode.DebugConfiguratio
     const name = typeof launch.name === "string" && launch.name ? launch.name : DEBUG_COMMANDS[command];
     this.ui.log(`debug: ${dist.bin} ${argv.join(" ")} (cwd ${projectRoot})`);
     launchWithJdwp(
-      { dist: dist.bin, argv, cwd: projectRoot, env: invocation.env, name, folder: targetFolder, attachType },
+      {
+        dist: dist.bin,
+        argv,
+        cwd: projectRoot,
+        env: invocation.env,
+        name,
+        folder: targetFolder,
+        attachType,
+        ...(isJetBrainsDebugger(attachType) ? { ready: (signal: AbortSignal) => this.workspace.kotlinDebuggerReady(projectRoot, signal) } : {}),
+        ...(launch.postDebugTask !== undefined ? { postDebugTask: launch.postDebugTask } : {}),
+      },
       this.ui,
       this.sessions,
     );

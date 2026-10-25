@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -10,7 +10,7 @@ import {
   parseWorkspaceMembers,
   resolveElideDistribution,
   validateInitParameter,
-  withWorkspaceMember,
+  workspaceMemberSplice,
   type ElideDistribution,
   type InitTemplate,
 } from "@elide/ide-core";
@@ -70,15 +70,15 @@ export async function addWorkspaceMember(workspace: ElideWorkspace, ui: ElideUi,
   const root = await pickWorkspaceRoot(workspace, value);
   if (!root) return;
 
-  let manifest: string;
+  const manifest = vscode.Uri.file(root.manifestPath);
+  let declared: string[];
   try {
-    manifest = readFileSync(root.manifestPath, "utf8");
+    declared = parseWorkspaceMembers((await vscode.workspace.openTextDocument(manifest)).getText());
   } catch (e) {
     ui.log(`add member: could not read ${root.manifestPath}: ${e instanceof Error ? e.message : String(e)}`);
     void vscode.window.showErrorMessage(`Elide: could not read ${root.manifestPath}.`);
     return;
   }
-  const declared = parseWorkspaceMembers(manifest);
 
   const dist = resolveDistribution(ui, "add member");
   if (!dist) return;
@@ -89,8 +89,9 @@ export async function addWorkspaceMember(workspace: ElideWorkspace, ui: ElideUi,
     validateInput: (candidate) => {
       const trimmed = candidate.trim();
       if (declared.includes(trimmed)) return `${trimmed} is already a member of this workspace`;
-      // The member's directory is its project name in `elide build core:jar`, which takes neither.
-      if (/[\s:]/.test(trimmed)) return "must contain no whitespace or ':'";
+      // The member's directory is its project name in `elide build core:jar`, which takes neither; the manifest names it
+      // in a Pkl string, which would need `"` and `\` escaped.
+      if (/[\s:"\\]/.test(trimmed)) return "must contain no whitespace, ':', '\"' or '\\'";
       return validateDirectoryName(candidate, root.root);
     },
   });
@@ -101,19 +102,45 @@ export async function addWorkspaceMember(workspace: ElideWorkspace, ui: ElideUi,
   if (!template) return;
 
   const target = path.join(root.root, member);
-  if (!(await generate(dist, template, target, member, ui))) return;
+  const memberManifest = path.join(target, path.basename(root.manifestPath));
+  // Both manifests are written here and synced below: their watcher events are not edits to offer a reload for.
+  if (!(await workspace.writeManifest(memberManifest, () => generate(dist, template, target, member, ui)))) return;
 
+  let failure: string | undefined;
   try {
-    writeFileSync(root.manifestPath, withWorkspaceMember(manifest, member), "utf8");
+    failure = await workspace.writeManifest(root.manifestPath, () => declareMember(manifest, member));
   } catch (e) {
-    ui.log(`add member: could not update ${root.manifestPath}: ${e instanceof Error ? e.message : String(e)}`);
-    void vscode.window.showErrorMessage(`Elide: ${member} was created, but ${root.manifestPath} could not be updated.`);
+    failure = e instanceof Error ? e.message : String(e);
+  }
+  if (failure !== undefined) {
+    ui.log(`add member: could not update ${root.manifestPath}: ${failure}`);
+    void vscode.window.showErrorMessage(`Elide: ${member} was created, but ${root.manifestPath} could not be updated: ${failure}.`);
     return;
   }
   ui.log(`workspace member added: ${target} (declared in ${root.manifestPath})`);
 
-  await vscode.window.showTextDocument(vscode.Uri.file(path.join(target, path.basename(root.manifestPath))), { preview: false });
+  await vscode.window.showTextDocument(vscode.Uri.file(memberManifest), { preview: false });
   await workspace.syncFolder(root.folder, "project-added");
+}
+
+/**
+ * Declare `member` in the root manifest as it stands now — the buffer of an editor holding it, unsaved edits
+ * included, or else the file — and save it, which is what the sync reads. The wizard's prompts leave ample time for
+ * the manifest to change, so it is read here rather than before them; and the member is spliced in rather than the
+ * whole text written, which keeps every other edit and makes the change one the editor can undo. Returns why the
+ * manifest could not be updated, or `undefined` once it is.
+ */
+async function declareMember(manifest: vscode.Uri, member: string): Promise<string | undefined> {
+  const document = await vscode.workspace.openTextDocument(manifest);
+  const splice = workspaceMemberSplice(document.getText(), member);
+  if (splice) {
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(manifest, new vscode.Range(document.positionAt(splice.start), document.positionAt(splice.end)), splice.text);
+    // Refused when the document changed between reading it and applying this.
+    if (!(await vscode.workspace.applyEdit(edit))) return "it changed while the member was being declared";
+  }
+  if (document.isDirty && !(await document.save())) return "it could not be saved";
+  return undefined;
 }
 
 /** The project a new member is added to: the one the command was invoked on, the only one, or the one picked. */

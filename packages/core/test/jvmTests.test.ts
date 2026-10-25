@@ -149,4 +149,21 @@ describe("parseTapLabel", () => {
   test("an engine container is not part of the class chain", () => {
     expect(parseTapLabel("JUnit Jupiter > MainTest > works()")).toEqual({ containers: ["MainTest"], name: "works" });
   });
+
+  test("only the trailing parameter list is dropped from a name that holds parentheses", () => {
+    expect(parseTapLabel("MyTest > parses (nested) input()")).toEqual({ containers: ["MyTest"], name: "parses (nested) input" });
+  });
+
+  test("an invocation of a test template is named under its method", () => {
+    expect(parseTapLabel("JUnit Jupiter > MyTest > param(int) > [1] 1")).toEqual({
+      containers: ["MyTest"],
+      name: "param",
+      invocation: "[1] 1",
+    });
+    expect(parseTapLabel("Outer > Inner > repeated() > repetition 2 of 3")).toEqual({
+      containers: ["Outer", "Inner"],
+      name: "repeated",
+      invocation: "repetition 2 of 3",
+    });
+  });
 });

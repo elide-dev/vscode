@@ -18,6 +18,7 @@ is referenced anywhere in this package.
 | `workspace.ts` | Elide workspaces: members declared by a manifest, sibling artifacts on a member's classpath and the source sets behind them. |
 | `pkl.ts` | Read and edit `elide.pkl` as text, for what the exported project model cannot answer (artifact source positions, the workspace above a folder). |
 | `kotlinLsp.ts` | Emit the JSON workspace (`workspace.json`) consumed by the JetBrains Kotlin language server. |
+| `komodoLsp.ts` | Emit the Komodo project manifest (`project.properties`) that Komodo's language server (`komodo`) analyzes, with the compiler plugins it needs. |
 | `android.ts` | Android build targets, published and staged artifact paths, SDK resolution (`android.sdk`, `ANDROID_HOME`, the conventional location) and the attached devices `adb` reports. |
 | `androidBinaryXml.ts` | The application ID an APK installs as, read from its compiled manifest (after `--rename-manifest-package` and placeholders). |
 | `androidLogcat.ts` | Abortable adb log streams, application UID resolution, priority and literal-text filtering, and explicit stop/restart lifecycle. |
@@ -39,7 +40,7 @@ await writeKotlinLspWorkspace(models, workspaceRoot);
 
 For Compose projects, pass `{ composeCompilerPlugin: "/absolute/path/to/the/language-server/compose-plugin.jar" }`
 as the third argument to `writeKotlinLspWorkspace`. It must match the language server's compiler, not necessarily
-the project's build compiler. The VSCode adapter resolves the installed JetBrains extension's bundled plugin.
+the project's build compiler. The VS Code extension resolves the installed JetBrains extension's bundled plugin.
 Models expose `kotlin.compose`; processor/Hilt projects generate and import actual Java/kapt sources during sync.
 
 The package is ESM-only, built with `tsc`, and ships type declarations. It is not published to npm today; it is

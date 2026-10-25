@@ -63,6 +63,11 @@ describe("parseManifestArtifacts", () => {
     expect(parseManifestArtifacts(manifest)).toEqual([{ name: "bin", type: "NativeImage", line: 1, outputName: "a{b" }]);
   });
 
+  test("a one-line entry's own settings are read, not those of a block nested in it", () => {
+    const manifest = `artifacts {\n  ["shared"] = new NativeImage.NativeImage { name = "libhello"; type = "library"; options { name = "x" } }\n}\n`;
+    expect(parseManifestArtifacts(manifest)).toEqual([{ name: "shared", type: "NativeImage", line: 1, outputName: "libhello", imageType: "library" }]);
+  });
+
   test("a manifest without artifacts yields none", () => {
     expect(parseManifestArtifacts(`name = "x"\njvm {\n  main = "Hello"\n}\n`)).toEqual([]);
   });

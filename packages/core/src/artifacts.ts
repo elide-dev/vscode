@@ -28,6 +28,29 @@ const ENTRY = /^\s*\["([^"]+)"\]\s*=\s*(?:new\s+(?:\w+\s*\.\s*)*(\w+))?/;
 const OUTPUT_NAME = /^\s*name\s*=\s*"([^"]*)"/;
 /** `type = "library"` in an entry's body. */
 const IMAGE_TYPE = /^\s*type\s*=\s*"([^"]*)"/;
+/** The same settings among the members of a one-line body: `{ name = "app" type = "library" }`. */
+const INLINE_OUTPUT_NAME = /(?:^|[\s;])name\s*=\s*"([^"]*)"/;
+const INLINE_IMAGE_TYPE = /(?:^|[\s;])type\s*=\s*"([^"]*)"/;
+
+/** What an entry line holds directly inside its own braces, nested blocks blanked out; empty while it stays open. */
+function inlineBody(rest: string): string {
+  let depth = 0;
+  let quoted = false;
+  let body = "";
+  for (let i = 0; i < rest.length; i++) {
+    const c = rest[i]!;
+    if (quoted && c === "\\") {
+      if (depth === 1) body += rest.slice(i, i + 2);
+      i++;
+      continue;
+    }
+    if (c === '"') quoted = !quoted;
+    else if (!quoted && c === "{") { depth++; if (depth === 1) continue; }
+    else if (!quoted && c === "}") { depth--; if (depth === 0) return body; }
+    body += depth === 1 ? c : " ";
+  }
+  return "";
+}
 
 /**
  * Artifacts declared in the text of an `elide.pkl`, in source order.
@@ -54,6 +77,11 @@ export function parseManifestArtifacts(text: string): ManifestArtifact[] {
         current = { name: entry[1], type: entry[2] ?? "", line: i };
         currentDepth = depth;
         artifacts.push(current);
+        const body = inlineBody(line.slice(entry[0].length));
+        const outputName = INLINE_OUTPUT_NAME.exec(body);
+        if (outputName) current.outputName = outputName[1];
+        const imageType = INLINE_IMAGE_TYPE.exec(body);
+        if (imageType) current.imageType = imageType[1];
       }
     } else if (current && depth === currentDepth + 1) {
       // Only the entry's own settings: nested blocks (`options`, `classInit`, …) carry keys of the same names.
