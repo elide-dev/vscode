@@ -91,6 +91,38 @@ scenario instead, against `samples/workspace` or the directory `ELIDE_WORKSPACE_
 ELIDE_TEST_SCENARIO=workspace bazel run //packages/vscode:integration_test
 ```
 
+`ELIDE_TEST_SCENARIO=build-extension` opens `samples/build-extension` with third-party extensions
+disabled. It exercises the built-in TypeScript service before sync (inferred and configured TS
+projects, JSDoc JS, task/tool completion, invalid-option diagnostics, snippets and non-Elide
+isolation), manifest links, real task execution, archive Build lenses, and task-list refresh after
+saved additions/removals. Select a build-extension-capable Elide distribution explicitly:
+
+```sh
+ELIDE_TEST_SCENARIO=build-extension \
+ELIDE_TEST_HOME=/path/to/extension-capable-elide \
+bazel run //packages/vscode:integration_test
+```
+
+The TypeScript plugin sources and canonical API snapshot live in
+`packages/vscode/media/typescript`; Bazel packages them under
+`node_modules/elide-build-typescript-plugin` because tsserver only accepts plugin package names.
+The snapshot's pinned upstream source and any local backports are recorded in its `package.json`;
+update it with the canonical `packages/types/build.d.ts` from Elide, preserving its license and
+retaining backports not yet present upstream. Language-service unit regressions use the real
+pinned `ts.server.ProjectService` and the packaged plugin loader.
+
+To run the scenario against the shipped files instead of the development output tree, first build
+`//packages/vscode:vsix`, then set `ELIDE_TEST_VSIX="$PWD/bazel-bin/packages/vscode/elide.vsix"`
+on the same integration invocation. The runner extracts that archive into a temporary extension
+directory, copies the test bundle beneath it so VS Code attributes both to the same extension,
+and removes the directory afterward. Shipped assets remain unchanged. This local-only path requires
+`unzip`. The JVM scenario preserves `ELIDE_TEST_HOME` across temporary runtime-override checks.
+
+`packages/vscode/package-vsix.cjs` retains the pinned vsce manifest/README/license processing and
+secret checks, but explicitly includes the unbundled TypeScript plugin: vsce's no-dependencies
+traversal skips root `node_modules` regardless of `.vscodeignore`. Keep the packaged smoke in the
+verification loop when upgrading vsce or changing plugin packaging.
+
 `ELIDE_TEST_SCENARIO=komodo` drives `samples/ktjvm` through Komodo's language server instead of the JetBrains one,
 with every installed extension disabled (as on a machine without the JetBrains extension), and exercises each
 capability the server advertises through VS Code's provider commands, logging `PASS`/`FAIL`/`SKIP` per check and a
@@ -115,6 +147,22 @@ keeps the JetBrains extension enabled and logs which `kotlin` grammar VS Code ap
 ```sh
 ELIDE_TEST_SCENARIO=komodo ELIDE_KOMODO_SAMPLE=android \
 ELIDE_TEST_HOME="${ELIDE_TEST_HOME:?set to an Elide distribution with managed Komodo support}" \
+bazel run //packages/vscode:integration_test
+```
+
+`ELIDE_TEST_SCENARIO=self-build` opens Elide's self-build checkout in place, with third-party
+extensions disabled. It checks synchronization (including processor-source generation), native
+reference/implementation CodeLenses, full/range semantic highlighting with KDoc, diagnostics,
+cross-module and library navigation, unsaved edit/revert recovery, task discovery, and build-extension
+TypeScript authoring. Sync updates generated artifacts; editor source edits are unsaved, reverted,
+and checked against disk. Use an Elide build that recognizes `kotlin.annotationProcessing` and a
+Komodo image with the Java PSI message bundles, platform registry defaults, and KDoc resolver
+reflection registrations:
+
+```sh
+ELIDE_TEST_SCENARIO=self-build \
+ELIDE_SELF_BUILD_ROOT="$HOME/workspaces/elide" \
+ELIDE_TEST_HOME=/path/to/compatible-elide \
 bazel run //packages/vscode:integration_test
 ```
 

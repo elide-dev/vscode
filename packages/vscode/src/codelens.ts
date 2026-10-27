@@ -2,8 +2,7 @@ import path from "node:path";
 import {
   MANIFEST_NAME,
   isAndroidApk,
-  isAndroidFeature,
-  androidFeatureTask,
+  artifactBuildTarget,
   isNativeImageBinary,
   isPathUnder,
   normalizePath,
@@ -103,7 +102,7 @@ function artifactLenses(line: number, length: number, root: string, artifact: Ma
   const build = new vscode.CodeLens(range, {
     title: "$(package) Build",
     command: "elide.build",
-    arguments: [{ root, args: [isAndroidFeature(artifact) ? androidFeatureTask(artifact.name) : artifact.name] }],
+    arguments: [{ root, args: [artifactBuildTarget(artifact)] }],
   });
   if (isAndroidApk(artifact)) {
     // An APK is installed and launched by a build target of its own, and debugged on the device it was installed on.

@@ -1,0 +1,11 @@
+{
+  "name": "elide-build-typescript-plugin",
+  "private": true,
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "license": "MIT",
+  "description": "Native TypeScript server support for Elide build extensions.",
+  "elideBuildTypesSource": "https://github.com/elide-dev/elide/blob/e3dee520e930012f541644a0cb90ce6f6a4eba95/packages/types/build.d.ts",
+  "elideBuildTypesPatches": ["Task actions and prepare hooks accept Promise<void | boolean>, matching async callbacks with explicit Promise<void> return types."]
+}

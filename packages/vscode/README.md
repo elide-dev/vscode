@@ -125,6 +125,37 @@ accept); add it to `.gitignore` instead to cover every clone.
 | `Elide: Show Android Logcat` | Open a filtered device log stream; Filter, Clear, Stop and Restart commands manage it. |
 | `Elide: Explore Android Databases` | Browse and query a debuggable app's Room / SQLite databases on a connected device. |
 
+## Build extension authoring
+
+The built-in TypeScript language service gets Elide's build API in projects beneath an `elide.pkl`,
+before sync and without generating a `tsconfig.json` or installing dependencies. Annotate the default
+export with `ElideBuild` for task/action/tool completion, hover, navigation and type diagnostics:
+
+```ts
+export default ({ task }: ElideBuild) => {
+  task("greet", { description: "Greet from the build" }, (ctx) => {
+    ctx.log("Hello from", ctx.project.name);
+  });
+};
+```
+
+Insert this using the `elide-build-extension` snippet; `elide-build-task` adds another task.
+JavaScript has a JSDoc variant (`// @ts-check` enables its type diagnostics). Existing global
+`ElideBuild` declarations in your project take precedence over the bundled snapshot. This is
+editor support only: it does not configure standalone `tsc`, install Node.js types or change
+compiler settings.
+
+Declare `"tools/tasks.ts"` in the manifest's `extensions` block and follow its link to the module;
+configured `new { from = "..." config { ... } }` entries link too. Navigation reads unsaved manifest
+text, stays within the source tree, and skips remote, computed, raw and multiline declarations.
+Run tasks under **Elide → Tasks → Build targets**. Saving JS/TS modules or helpers refreshes that
+list without re-syncing JVM dependencies; execution reads saved files.
+
+An `Extensions.ExtensionArchive` artifact's **Build** lens runs
+`package-extension-<artifact key>` to produce its `.elx`. With Pkl language support installed,
+`elide-extension` and `elide-extension-archive` snippets insert declarations and archive artifacts.
+Build/sync need an Elide distribution supporting build extensions, selected with `elide.home`.
+
 ## Settings
 
 | Setting | Default | Description |

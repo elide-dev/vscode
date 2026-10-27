@@ -141,6 +141,7 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
   private readonly subscriptions: vscode.Disposable[];
   /** `elide build --inspect` tasks per workspace root (a standalone project's own), dropped when the model changes. */
   private readonly buildTasks = new Map<string, BuildTaskInfo[]>();
+  private buildGeneration = 0;
   /** Artifacts declared by each project's manifest, per project root, dropped when the model changes. */
   private readonly artifacts = new Map<string, ManifestArtifact[]>();
 
@@ -151,12 +152,23 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
     this.subscriptions = [
       workspace.onDidChange(() => {
         this.buildTasks.clear();
+        this.buildGeneration++;
         this.artifacts.clear();
         this.changed.fire(undefined);
       }),
       workspace.onDidChangeKomodoAvailability(() => this.changed.fire(undefined)),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration("elide.debug.adapter")) this.changed.fire(undefined);
+      }),
+      // Extension tasks can change without a manifest edit. Helpers imported by an extension count too;
+      // invalidate lazily rather than re-syncing JVM dependencies on every script save.
+      vscode.workspace.onDidSaveTextDocument((document) => {
+        if (document.uri.scheme !== "file" || !/\.(?:[cm]?js|jsx|[cm]?ts|tsx)$/.test(document.uri.fsPath)) return;
+        const project = workspace.projectFor(document.uri.fsPath);
+        if (!project) return;
+        this.buildTasks.delete(project.workspaceRoot ?? project.root);
+        this.buildGeneration++;
+        this.changed.fire(undefined);
       }),
       vscode.commands.registerCommand("elide.androidRefreshDevices", () => this.changed.fire(undefined)),
       vscode.tasks.onDidEndTask((event) => {
@@ -425,9 +437,10 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
     const cached = this.buildTasks.get(root);
     if (cached) return cached;
     const settings = readConfig(project.folder);
+    const generation = this.buildGeneration;
     const dist = resolveElideDistribution({ explicitHome: settings.home });
     const tasks = await new ElideCli(dist, root, settings.flags).buildInspect();
-    this.buildTasks.set(root, tasks);
+    if (generation === this.buildGeneration) this.buildTasks.set(root, tasks);
     return tasks;
   }
 

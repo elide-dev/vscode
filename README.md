@@ -554,6 +554,41 @@ supported; read what a pragma reports through its table-valued function, e.g.
 values fail explicitly rather than being silently truncated. Select smaller values or fewer columns when needed.
 
 
+## Authoring build extensions
+
+JavaScript/TypeScript build extensions use VS Code's built-in TypeScript language service. In an
+Elide project (an ancestor contains `elide.pkl`), the extension supplies the build API declarations:
+`ElideBuild`, task contexts/options, state, inputs/outputs and `ctx.tools`. Completion, hover,
+Go to Definition and type diagnostics work before the first sync, with or without `tsconfig.json`.
+No dependency install, generated configuration or Kotlin language server is needed. Existing
+project-provided global `ElideBuild` declarations take precedence over the bundled API.
+
+1. Create `tools/tasks.ts` and insert **Elide build extension** from **Insert Snippet** (prefix
+   `elide-build-extension`). Use `elide-build-task` to add another task. The JavaScript snippet
+   supplies the equivalent JSDoc annotation; enable `// @ts-check` for JavaScript type diagnostics.
+2. Declare the module in `elide.pkl`:
+   ```pkl
+   extensions {
+     "tools/tasks.ts"
+   }
+   ```
+   Local literal declarations, including `new { from = "tools/tasks.ts" config { ... } }`, link
+   directly to their files from the current editor buffer. Shared member paths such as
+   `../tools/tasks.ts` stay within the Elide workspace. Links never fetch remote extensions.
+   Computed paths, raw/multiline Pkl strings and files outside the source tree are not linked.
+3. In **Elide → Tasks → Build targets**, run the task your extension declares. Save module/helper
+   edits to refresh the task list; this does not re-sync JVM dependencies. Builds use saved files.
+4. Package reusable extensions with `Extensions.ExtensionArchive`. Its manifest **Build** lens
+   runs `package-extension-<artifact key>` and writes the `.elx` archive. With Pkl language support
+   installed, `elide-extension` inserts a declaration and `elide-extension-archive` inserts an
+   artifact (after `import "elide:Extensions.pkl" as Extensions`).
+
+The runnable example is [`samples/build-extension`](samples/build-extension). Build/sync require
+an Elide distribution supporting build extensions, selected with `elide.home`; some older
+development distributions share a version number without supporting them. Editor declarations
+are a bundled API snapshot, not a CLI capability probe or a substitute for declarations in a
+standalone `tsc` build. They do not install Node.js types or change the project's compiler settings.
+
 ## Settings
 
 | Setting | Default | Description |

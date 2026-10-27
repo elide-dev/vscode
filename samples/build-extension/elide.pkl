@@ -1,0 +1,21 @@
+amends "elide:project.pkl"
+
+import "elide:Extensions.pkl" as Extensions
+
+name = "build-extension-sample"
+version = "1.0.0"
+
+extensions {
+  new {
+    from = "tools/tasks.ts"
+    config { greeting = "Hello" }
+  }
+  "tools/javascript.mjs"
+}
+
+artifacts {
+  ["tasks"] = new Extensions.ExtensionArchive {
+    entrypoint = "tools/tasks.ts"
+    srcs { "tools/**/*.ts" }
+  }
+}

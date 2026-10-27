@@ -12,3 +12,5 @@
 !media/database/inspector.dex
 !language-configuration/**
 !syntaxes/**
+!node_modules/elide-build-typescript-plugin/**
+!snippets/**

@@ -1,0 +1,23 @@
+{
+  "Elide build extension declaration": {
+    "scope": "pkl",
+    "prefix": "elide-extension",
+    "description": "Declare a local Elide build extension",
+    "body": [
+      "extensions {",
+      "  \"${1:tools/tasks.ts}\"",
+      "}"
+    ]
+  },
+  "Elide extension archive artifact": {
+    "scope": "pkl",
+    "prefix": "elide-extension-archive",
+    "description": "Package a build extension (requires import \"elide:Extensions.pkl\" as Extensions)",
+    "body": [
+      "[\"${1:tasks}\"] = new Extensions.ExtensionArchive {",
+      "  entrypoint = \"${2:tools/tasks.ts}\"",
+      "  srcs { \"${3:tools/**/*.ts}\" }",
+      "}"
+    ]
+  }
+}

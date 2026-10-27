@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, test } from "bun:test";
-import { isNativeImageBinary, nativeImageBinary, parseManifestArtifacts } from "../src/index.js";
+import { artifactBuildTarget, isNativeImageBinary, nativeImageBinary, parseManifestArtifacts } from "../src/index.js";
 
 /** Shape of a real manifest: a jar the image is built from, a binary image, and a shared library. */
 const MANIFEST = `amends "elide:project.pkl"
@@ -70,6 +70,22 @@ describe("parseManifestArtifacts", () => {
 
   test("a manifest without artifacts yields none", () => {
     expect(parseManifestArtifacts(`name = "x"\njvm {\n  main = "Hello"\n}\n`)).toEqual([]);
+  });
+});
+
+describe("artifactBuildTarget", () => {
+  test("an extension archive packages by mapping key, not output name", () => {
+    const [artifact] = parseManifestArtifacts(`artifacts {
+  ["tasks"] = new Extensions.ExtensionArchive { name = "published-name"; entrypoint = "tools/tasks.ts" }
+}`);
+    expect(artifactBuildTarget(artifact!)).toBe("package-extension-tasks");
+  });
+
+  test("Android features retain their module target and ordinary artifacts retain their key", () => {
+    expect(artifactBuildTarget({ name: "feature", type: "AndroidFeature", line: 0 })).toBe("android-module-feature");
+    for (const type of ["Jar", "NativeImage", "AndroidApk", "AndroidAab", "AndroidAar", ""]) {
+      expect(artifactBuildTarget({ name: "app", type, line: 0 })).toBe("app");
+    }
   });
 });
 

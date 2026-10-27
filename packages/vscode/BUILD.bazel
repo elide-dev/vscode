@@ -1,12 +1,14 @@
 load("@aspect_rules_esbuild//esbuild:defs.bzl", "esbuild")
-load("@aspect_rules_js//js:defs.bzl", "js_binary")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_run_binary")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
 load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+load("@bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("@npm//packages/vscode:@vscode/vsce/package_json.bzl", vsce_bin = "bin")
 load("//tools/bazel/bun:defs.bzl", "bun_test")
 
 # The integration suite is bundled by the hand-written targets below, outside the tsc project (tsconfig.json covers src).
+# gazelle:exclude package-vsix.cjs
 # gazelle:exclude test
 
 npm_link_all_packages(name = "node_modules")
@@ -28,6 +30,7 @@ ts_project(
         "src/androidTesting.ts",
         "src/androidWireless.ts",
         "src/androidWirelessHtml.ts",
+        "src/buildExtensions.ts",
         "src/codelens.ts",
         "src/composeAgent.ts",
         "src/composeAgentMcp.ts",
@@ -87,6 +90,7 @@ ts_config(
     src = "tsconfig.json",
     visibility = [":__subpackages__"],
     deps = [
+        ":media/typescript/package.json",
         ":package.json",
         "//:tsconfig_base",
         "//packages/core:tsconfig",
@@ -127,11 +131,24 @@ copy_to_bin(
         "README.md",
         "icon.png",
         "package.json",
-    ] + glob([
-        "language-configuration/**",
-        "media/**",
-        "syntaxes/**",
-    ]),
+    ] + glob(
+        [
+            "language-configuration/**",
+            "media/**",
+            "snippets/**",
+            "syntaxes/**",
+        ],
+        exclude = ["media/typescript/**"],
+    ),
+)
+
+# tsserver accepts package names only and resolves them under each extension's node_modules.
+# Keep the maintained sources in media, but package a real plugin at its standard load path.
+copy_to_directory(
+    name = "typescript_plugin",
+    srcs = glob(["media/typescript/**"]),
+    out = "node_modules/elide-build-typescript-plugin",
+    root_paths = ["packages/vscode/media/typescript"],
 )
 
 # Building the extension type-checks it: `:vscode` emits nothing, and its tsc run is the `_typecheck` output.
@@ -140,11 +157,19 @@ filegroup(
     srcs = [
         ":assets",
         ":bundle",
+        ":typescript_plugin",
         ":vscode_typecheck",
     ],
 )
 
-vsce_bin.vsce(
+# Package the one unbundled tsserver dependency explicitly, without npm/yarn discovery or runtime dependencies.
+js_binary(
+    name = "package_vsix",
+    data = [":node_modules/@vscode/vsce"],
+    entry_point = "package-vsix.cjs",
+)
+
+js_run_binary(
     name = "vsix",
     srcs = [
         ":extension",
@@ -153,13 +178,9 @@ vsce_bin.vsce(
         "//:node_modules/@secretlint/secretlint-rule-preset-recommend",
     ],
     outs = ["elide.vsix"],
-    args = [
-        "package",
-        "--no-dependencies",
-        "--out",
-        "elide.vsix",
-    ],
+    args = ["elide.vsix"],
     chdir = package_name(),
+    tool = ":package_vsix",
 )
 
 # The pinned vsce, for publishing a built archive: `bazel run //packages/vscode:vsce -- publish --packagePath <abs path>`.
@@ -181,6 +202,8 @@ bun_test(
         ":node_modules/@elide/ide-core",
         ":node_modules/qrcode",
         ":node_modules/yauzl",
+        ":typescript_plugin",
+        "//:node_modules/typescript",
     ],
 )
 
@@ -228,6 +251,7 @@ js_binary(
         ":extension",
         ":integration_suite",
         ":node_modules/@vscode/test-electron",
+        "//samples/build-extension",
         "//samples/ktjvm",
         "//samples/workspace",
     ],
@@ -235,6 +259,7 @@ js_binary(
     # Output-tree copies are read-only; the runner copies the samples out of its runfiles and edits those copies.
     no_copy_to_bin = [
         "//samples/ktjvm",
+        "//samples/build-extension",
         "//samples/workspace",
     ],
     # The runner resolves the extension's real path in the output tree (runner.ts), which the fs patch would keep inside
