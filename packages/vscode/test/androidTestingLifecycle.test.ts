@@ -2,14 +2,14 @@ import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 
 // Keep VS Code module mocks out of Bun's shared registry for the other extension tests.
-test("A run that crashes after some results errors the tests it never reached with the crash text", () => {
+test("Android instrumented tests report crashes, honor exclusions and reject late device replies after disposal", () => {
   const source = new URL("../src/", import.meta.url).pathname;
   const result = spawnSync(process.execPath, ["--eval", `
     import assert from "node:assert/strict";
     import { mock } from "bun:test";
     import * as core from "@elide/ide-core";
     const source = ${JSON.stringify(source)};
-    const commands = new Map(), events = [];
+    const commands = new Map(), events = [], invocations = [];
     const collection = (owner) => {
       const items = new Map();
       return {
@@ -36,7 +36,8 @@ test("A run that crashes after some results errors the tests it never reached wi
         end() { this.onResult({ className: "X", method: "b", outcome: "failed" }); }
       },
       ElideCli: class {
-        async run(_argv, options) {
+        async run(argv, options) {
+          invocations.push(argv);
           const handler = options.onCommand();
           handler.record({ result: { className: "X", method: "a", outcome: "passed" } });
           handler.record({ problem: "Instrumentation run failed due to 'Process crashed.'" });
@@ -100,6 +101,27 @@ test("A run that crashes after some results errors the tests it never reached wi
       ["failed", "a:/app:app/X#b"],
       ["errored", "a:/app:app/X#c", "Instrumentation run failed due to 'Process crashed.'\\nelide exited with 1"],
     ]);
+    const suite = [...controller.suites.values()][0];
+    const token = { isCancellationRequested: false, onCancellationRequested: () => events$ };
+    invocations.length = 0; events.length = 0;
+    await controller.run({ include: [suite.item], exclude: [...suite.tests.values()] }, token);
+    assert.deepEqual(invocations, [], "excluding every method must not run the entire test APK without --tests");
+    assert.deepEqual(events, []);
+
+    const onlyClass = [...suite.item.children][0][1];
+    await controller.run({ include: [suite.item], exclude: [onlyClass] }, token);
+    assert.deepEqual(invocations, [], "excluding every class must not deploy either");
+
+    // A controller disposed while device preparation is pending owns no CLI yet, but must not launch one later.
+    const deviceReady = Promise.withResolvers(), preparing = Promise.withResolvers();
+    controller.deployments.readyDevice = () => { preparing.resolve(); return deviceReady.promise; };
+    const preparingRun = controller.run({ include: [suite.item] }, token);
+    await preparing.promise;
+    controller.dispose();
+    deviceReady.resolve("serial");
+    await preparingRun;
+    assert.deepEqual(invocations, [], "a late device reply must not launch a detached CLI after disposal");
+    assert.deepEqual(events, []);
     controller.dispose();
   `], { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 20_000 });
   expect(result.error).toBeUndefined();

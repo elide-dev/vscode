@@ -230,6 +230,8 @@ async function currentUser(adb: string, device: string, signal?: AbortSignal): P
 /** An installed application, and whether run-as lets the database explorer act as it. */
 export interface AndroidDatabasePackage {
   packageName: string;
+  /** Android user whose package list and run-as access were checked; pin it when opening the session. */
+  user: number;
   /** run-as's refusal for this package and user, e.g. `run-as: package not debuggable: …`; absent when it can be opened. */
   refusal?: string;
   /** The refusal is the one a non-debuggable (release) build meets. */
@@ -292,7 +294,7 @@ export async function listAndroidDatabasePackages(adb: string, device: string, s
   checkAbort(signal);
   return sorted.map((packageName) => {
     const refusal = refusals.get(packageName);
-    return refusal === undefined ? { packageName } : { packageName, refusal, ...(/not debuggable/i.test(refusal) ? { notDebuggable: true } : {}) };
+    return refusal === undefined ? { packageName, user } : { packageName, user, refusal, ...(/not debuggable/i.test(refusal) ? { notDebuggable: true } : {}) };
   });
 }
 

@@ -230,12 +230,23 @@ describe.skipIf(process.platform === "win32")("Android database transport safety
 
   test("discovers only third-party packages for the current user and rejects malformed/user-racing discovery", async () => {
     const fake = fixture();
-    expect(await listAndroidDatabasePackages(fake.options.adb, fake.options.device)).toEqual([{ packageName: "com.example.app" }, { packageName: "com.example.z" }]);
+    expect(await listAndroidDatabasePackages(fake.options.adb, fake.options.device)).toEqual([{ packageName: "com.example.app", user: 10 }, { packageName: "com.example.z", user: 10 }]);
     writeFileSync(path.join(fake.root, "packages"), "package:com.example.app;id");
     await expect(listAndroidDatabasePackages(fake.options.adb, fake.options.device)).rejects.toThrow("unsupported response");
     writeFileSync(path.join(fake.root, "packages"), "package:com.example.app");
     writeFileSync(path.join(fake.root, "behavior"), JSON.stringify({ switchUser: true }));
     await expect(listAndroidDatabasePackages(fake.options.adb, fake.options.device)).rejects.toThrow("changed during package discovery");
+  });
+
+  test("keeps the discovered package's user pinned while the application picker is open", async () => {
+    const fake = fixture();
+    const [selected] = await listAndroidDatabasePackages(fake.options.adb, fake.options.device);
+    expect(selected?.user).toBe(10);
+    writeFileSync(path.join(fake.root, "user"), "11");
+    const session = fake.session({ packageName: selected!.packageName, user: selected!.user });
+    await expect(session.databases()).rejects.toThrow("Selected Android user 10 is not the current user 11");
+    expect(fake.calls().some((args) => args.at(-1)?.includes("ELIDE_DATABASE_READY_"))).toBe(false);
+    expect(fake.requests()).toEqual([]);
   });
 
   test("asks run-as which applications it opens, in batches, and never offers a release build as openable", async () => {
@@ -245,7 +256,7 @@ describe.skipIf(process.platform === "win32")("Android database transport safety
     const packages = await listAndroidDatabasePackages(fake.options.adb, fake.options.device);
     expect(packages).toHaveLength(152);
     expect(packages.find((item) => item.packageName === "com.example.release")).toEqual({
-      packageName: "com.example.release", refusal: "run-as: package not debuggable: com.example.release", notDebuggable: true,
+      packageName: "com.example.release", user: 10, refusal: "run-as: package not debuggable: com.example.release", notDebuggable: true,
     });
     expect(packages.filter((item) => item.refusal)).toHaveLength(1);
     const probes = fake.calls().filter((args) => args[4] === "'sh'");

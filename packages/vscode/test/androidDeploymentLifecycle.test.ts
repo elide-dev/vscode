@@ -254,6 +254,30 @@ test("Android deployment ignores superseded replies and removed models, never a 
     assert.equal(await removal.controller.uninstall(onFirst, "sample.app", "first"), true);
     assert.deepEqual(uninstalled, [["/app", "first", "sample.app"]]);
     removal.controller.dispose();
+
+    // A reboot may recycle the serial while the destructive confirmation is open. It must not erase another AVD.
+    const identityRemoval = make();
+    identityRemoval.controller.devices = async () => [emulator];
+    let identity = "selected";
+    identityRemoval.controller.avdOf = async () => identity;
+    const onSelected = await identityRemoval.controller.resolve(target(emulator.serial));
+    const erase = Promise.withResolvers();
+    confirmation = erase.promise;
+    const erasing = identityRemoval.controller.uninstall(onSelected, "sample.app", emulator.serial);
+    identity = "other";
+    erase.resolve("Uninstall");
+    assert.equal(await erasing, false, "a confirmation cannot authorize another AVD at the same serial");
+    assert.equal(uninstalled.length, 1);
+
+    // An unanswered identity probe is not proof that this is the authorized emulator either.
+    identity = undefined;
+    confirmation = "Uninstall";
+    assert.equal(await identityRemoval.controller.uninstall(onSelected, "sample.app", emulator.serial), false);
+    assert.equal(uninstalled.length, 1);
+    identity = "selected";
+    assert.equal(await identityRemoval.controller.uninstall(onSelected, "sample.app", emulator.serial), true);
+    assert.deepEqual(uninstalled.at(-1), ["/app", emulator.serial, "sample.app"]);
+    identityRemoval.controller.dispose();
   `], { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 20_000 });
   expect(result.error).toBeUndefined();
   expect(result.stderr).toBe("");

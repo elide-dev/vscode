@@ -12,7 +12,7 @@ test("database inspection cancels stale discovery, drops late reads and never wr
     const commands = new Map(), sessions = [], panels = [], errors = [];
     const model = { android: { targets: [] } }, project = { root: "/app", model };
     const devices = [{ serial: "phone", state: "device", ready: true }];
-    let changed, discover = async () => [{ packageName: "com.example.app" }], confirm = async () => undefined;
+    let changed, discover = async () => [{ packageName: "com.example.app", user: 10 }], confirm = async () => undefined;
     let read = async () => ({ columns: ["title"], rows: [["original"]], hasMore: false });
     const disposable = () => ({ dispose() {} });
     mock.module("@elide/ide-core", () => ({
@@ -20,7 +20,7 @@ test("database inspection cancels stale discovery, drops late reads and never wr
       listAndroidDatabasePackages: (_adb, _device, signal) => discover(signal),
       AndroidDatabaseSession: class {
         disposed = false; writes = 0; cancelled = 0;
-        constructor() { sessions.push(this); }
+        constructor(options) { this.options = options; sessions.push(this); }
         async databases() { return ["notes.db"]; }
         async schema() { return [{ name: "notes", type: "table", sql: "CREATE TABLE notes(title TEXT)" }]; }
         async query() { return read(); }
@@ -61,11 +61,12 @@ test("database inspection cancels stale discovery, drops late reads and never wr
     const pending = open(); await started.promise;
     project.model = undefined; changed();
     assert.equal(signal.aborted, true);
-    project.model = model; changed(); discovery.resolve([{ packageName: "com.example.app" }]); await pending;
+    project.model = model; changed(); discovery.resolve([{ packageName: "com.example.app", user: 10 }]); await pending;
     assert.equal(panels.length, 0, "late discovery must not resurrect a removed project");
 
-    discover = async () => [{ packageName: "com.example.app" }];
+    discover = async () => [{ packageName: "com.example.app", user: 10 }];
     await open(); let panel = panels.at(-1);
+    assert.equal(sessions.at(-1).options.user, 10, "opening the panel pins the user whose packages were offered, not whoever is current at its first request");
     panel.send({ type: "ready" }); await flush();
     const delayed = Promise.withResolvers(); read = () => delayed.promise;
     panel.send({ type: "query", sql: "SELECT * FROM notes" }); await flush();
@@ -111,13 +112,13 @@ test("database inspection cancels stale discovery, drops late reads and never wr
     panel.send({ type: "refresh" }); await flush();
     assert.equal(panel.messages.some(message => message.type === "result"), false, "refresh after cancellation must not repaint an earlier query under the cancelled SQL");
 
-    const release = { packageName: "com.example.release", refusal: "run-as: package not debuggable: com.example.release", notDebuggable: true };
+    const release = { packageName: "com.example.release", user: 10, refusal: "run-as: package not debuggable: com.example.release", notDebuggable: true };
     const opened = panels.length;
     discover = async () => [release];
     await open();
     assert.equal(panels.length, opened, "a non-debuggable application is never opened");
     assert.match(errors.splice(0).join("\\n"), /None of the 1 installed applications on phone is debuggable/);
-    discover = async () => [release, { packageName: "com.example.app" }];
+    discover = async () => [release, { packageName: "com.example.app", user: 10 }];
     await open();
     assert.equal(panels.length, opened + 1, "debuggable applications are listed first");
     assert.deepEqual(errors, []);

@@ -254,7 +254,7 @@ export function registerAndroidDatabase(
       if (picked.refusal !== undefined) {
         throw new Error(`${picked.packageName} cannot be opened: ${picked.refusal}.${picked.notDebuggable ? ` ${ANDROID_DATABASE_DEBUGGABLE_HINT}` : ""}`);
       }
-      const options = { adb: adbExecutable(sdk), device: device.serial, packageName: picked.packageName, helperDex: context.asAbsolutePath("media/database/inspector.dex") };
+      const options = { adb: adbExecutable(sdk), device: device.serial, packageName: picked.packageName, user: picked.user, helperDex: context.asAbsolutePath("media/database/inspector.dex") };
       panels.get(root)?.dispose();
       const panel = new DatabasePanel(options, () => valid(root), () => { if (panels.get(root) === panel) panels.delete(root); });
       panels.set(root, panel);

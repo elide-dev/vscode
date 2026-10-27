@@ -59,6 +59,7 @@ export class ElideAndroidTestController implements vscode.Disposable {
   private queue: Promise<void> = Promise.resolve();
   /** The `android-test-*` processes of the runs in flight: the CLI is detached, so it would outlive the window. */
   private readonly running = new Set<AbortController>();
+  private disposed = false;
 
   constructor(
     private readonly workspace: ElideWorkspace,
@@ -84,6 +85,8 @@ export class ElideAndroidTestController implements vscode.Disposable {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     for (const controller of this.running) controller.abort(new Error("extension disposed"));
     this.running.clear();
     for (const timer of this.rescans.values()) clearTimeout(timer);
@@ -95,6 +98,7 @@ export class ElideAndroidTestController implements vscode.Disposable {
   /** `elide.androidTest`: run every instrumented test of the APK a row or lens names, or of the one picked. */
   private async runCommand(value: unknown): Promise<void> {
     await this.refresh();
+    if (this.disposed) return;
     const target = toAndroidTarget(value);
     const suites = [...this.suites.values()].filter((suite) => !target || (suite.root === target.root && (!target.artifact || suite.artifact === target.artifact)));
     if (suites.length === 0) {
@@ -210,6 +214,7 @@ export class ElideAndroidTestController implements vscode.Disposable {
   // --- running ---------------------------------------------------------------------------------------------------
 
   private async run(request: vscode.TestRunRequest, token: vscode.CancellationToken): Promise<void> {
+    if (this.disposed) return;
     const run = this.controller.createTestRun(request);
     try {
       const excluded = new Set((request.exclude ?? []).map((item) => item.id));
@@ -234,6 +239,8 @@ export class ElideAndroidTestController implements vscode.Disposable {
   private async runSuite(run: vscode.TestRun, suite: Suite, items: readonly vscode.TestItem[], excluded: ReadonlySet<string>, token: vscode.CancellationToken): Promise<void> {
     const leaves: vscode.TestItem[] = [];
     for (const item of items) collectLeaves(item, excluded, leaves);
+    // No remaining methods means no device operation, never an unfiltered run of the entire APK.
+    if (!leaves.length || this.disposed || token.isCancellationRequested) return;
     for (const leaf of leaves) run.enqueued(leaf);
     const errored = (message: string) => {
       for (const leaf of leaves) run.errored(leaf, new vscode.TestMessage(message));
@@ -241,11 +248,14 @@ export class ElideAndroidTestController implements vscode.Disposable {
 
     const project = this.workspace.projectAt(suite.root);
     if (!project) return errored(`Project ${suite.root} is not synced; run 'Elide: Sync Project(s)'.`);
-    if (!await vscode.workspace.saveAll(false)) return errored("Saving the open files failed, so the tests did not run.");
+    const saved = await vscode.workspace.saveAll(false);
+    if (this.disposed || token.isCancellationRequested) return;
+    if (!saved) return errored("Saving the open files failed, so the tests did not run.");
     const deployment = await this.deployments.resolve({ root: suite.root });
+    if (this.disposed || token.isCancellationRequested) return;
     const serial = deployment ? await this.deployments.readyDevice(deployment) : undefined;
+    if (this.disposed || token.isCancellationRequested) return;
     if (!serial) return errored("No Android deployment target device: select one with 'Elide: Select Android Deployment Target…'.");
-    if (token.isCancellationRequested) return;
 
     const settings = readConfig(project.folder);
     let dist;

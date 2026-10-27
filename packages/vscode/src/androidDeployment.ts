@@ -273,6 +273,16 @@ export class AndroidDeploymentController implements vscode.Disposable {
     }, UNINSTALL);
     if (confirmed !== UNINSTALL || this.disposed) return false;
     try {
+      // A stopped emulator's serial can be reused while the confirmation is open. The user authorized erasing
+      // this AVD's data, never another emulator that has since acquired its port.
+      if (avd) {
+        const sdk = androidSdkFor(deployment.project);
+        const currentAvd = sdk ? await this.avdOf(sdk, device) : undefined;
+        if (this.disposed) return false;
+        if (currentAvd !== avd) {
+          throw new Error(`Cannot confirm that ${device} still runs AVD '${avd}'${currentAvd ? ` (it now runs '${currentAvd}')` : ""}. Nothing was uninstalled; select the intended device and retry.`);
+        }
+      }
       await uninstallAndroidApp(deployment.project, device, application);
       return true;
     } catch (error) {

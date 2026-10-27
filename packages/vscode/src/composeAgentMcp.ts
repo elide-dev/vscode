@@ -295,6 +295,7 @@ export function registerComposePreviewMcp(context: vscode.ExtensionContext, prev
     }
     server = started;
     await context.workspaceState.update(PORT_KEY, started.port);
+    if (disposed || server !== started) return;
     context.environmentVariableCollection.description = "Lets agents in this terminal reach the Elide Compose preview MCP server.";
     context.environmentVariableCollection.replace(MCP_URL_VARIABLE, started.url);
     context.environmentVariableCollection.replace(MCP_TOKEN_VARIABLE, token);

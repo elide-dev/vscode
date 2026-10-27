@@ -534,7 +534,8 @@ A bundled Android helper opens the app's actual SQLite files, including committe
 root access, device `sqlite3` executable or app dependency is required. One helper process runs per open panel and
 serves all of its requests over its pipes, so a query costs tens of milliseconds rather than a VM start; a helper
 that fails or is cancelled is stopped, on the device too, and the next request starts a fresh one. It is scoped to
-the foreground Android user, and refuses to continue if that user changes. Closing the panel stops its requests and
+the foreground Android user recorded by the package picker, and refuses access if that user changes—even before
+the first query. Select the application again under the new profile. Closing the panel stops its requests and
 helper and removes its temporary DEX on a best-effort basis.
 
 This is not Android Studio's in-process inspector: external writes **do not notify Room observers**, and pages do

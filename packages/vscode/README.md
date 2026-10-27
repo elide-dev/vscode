@@ -410,6 +410,8 @@ from there, the APK's row or code lens, or **Elide: Run Android Instrumented Tes
 deployment target's device with `elide build android-test-<artifact> --device=<serial>`, narrowed to the selected
 classes and methods with `--tests`, and reports each test's pass, failure (with its stack trace) or skip. There is
 no Debug profile: the target attaches no debugger.
+Excluding every selected test runs nothing: it never falls back to the whole APK. Cancelling preparation or
+closing the extension prevents a late device reply from starting a test process.
 
 A failed Android Run, Build (APK or app bundle) or Debug says why in a notification: Elide's first error and its
 hint, also logged to the Elide output channel, with **Show Terminal** for the whole output. When the hint names a
@@ -417,8 +419,10 @@ missing keystore (`Create one with: elide build android-keystore-<artifact>`), t
 Android Signing Keystore**. When a Run or Debug cannot install because the app on the device is signed with another
 key (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, as after a new debug keystore), it offers **Uninstall and Retry**: after a
 confirmation naming the device, since uninstalling erases the app's data there, it runs `adb uninstall` for that
-application ID and the same Run or Debug again. These tasks run in a terminal the extension feeds, with Elide's
-plain-text progress (`ELIDE_PROGRESS=plain`); the `$elide` problem matcher reads it as before.
+application ID and the same Run or Debug again. For a pinned AVD, the extension rechecks its identity after
+confirmation and refuses deletion if the serial now belongs to another AVD or its identity cannot be read.
+These tasks run in a terminal the extension feeds, with Elide's plain-text progress (`ELIDE_PROGRESS=plain`);
+the `$elide` problem matcher reads it as before.
 
 For Android workspaces, Elide starts the JetBrains Kotlin server with synchronous JDI metadata queries. In
 JetBrains Kotlin 0.0.13, a cold asynchronous renderer-selection future can remain pending after a Kotlin expression
@@ -675,6 +679,8 @@ Compose Preview MCP Server Configuration** copies an `mcpServers` entry with bot
 `claude mcp add --transport http elide-compose-preview "$ELIDE_COMPOSE_PREVIEW_MCP_URL" --header "Authorization:
 Bearer $ELIDE_COMPOSE_PREVIEW_MCP_TOKEN"`). `elide.android.composePreview.mcp.enabled` turns it off. Rendering runs
 the project's code, as the preview panel does: the tools refuse to run in an untrusted workspace.
+Malformed HTTP request targets receive HTTP 400 without interrupting other requests. Closing the extension clears
+its terminal URL/token contributions, including when startup is still persisting the server's port.
 
 | Tool | What it does |
 | --- | --- |
@@ -788,7 +794,8 @@ the deployment target's device is preferred, and an unavailable selected device 
 Requires a trusted, synced Android project, Android 8.0 / API 26+, and a debuggable app with working `adb run-as`.
 Launch the app and exercise the screen that creates its database before inspecting it. The picker lists installed
 third-party apps for the foreground Android user; apps `run-as` refuses (release or otherwise non-debuggable builds)
-are listed apart with its reason and cannot be opened.
+are listed apart with its reason and cannot be opened. The selection retains that user: switching profiles
+while the picker is open requires selecting the application again, before any database access.
 
 The panel provides:
 
