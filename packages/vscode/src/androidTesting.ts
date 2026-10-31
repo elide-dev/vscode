@@ -61,10 +61,12 @@ export class ElideAndroidTestController implements vscode.Disposable {
   private readonly running = new Set<AbortController>();
   private disposed = false;
 
+  /** `onInvoke` sees the argument of every `elide.androidTest` invocation, before the run starts. */
   constructor(
     private readonly workspace: ElideWorkspace,
     private readonly ui: ElideUi,
     private readonly deployments: AndroidDeploymentController,
+    onInvoke: (target: unknown) => void,
   ) {
     this.controller.refreshHandler = () => this.refresh();
     this.profile = this.controller.createRunProfile("Run on Android Deployment Target", vscode.TestRunProfileKind.Run,
@@ -80,7 +82,10 @@ export class ElideAndroidTestController implements vscode.Disposable {
       }),
       // A new model can declare, drop or re-target a test APK, or change what Elide lists for it.
       workspace.onDidChange(() => void this.refresh()),
-      vscode.commands.registerCommand("elide.androidTest", (target: unknown) => this.runCommand(target)),
+      vscode.commands.registerCommand("elide.androidTest", (target: unknown) => {
+        onInvoke(target);
+        return this.runCommand(target);
+      }),
     ];
   }
 

@@ -671,6 +671,30 @@
         "command": "elide.revealLibrary",
         "category": "Elide",
         "title": "Reveal in Finder/Explorer"
+      },
+      {
+        "command": "elide.pinTarget",
+        "category": "Elide",
+        "title": "Pin to Top",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "elide.unpinTarget",
+        "category": "Elide",
+        "title": "Unpin",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "elide.forgetFrequentTarget",
+        "category": "Elide",
+        "title": "Remove from Frequently Used",
+        "icon": "$(close)"
+      },
+      {
+        "command": "elide.clearFrequentTargets",
+        "category": "Elide",
+        "title": "Clear Frequently Used",
+        "icon": "$(clear-all)"
       }
     ],
     "menus": {
@@ -708,6 +732,22 @@
         },
         {
           "command": "elide.revealLibrary",
+          "when": "false"
+        },
+        {
+          "command": "elide.pinTarget",
+          "when": "false"
+        },
+        {
+          "command": "elide.unpinTarget",
+          "when": "false"
+        },
+        {
+          "command": "elide.forgetFrequentTarget",
+          "when": "false"
+        },
+        {
+          "command": "elide.clearFrequentTargets",
           "when": "false"
         },
         {
@@ -847,42 +887,42 @@
         },
         {
           "command": "elide.executeTask",
-          "when": "view == elide.projects && viewItem == task",
+          "when": "view == elide.projects && viewItem =~ /^task(\\.|$)/",
           "group": "inline@1"
         },
         {
           "command": "elide.executeTask",
-          "when": "view == elide.projects && viewItem == buildTarget",
+          "when": "view == elide.projects && viewItem =~ /^buildTarget(\\.|$)/",
           "group": "inline@1"
         },
         {
           "command": "elide.androidRunDeviceTask",
-          "when": "view == elide.projects && viewItem == buildTargetDevice",
+          "when": "view == elide.projects && viewItem =~ /^buildTargetDevice(\\.|$)/",
           "group": "inline@1"
         },
         {
           "command": "elide.executeTask",
-          "when": "view == elide.projects && viewItem == buildTargetDebuggable",
+          "when": "view == elide.projects && viewItem =~ /^buildTargetDebuggable(\\.|$)/",
           "group": "inline@1"
         },
         {
           "command": "elide.debug",
-          "when": "view == elide.projects && viewItem == buildTargetDebuggable",
+          "when": "view == elide.projects && viewItem =~ /^buildTargetDebuggable(\\.|$)/",
           "group": "inline@2"
         },
         {
           "command": "elide.runArtifact",
-          "when": "view == elide.projects && viewItem == buildTargetRunnable",
+          "when": "view == elide.projects && viewItem =~ /^buildTargetRunnable(\\.|$)/",
           "group": "inline@1"
         },
         {
           "command": "elide.debugArtifact",
-          "when": "view == elide.projects && viewItem == buildTargetRunnable",
+          "when": "view == elide.projects && viewItem =~ /^buildTargetRunnable(\\.|$)/",
           "group": "inline@2"
         },
         {
           "command": "elide.executeTask",
-          "when": "view == elide.projects && viewItem == buildTargetRunnable",
+          "when": "view == elide.projects && viewItem =~ /^buildTargetRunnable(\\.|$)/",
           "group": "inline@3"
         },
         {
@@ -911,12 +951,12 @@
         },
         {
           "command": "elide.build",
-          "when": "view == elide.projects && viewItem == androidAab",
+          "when": "view == elide.projects && viewItem =~ /^androidAab(\\.|$)/",
           "group": "inline@1"
         },
         {
           "command": "elide.build",
-          "when": "view == elide.projects && viewItem =~ /^(androidAar|androidFeature)$/",
+          "when": "view == elide.projects && viewItem =~ /^(androidAar|androidFeature)(\\.|$)/",
           "group": "inline@1"
         },
         {
@@ -967,6 +1007,26 @@
         {
           "command": "elide.revealLibrary",
           "when": "view == elide.projects && viewItem == library"
+        },
+        {
+          "command": "elide.pinTarget",
+          "when": "view == elide.projects && viewItem =~ /^(task|buildTarget|androidApk|androidAab|androidAar|androidFeature)(?!.*\\.pinned$)/",
+          "group": "pin@1"
+        },
+        {
+          "command": "elide.unpinTarget",
+          "when": "view == elide.projects && viewItem =~ /\\.pinned$/",
+          "group": "pin@1"
+        },
+        {
+          "command": "elide.forgetFrequentTarget",
+          "when": "view == elide.projects && viewItem =~ /\\.frequent$/",
+          "group": "pin@2"
+        },
+        {
+          "command": "elide.clearFrequentTargets",
+          "when": "view == elide.projects && viewItem == frequent",
+          "group": "inline@1"
         },
         {
           "command": "elide.cancelActivity",

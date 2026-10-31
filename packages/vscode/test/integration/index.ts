@@ -395,10 +395,10 @@ export async function run(): Promise<void> {
   const taskNodes = await childrenOf("Tasks");
   assert.deepEqual(taskNodes.map((n) => n.label), ["build", "test", "install", "Build targets"]);
   const targetRows = (await explorer.getChildren(taskNodes[3])) as { kind: string; label: string; group?: string; debuggable?: boolean }[];
-  // Described targets are rows; the ones Elide gives no description (its internal targets) sit in one group after them.
   const targets = targetRows.filter((n) => n.kind === "buildTarget");
-  assert.ok(targets.length > 0 && targetRows.every((n) => n.kind === "buildTarget" || n.group === "otherBuildTargets"),
-    `elide build --inspect targets, got ${JSON.stringify(targetRows)}`);
+  assert.ok(targetRows.every((n) => n.kind === "buildTarget"), `flat standalone targets, got ${JSON.stringify(targetRows)}`);
+  assert.ok(targets.some((n) => n.label === "index-local"), "undescribed targets are not hidden in a separate group");
+  assert.deepEqual(targets.map((n) => n.label), targets.map((n) => n.label).sort(), "standalone targets retain inspect order");
   // Only targets that start a JVM declare `--debugger`, and those are the ones the tree offers a Debug action on.
   assert.deepEqual(
     targets.filter((n) => n.debuggable).map((n) => n.label).sort(),

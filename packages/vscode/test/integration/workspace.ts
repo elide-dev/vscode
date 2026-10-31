@@ -122,12 +122,27 @@ export async function runWorkspaceScenario(): Promise<void> {
     "a member shows every section it has",
   );
   const tasks = (await explorer.getChildren(cliGroups.find((g) => g.group === "tasks"))) as Node[];
-  // Described targets are rows; the undescribed ones Elide uses internally sit in one group after them.
+  // Every target stays in inspect order, including the internal targets that have no description.
   const targets = ((await explorer.getChildren(tasks.find((t) => t.group === "buildTargets"))) as Node[]).filter((t) => t.kind === "buildTarget");
   const labels = targets.map((t) => t.label);
   assert.ok(labels.includes("cli") && labels.includes("run"), `cli's own targets listed, got ${JSON.stringify(labels)}`);
   assert.ok(labels.every((l) => !l.includes(":")), `labels carry no project scope, got ${JSON.stringify(labels)}`);
   assert.ok(targets.every((t) => t.root === member("cli") && t.args?.[0] === t.label), "targets run in cli under their own name");
+  assert.ok(labels.includes("index-local"), "undescribed targets stay alongside the other targets");
+  assert.deepEqual(labels, [...labels].sort(), "targets retain inspect's name order");
+  const rootTasks = (await explorer.getChildren(rootGroups.find((g) => g.group === "tasks"))) as Node[];
+  const targetProjects = (await explorer.getChildren(rootTasks.find((g) => g.group === "buildTargets"))) as Node[];
+  assert.deepEqual(targetProjects.map((n) => [n.kind, n.label]),
+    ["logstat", ...MEMBERS].map((name) => ["buildTargetProject", name]), "inspect project groups, root first then declaration order");
+  for (const group of targetProjects) {
+    const rows = (await explorer.getChildren(group)) as Node[];
+    const root = group.label === "logstat" ? sample : member(group.label);
+    assert.ok(rows.every((row) => row.kind === "buildTarget" && row.root === root && row.args?.[0] === row.label),
+      `${group.label}'s grouped targets execute in their own project`);
+    assert.ok(rows.some((row) => row.label === "index-local"), `${group.label}'s undescribed targets are not hidden`);
+    assert.deepEqual(rows.map((row) => row.label), rows.map((row) => row.label).sort(), `${group.label}'s inspect order`);
+    if (group.label === "cli") assert.deepEqual(rows.map((row) => row.label), labels, "workspace and member list the same targets");
+  }
   log("sidebar ok");
 
   // 5. Test explorer: each member's tests are discovered under that member. `elide test` at the root runs the whole

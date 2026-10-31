@@ -63,6 +63,7 @@ ts_project(
         "src/newProject.ts",
         "src/output.ts",
         "src/projects.ts",
+        "src/targetShortcuts.ts",
         "src/tasks.ts",
         "src/testing.ts",
         "src/workspacePaths.ts",
