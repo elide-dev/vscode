@@ -2,7 +2,7 @@
   "name": "elide",
   "displayName": "Elide",
   "description": "Elide for Kotlin and Java: project sync, build/run/debug, tests, Android SDK diagnostics and Logcat.",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "preview": true,
   "publisher": "elide",
   "author": "Elide Technologies, Inc.",
@@ -70,7 +70,9 @@
     "languages": [
       {
         "id": "elide-android-logcat",
-        "aliases": ["Elide Android Logcat"]
+        "aliases": [
+          "Elide Android Logcat"
+        ]
       }
     ],
     "grammars": [
