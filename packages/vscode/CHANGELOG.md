@@ -6,95 +6,52 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ## [0.7.0](https://github.com/elide-dev/vscode/compare/v0.6.1...v0.7.0) (2026-11-01)
 
-
 ### Added
 
-* adopt Elide's structured progress records ([97aca17](https://github.com/elide-dev/vscode/commit/97aca17dbaacd7d249bd7b0aaf0144424a9b2d4d))
-* **android:** boot a stopped emulator target before Run and Debug ([f7c3e45](https://github.com/elide-dev/vscode/commit/f7c3e457f527c41e0a362758c7838c31488800b3))
-* **android:** streamline deployment, diagnostics, and source navigation ([d9ed147](https://github.com/elide-dev/vscode/commit/d9ed147fd217d7ca3579e390f7afadb98b4e114b))
-* **core:** format logcat records and read APK application IDs ([ba487cd](https://github.com/elide-dev/vscode/commit/ba487cdffdc337aae974b7585f07b8b54a544fad))
-* **vscode:** automatic Compose preview resource context ([bedce8c](https://github.com/elide-dev/vscode/commit/bedce8c46116b4175c9bfb5756e83e688e947041))
-* **vscode:** color-coded, aligned logcat without filter prompts ([c943fdc](https://github.com/elide-dev/vscode/commit/c943fdc570111679e60362484bc130f54ee43c16))
-* **vscode:** Komodo engine hosts Android cards on layoutlib, with live input ([bb993df](https://github.com/elide-dev/vscode/commit/bb993df1747f16721860b70026f6a30ea2cb87de))
-* **vscode:** opt-in Komodo engine for the Compose preview, with per-card fallback ([83d5d21](https://github.com/elide-dev/vscode/commit/83d5d21bb6e675dd798ca49c8b8455739bb95b2d))
-* **vscode:** suppress FunctionName on @Composable functions ([178a46b](https://github.com/elide-dev/vscode/commit/178a46bf14793fe6b4ba5d392c5fd2f4d3714293))
-
-
-### Fixed
-
-* remove integrations requiring unreleased runtime features ([d2c1760](https://github.com/elide-dev/vscode/commit/d2c1760e93a63785253cbae4794e6dc9cc993e2c))
-* **sync:** keep skipped tasks, honor mid-sync manifest edits and imported modules ([e6961fc](https://github.com/elide-dev/vscode/commit/e6961fcc74900cdb83d3b29631482a86417790a3))
-* **sync:** regenerate R classes the build no longer records ([ee9302d](https://github.com/elide-dev/vscode/commit/ee9302df0b48770fa2f1bf61150fe5e77d58a35b))
-* **sync:** watch the local Pkl modules manifests import ([e8dfc4f](https://github.com/elide-dev/vscode/commit/e8dfc4fc22ec6f1fd350bd010034ec358979daf3))
-
-
-### Changed
-
-* **sync:** resolve workspace projects concurrently, batch platform queries ([2454de3](https://github.com/elide-dev/vscode/commit/2454de3b95c71fa12366be3665cf96a68b6b3941))
-
-## [Unreleased]
-
-### Added
-
-- Compose projects: the Kotlin LSP no longer warns that `@Composable` function names should start with a lowercase
-  letter. Sync loads a small Elide plugin into the language server (`-Dplugin.path` in `intellij.additionalJvmArgs`)
-  and relaunches it once; other capitalized function names are still reported.
-- **Check Android Environment**: cancellable, read-only diagnostics for an independently installed SDK,
-  platform-tools and connected devices. Works without `elide.pkl` or a successful sync and never installs
+- **Android SDK diagnostics:** **Check Android Environment** inspects an independently installed SDK,
+  platform-tools and connected devices. Works without `elide.pkl` or a successful sync; never installs
   components or accepts licenses.
-- Clickable Kotlin/Java application stack frames in Android Logcat, resolving across synced source roots and
-  ordinary unsynced workspace folders. Ambiguous, native, unknown and out-of-range frames remain unlinked.
-- An **Activity** view in the Elide sidebar recording each sync as it runs:
-  its steps, every `elide` command they ran and the build tasks Elide reported finishing, each with its duration and
-  share of the whole. Rows open the step's output, with timestamps, in an editor; running operations can be cancelled.
-- Sync progress that stays visible: the status bar names the step in progress with the elapsed time, a sync running
-  longer than two seconds shows a cancellable notification (`elide.sync.showProgressNotification`), the status bar
-  tooltip and the `Elide` output channel break the last sync down by step, and a failed sync names the step that
-  failed and offers its log.
-- Android Logcat output channels with device selection, application UID, priority and literal-text filters,
-  and clear, stop and restart commands. Clearing the editor output leaves the device's shared log buffer intact.
-  **Show Android Logcat** selects a connected device and streams all applications. Filters accept an application ID
-  manually or read it from an existing APK, including renamed IDs. Showing a running stream reveals it without restarting. Records are
-  aligned into time, PID-TID, tag, priority and message columns, multi-line messages and stack traces are indented
-  under one header, and priorities, tags, exceptions, application versus framework frames, URLs and strings are
-  color-coded through the theme.
+- **Android Logcat:** connected-device selection, aligned and theme-colored output, application UID,
+  priority and literal-text filters, and clear, stop and restart commands. Streams initially show all
+  applications; filters accept an application ID manually or read it from an existing APK, including
+  renamed IDs. Showing a running stream reveals it without restarting. Clearing output leaves the
+  device's shared log buffer intact.
+- **Logcat source navigation:** clickable Kotlin/Java application stack frames across synced source
+  roots and ordinary unsynced workspace folders. Ambiguous, native, unknown and out-of-range frames
+  remain unlinked.
+- **Compose editor analysis:** detect Compose runtime dependencies or Kotlin compiler-plugin declarations,
+  use the JetBrains language server's matching Compose compiler plugin, and suppress `FunctionName`
+  warnings only on `@Composable` functions. Other capitalized function names remain reported.
+- **Activity view:** inspect sync steps, CLI commands and tasks reported in Elide's ordinary text output,
+  with durations, skipped-task reasons and timestamped logs. Cancel running operations from their rows.
+- **Visible sync status:** current step and elapsed time in the status bar, a cancellable notification
+  for longer syncs, timing breakdowns, and an actionable log when a step fails.
 
 ### Changed
 
-- Updated the extension and activity-bar icons to the Elide block mark, with the gradient SVG source included.
-
-- Kotlin by JetBrains is installed as a companion extension instead of a hard activation dependency. Elide's CLI
-  features remain available independently of language-server startup; Kotlin and Java source documents activate
-  the companion on demand, including Java-first projects.
-- The `Elide` output channel no longer echoes the exported project model and resolved classpaths during sync; it shows
-  each command line, the output Elide prints for a person, and each command's exit status and duration.
-- Syncs resolve each project's classpaths with one `elide classpath --json` per project on Elide 1.6.1 and newer,
-  instead of one process per source set and usage. Older releases are still asked one query at a time.
-- The projects of a workspace resolve concurrently once dependencies are installed, and member manifests are
-  read concurrently. The Activity view shows each project as a step of its own.
-- The Activity view keeps the build tasks Elide skipped as steps of their own, with the reason (`Up to date`, `From
-  cache`) and, on Elide releases that report it, the time their up-to-date check took. Listing the build's tasks
-  (`elide build --inspect`) is a sync step of its own instead of counting towards reading the member manifests.
-- Removed unreleased-runtime integrations: Android build/deployment/debug/emulator workflows, generated Android
-  and annotation-processor editor models, Compose previews and structured progress records. The full implementation
-  remains recoverable from `archive/pre-runtime-compat-20261101` (commit `91770cc`).
+- Resolve workspace projects and member manifests concurrently; use batched JSON classpath queries
+  where supported, retaining individual-query compatibility for older Elide releases.
+- Install Kotlin by JetBrains as a companion rather than a hard activation dependency. Elide CLI
+  features remain available independently; Kotlin and Java source documents activate the companion.
+- Keep sync output focused on commands, human-readable CLI output, exit status and durations instead
+  of echoing exported project models and classpaths.
+- Migrate build, type-checking, unit tests and VSIX packaging to Bazel and pnpm.
+- Update extension and activity-bar icons to the Elide block mark.
+- Limit this release to released-runtime capabilities. Android build/deployment/debug/emulator
+  workflows, generated Android/Hilt editor models, Compose previews (including Komodo), and structured
+  progress-record integration are not included.
 
 ### Fixed
 
-- Logcat source navigation includes legitimate package directories named `build`, `out`, `dist` or `generated`
-  beneath the declared source roots.
-- Editor smoke runs disable updates to the shared extensions directory and keep macOS scratch paths short without
-  overriding `TMPDIR`, so the Kotlin client and JVM agree on the daemon port-file location.
-- The local Bazel integration runner resolves runfiles symlinks before copying mutable samples, so test edits stay
-  in the temporary workspace instead of reaching the source checkout.
-- A manifest edit made while a sync runs, or within three seconds after one ends, is no longer ignored: the folder is
-  marked out of date (and re-synced when `elide.sync.onManifestChange` is `always`) instead of the sync's success
-  clearing it, and the next sync installs dependencies even when another `elide` command, such as the interrupted
-  sync's own, rewrote the lockfile after the edit.
-- A sync installs dependencies when a Pkl module a manifest imports, amends or extends (such as a shared
-  `versions.pkl`) changed since the last install, not only when a manifest itself did. Editing such a module, even
-  one outside the workspace folder, also marks the project out of date and applies `elide.sync.onManifestChange`, as
-  an `elide.pkl` edit does.
+- Preserve manifest edits made during or immediately after sync, mark the model stale and resync
+  according to policy, and reinstall dependencies even if an intervening command rewrote the lockfile.
+- Watch local Pkl modules imported, amended or extended by manifests, including modules outside the
+  workspace, and reinstall dependencies when those inputs change.
+- Include legitimate package directories named `build`, `out`, `dist` or `generated` in Logcat source
+  navigation beneath declared source roots.
+- Keep integration smoke edits in temporary fixture copies, disable updates to shared extensions, and
+  use short macOS scratch paths without overriding `TMPDIR`.
+
 
 ## [0.6.1](https://github.com/elide-dev/vscode/compare/v0.6.0...v0.6.1) (2026-10-13)
 
