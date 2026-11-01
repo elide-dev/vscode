@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { emitKotlinLspWorkspace, kotlinAdditionalArguments, portablePath, type ProjectModel } from "../src/index.js";
+import { decodeManifest, emitKotlinLspWorkspace, kotlinAdditionalArguments, portablePath, type ProjectModel } from "../src/index.js";
 
 const ws = "/ws";
 
@@ -37,6 +37,7 @@ function model(over: Partial<ProjectModel> = {}): ProjectModel {
     ],
     entrypoints: [],
     warnings: [],
+    members: [],
     ...over,
   };
 }
@@ -103,6 +104,21 @@ describe("emitKotlinLspWorkspace", () => {
     expect(ks.isTestModule).toBe(true);
     expect(ks.additionalArguments).toBe("-language-version 2.4 -api-version 2.4 -jvm-target 21 -Xcontext-parameters");
     expect(kotlinAdditionalArguments({ freeCompilerArgs: [] })).toBeNull();
+  });
+
+  test("declared Compose dependencies enable only the matching IDE compiler plugin", () => {
+    const manifest = decodeManifest(JSON.stringify({
+      dependencies: { maven: { packages: [{
+        "@type": "elide.jvm.MavenPackageDependency.OfString",
+        value: "org.jetbrains.compose.runtime:runtime-desktop:1.8.0",
+      }] } },
+    }));
+    const project = model({ kotlin: { freeCompilerArgs: [], compose: manifest.kotlin?.compose } });
+    const plugin = "/kotlin-server/compose-ide-plugin.jar";
+    const enabled = emitKotlinLspWorkspace([project], { workspaceRoot: ws, composeCompilerPlugin: plugin });
+    expect(enabled.kotlinSettings[0]!.compilerArguments).toBe(`J${JSON.stringify({ pluginClasspaths: [plugin] })}`);
+    expect(emitKotlinLspWorkspace([project], { workspaceRoot: ws }).kotlinSettings[0]!.compilerArguments).toBeNull();
+    expect(emitKotlinLspWorkspace([model()], { workspaceRoot: ws, composeCompilerPlugin: plugin }).kotlinSettings[0]!.compilerArguments).toBeNull();
   });
 
   test("no JDK → inheritedSdk and no sdks", () => {

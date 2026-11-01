@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { compareElideVersions, isSupportedElideVersion, parseElideVersion } from "../src/index.js";
+import { compareElideVersions, isSupportedElideVersion, parseElideVersion, supportsBatchedClasspath } from "../src/index.js";
 
 describe("parseElideVersion", () => {
   test("reads the release triple, ignoring a build suffix", () => {
@@ -34,5 +34,17 @@ describe("isSupportedElideVersion", () => {
   test("an unparsable version never blocks the integration", () => {
     expect(isSupportedElideVersion("garbage")).toBe(true);
     expect(isSupportedElideVersion("")).toBe(true);
+  });
+});
+
+describe("supportsBatchedClasspath", () => {
+  test("batched classpath queries begin with 1.6.1", () => {
+    expect(supportsBatchedClasspath("1.6.0")).toBe(false);
+    expect(supportsBatchedClasspath("1.6.1+abc1234")).toBe(true);
+    expect(supportsBatchedClasspath("2.0.0")).toBe(true);
+  });
+
+  test("an unknown display string leaves capability detection to the command", () => {
+    expect(supportsBatchedClasspath("development build")).toBeUndefined();
   });
 });

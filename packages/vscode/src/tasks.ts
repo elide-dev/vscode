@@ -150,9 +150,7 @@ class ObservedElideTerminal implements vscode.Pseudoterminal {
         signal: this.controller.signal,
         onCommand: this.onCommand,
         onLine: (line) => this.written.fire(`${withAbsoluteLocation(line, cwd)}\r\n`),
-        // The terminal is read by a person and the `$elide` matcher, not as records; with piped output, `plain` is
-        // the mode that still says which task started.
-        env: { ELIDE_PROGRESS: "plain", ...env },
+        env,
       }))
       .then(
         () => 0,

@@ -26,20 +26,8 @@ export interface ElideConfig {
   miDebuggerPath: string | undefined;
   /** Classifier jars fetched during sync (`elide install --with …`). */
   installClassifiers: string[];
-  /** Android SDK root for the device list; empty resolves the one the build would use. */
+  /** Android SDK root for standalone device tools; empty uses environment and SDK conventions. */
   androidSdk: string | undefined;
-  /** Whether `Elide: Start Android Emulator` boots the AVD with a window. */
-  androidEmulatorWindow: boolean;
-  /** Start Compose preview infrastructure when a previewable Kotlin file is focused. */
-  composePreviewPrewarm: boolean;
-  /** Minutes an unused Compose preview backend stays warm; 0 stops it with its panel. */
-  composePreviewKeepAlive: number;
-  /** The Compose preview engine: layoutlib snapshots (default) or the opt-in live Komodo engine. */
-  composePreviewEngine: "layoutlib" | "komodo";
-  /** The komodo-preview daemon; undefined resolves it beside the Elide binary, then on PATH. */
-  composePreviewKomodoPath: string | undefined;
-  /** Cards the Komodo engine cannot render keep their layoutlib snapshot (else they show the reason). */
-  composePreviewKomodoFallback: boolean;
   codeLens: boolean;
   /** `-f` build flags added to every Elide invocation (`elide.flags`). */
   flags: string[];
@@ -62,12 +50,6 @@ export function readConfig(scope?: vscode.ConfigurationScope): ElideConfig {
     miDebuggerPath: nonEmpty(c.get<string>("debug.miDebuggerPath")),
     installClassifiers: c.get<string[]>("install.classifiers", ["sources"]),
     androidSdk: nonEmpty(c.get<string>("android.sdk")),
-    androidEmulatorWindow: c.get<boolean>("android.emulatorWindow", true),
-    composePreviewPrewarm: c.get<boolean>("android.composePreview.prewarm", true),
-    composePreviewKeepAlive: Math.max(0, c.get<number>("android.composePreview.keepAliveMinutes", 10)),
-    composePreviewEngine: c.get<string>("android.composePreview.engine", "layoutlib") === "komodo" ? "komodo" : "layoutlib",
-    composePreviewKomodoPath: nonEmpty(c.get<string>("android.composePreview.komodo.path")),
-    composePreviewKomodoFallback: c.get<boolean>("android.composePreview.komodo.fallback", true),
     codeLens: c.get<boolean>("codeLens.enabled", true),
     flags: elideStringArrayFrom(c.get("flags")),
     commandOptions: {

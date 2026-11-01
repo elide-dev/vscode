@@ -5,7 +5,6 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseElideRecord, renderElideRecord, type ElideRecord } from "./buildOutput.js";
 import { parseBuildInspect, type BuildTaskInfo } from "./buildTasks.js";
 import { ElideCommandFailedError, ElideNotFoundError, InvalidElideHomeError, ManifestParseError } from "./errors.js";
 import { decodeInitTemplates, initArgs, type InitTemplate } from "./init.js";
@@ -13,7 +12,7 @@ import { elideFlagArgs } from "./invocation.js";
 import { decodeManifest, type Manifest } from "./manifest.js";
 import { pklModuleReferences } from "./pkl.js";
 import { isPathUnder, normalizePath } from "./sourceRoots.js";
-import { compareElideVersions, parseElideVersion, supportsProgressRecords, type ElideVersion } from "./version.js";
+import { compareElideVersions, parseElideVersion, supportsBatchedClasspath, type ElideVersion } from "./version.js";
 
 /** First release where `elide manifest` became `elide project export`; both print the same document. */
 const PROJECT_EXPORT_VERSION: ElideVersion = { major: 1, minor: 6, patch: 0 };
@@ -139,8 +138,7 @@ export type ClasspathQuery = `${string}:${ClasspathUsage}`;
 
 export interface RunOptions {
   /**
-   * Receives every output line (without trailing newline) as it arrives. Progress records on stderr arrive as the
-   * text the CLI prints without a terminal, and not at all when they have none: see {@link renderElideRecord}.
+   * Receives every stdout and stderr line (without trailing newline) as it arrives.
    */
   onLine?: (line: string, stderr: boolean) => void;
   signal?: AbortSignal;
@@ -156,12 +154,9 @@ export interface RunOptions {
 export interface CommandObserver {
   /**
    * An output line meant for a person. The stdout of a command whose stdout is its result — the exported project,
-   * a classpath, a task listing — is data, and is not passed here. A progress record arrives as its text, after
-   * {@link record} saw it.
+   * a classpath, a task listing — is data, and is not passed here.
    */
   line?(line: string, stderr: boolean): void;
-  /** A progress record on stderr, which the CLI writes when it supports `ELIDE_PROGRESS=json`. */
-  record?(record: ElideRecord): void;
   /** The process is gone: `exitCode` is `null` when it was killed by a signal or never started. */
   end(outcome: { exitCode: number | null; durationMs: number; aborted: boolean }): void;
 }
@@ -215,10 +210,6 @@ export function killProcessTree(pid: number, signal: NodeJS.Signals): void {
  *
  * `flags` are the `-f NAME[=VALUE]` build flags every subcommand this class drives is given: the manifest sees them
  * as `build.flags`, so a project model resolved without the flags a build uses would describe a different build.
- *
- * Every process is started with `ELIDE_PROGRESS=json`, unless `env` says otherwise: a CLI that knows the variable
- * reports build events as records, which observers receive as such and everyone else as the text it stands for; an
- * older CLI ignores it.
  */
 export class ElideCli {
   constructor(
@@ -238,7 +229,7 @@ export class ElideCli {
     const { promise, resolve, reject } = Promise.withResolvers<RunResult>();
     const child = spawn(this.dist.bin, argv, {
       cwd: this.projectRoot,
-      env: { ...process.env, ELIDE_PROGRESS: "json", ...opts.env, NO_COLOR: "1" },
+      env: { ...process.env, ...opts.env, NO_COLOR: "1" },
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
@@ -258,16 +249,10 @@ export class ElideCli {
       opts.onLine?.(line, false);
       if (!payload) observer?.line?.(line, false);
     });
-    const errText = (line: string) => {
+    const err = new LineSplitter((line) => {
       if (stderr.length < STDERR_CAPTURE_LIMIT) stderr += `${line}\n`;
       opts.onLine?.(line, true);
       observer?.line?.(line, true);
-    };
-    const err = new LineSplitter((line) => {
-      const record = parseElideRecord(line);
-      if (!record) return errText(line);
-      observer?.record?.(record);
-      for (const text of renderElideRecord(record)) errText(text);
     });
     child.stdout.setEncoding("utf8").on("data", (c: string) => out.push(c));
     child.stderr.setEncoding("utf8").on("data", (c: string) => err.push(c));
@@ -403,7 +388,7 @@ export class ElideCli {
   async classpaths(queries: readonly ClasspathQuery[], opts: RunOptions = {}): Promise<Map<ClasspathQuery, string[]>> {
     const answers = new Map<ClasspathQuery, string[]>();
     if (queries.length === 0) return answers;
-    this.batchedClasspath ??= supportsProgressRecords(await this.version(opts));
+    this.batchedClasspath ??= supportsBatchedClasspath(await this.version(opts));
     if (this.batchedClasspath !== false) {
       try {
         const batched = await this.classpathJson(queries, opts);
@@ -463,10 +448,7 @@ export class ElideCli {
 
   /**
    * `elide build <target…>`: run build targets by name, with the build flags this instance carries.
-   *
-   * Used for what the project model needs on disk and nothing else produces — a published `.aar` has to be unpacked
-   * before its classes are on a classpath the editor can read. A build the user asked for runs as a task instead,
-   * so its output reaches the terminal.
+   * User-requested builds can also run as editor tasks so their output reaches the terminal.
    */
   async build(targets: readonly string[], opts: RunOptions = {}): Promise<void> {
     await this.run(["build", ...targets, ...elideFlagArgs(this.flags)], opts);

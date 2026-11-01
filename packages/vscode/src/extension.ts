@@ -3,22 +3,9 @@ import path from "node:path";
 import { MANIFEST_NAME, WORKSPACE_JSON, isLockfileName, nativeImageBinary, type ElideCommand } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { ACTIVITY_VIEW_ID, type ElideActivityApi } from "./activity.js";
-import {
-  createAndroidAvd,
-  createAndroidKeystore,
-  debugAndroid,
-  installAndroidSdk,
-  openAndroidMapping,
-  runAndroid,
-  startAndroidEmulator,
-  stopAndroidEmulator,
-} from "./android.js";
-import { ELIDE_ANDROID_DEBUG_TYPE, ElideAndroidDebugConfigurationProvider } from "./androidDebug.js";
-import { AndroidDeploymentController } from "./androidDeployment.js";
 import { registerAndroidLogcat } from "./androidLogcat.js";
 import { registerAndroidReadiness } from "./androidReadiness.js";
 import { ElideCodeLensProvider } from "./codelens.js";
-import { registerComposePreview, type ElideComposePreviewApi } from "./composePreview.js";
 import { readConfig } from "./config.js";
 import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
 import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./explorer.js";
@@ -34,7 +21,6 @@ import { ElideTestController, type ElideTestApi } from "./testing.js";
 export interface ElideExtensionApi {
   tests: ElideTestApi;
   explorer: ElideExplorerApi;
-  composePreview: ElideComposePreviewApi;
   activity: ElideActivityApi;
 }
 
@@ -44,18 +30,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const ui = new ElideUi();
   const workspace = new ElideWorkspace(ui, context.globalState, context.asAbsolutePath("media/kotlin-lsp"), context.globalStorageUri.fsPath);
   context.subscriptions.push(ui, workspace);
-  const composePreview = registerComposePreview(workspace, ui, context);
-  const deployments = new AndroidDeploymentController(workspace, context.workspaceState);
   context.subscriptions.push(
-    composePreview.disposable,
-    registerAndroidLogcat(workspace, () => deployments.target),
-    registerAndroidReadiness(workspace, ui),
-    deployments,
+    registerAndroidLogcat(workspace),
+    registerAndroidReadiness(ui),
   );
 
   const debugConfigurations = new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions);
   const nativeDebugConfigurations = new ElideNativeDebugConfigurationProvider(workspace, ui);
-  const androidDebugConfigurations = new ElideAndroidDebugConfigurationProvider(workspace, ui, debugConfigurations.sessions, deployments);
   const tests = new ElideTestController(workspace, ui, debugConfigurations.sessions);
   const codeLenses = new ElideCodeLensProvider(workspace);
   const explorer = new ElideProjectsView(workspace, ui);
@@ -76,20 +57,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.debugArtifact", (target: unknown) => debugArtifact(workspace, target)),
     vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, target)),
     vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
-    vscode.commands.registerCommand("elide.androidSelectTarget", (target: unknown) => deployments.select(target)),
-    vscode.commands.registerCommand("elide.androidRun", (target: unknown) => runAndroid(workspace, deployments, target)),
-    vscode.commands.registerCommand("elide.androidDebug", (target: unknown) => debugAndroid(workspace, deployments, target)),
-    vscode.commands.registerCommand("elide.androidStartEmulator", (target: unknown) => startAndroidEmulator(workspace, target)),
-    vscode.commands.registerCommand("elide.androidStopEmulator", (target: unknown) => stopAndroidEmulator(workspace, target)),
-    vscode.commands.registerCommand("elide.androidCreateAvd", (target: unknown) => createAndroidAvd(workspace, target)),
-    vscode.commands.registerCommand("elide.androidInstallSdk", (target: unknown) => installAndroidSdk(workspace, target)),
-    vscode.commands.registerCommand("elide.androidCreateKeystore", (target: unknown) => createAndroidKeystore(workspace, ui, target)),
-    vscode.commands.registerCommand("elide.androidOpenMapping", (target: unknown) => openAndroidMapping(workspace, target)),
     vscode.commands.registerCommand("elide.revealLibrary", (target: unknown) => revealLibrary(target)),
     vscode.tasks.registerTaskProvider(ELIDE_TASK_TYPE, new ElideTaskProvider(workspace)),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_DEBUG_TYPE, debugConfigurations),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_NATIVE_DEBUG_TYPE, nativeDebugConfigurations),
-    vscode.debug.registerDebugConfigurationProvider(ELIDE_ANDROID_DEBUG_TYPE, androidDebugConfigurations),
     vscode.window.registerTreeDataProvider(PROJECTS_VIEW_ID, explorer),
     vscode.window.registerTreeDataProvider(ACTIVITY_VIEW_ID, ui.activity),
     explorer,
@@ -131,7 +102,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     if (readConfig().syncOnStartup) void workspace.syncAll("startup");
     else workspace.markStaleAll(false);
   }
-  return { tests, explorer, composePreview: composePreview.api, activity: ui.activity };
+  return { tests, explorer, activity: ui.activity };
 }
 
 export function deactivate(): void {}
@@ -318,11 +289,7 @@ async function openWorkspaceJson(workspace: ElideWorkspace): Promise<void> {
 const MENU_ACTIONS: { label: string; description: string; command: string }[] = [
   { label: "$(sync) Sync Project(s)", description: "Re-resolve the project model and refresh the Kotlin LSP", command: "elide.sync" },
   { label: "$(play) Run Elide Command…", description: "Build, test, install, or run an entrypoint", command: "elide.runTask" },
-  { label: "$(device-mobile) Select Android Deployment Target…", description: "Choose the application and device for Run and Debug", command: "elide.androidSelectTarget" },
-  { label: "$(play) Run Android App…", description: "Build, install and launch on the selected device", command: "elide.androidRun" },
-  { label: "$(debug-alt) Debug Android App…", description: "Build, install and attach the debugger", command: "elide.androidDebug" },
   { label: "$(checklist) Check Android Environment", description: "Diagnose SDK, tools and connected devices", command: "elide.androidDoctor" },
-  { label: "$(preview) Open Compose Preview", description: "Render composables locally, without a device", command: "elide.androidComposePreview" },
   { label: "$(output) Show Android Logcat", description: "Application logs and stack traces", command: "elide.androidLogcat" },
   { label: "$(beaker) Run All Tests", description: "Run every test in the Testing view", command: "testing.runAll" },
   { label: "$(file-code) Open elide.pkl", description: "Project manifest", command: "elide.openManifest" },

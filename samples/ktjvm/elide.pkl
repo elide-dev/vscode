@@ -1,5 +1,6 @@
 amends "elide:project.pkl"
 import "elide:Sources.pkl" as Sources
+import "versions.pkl"
 
 name = "ktjvm-sample"
 
@@ -14,4 +15,12 @@ sources {
         }
     }
     ["test"] = "src/test/**/*.kt"
+}
+
+dependencies {
+    maven {
+        packages {
+            "com.google.guava:guava:\(versions.guava)"
+        }
+    }
 }

@@ -1,8 +1,5 @@
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { buffer } from "node:stream/consumers";
-import { promisify } from "node:util";
 import * as yauzl from "yauzl";
 import {
   ANDROID_LOGCAT_PRIORITIES,
@@ -11,16 +8,13 @@ import {
   adbExecutable,
   binaryManifestPackage,
   listAndroidDevices,
-  parseAndroidPackageUid,
-  type AndroidTargetModel,
   type AndroidLogcatOptions,
   type AndroidLogcatPriority,
 } from "@elide/ide-core";
 import * as vscode from "vscode";
-import { androidSdkFor, toAndroidTarget } from "./android.js";
-import { androidApks, preferredAndroidProject, type AndroidDeploymentTarget } from "./androidDeploymentState.js";
+import { androidFolderAt, androidSdkFor, pickAndroidFolder, toAndroidTarget } from "./android.js";
 import { ANDROID_LOGCAT_LANGUAGE, registerAndroidStackLinks } from "./androidStackLinks.js";
-import type { ElideProject, ElideWorkspace } from "./projects.js";
+import type { ElideWorkspace } from "./projects.js";
 
 interface LogcatView {
   root: string;
@@ -45,7 +39,7 @@ function sameOptions(a: AndroidLogcatOptions, b: AndroidLogcatOptions): boolean 
   return a.adb === b.adb && a.device === b.device && a.packageName === b.packageName && a.priority === b.priority && a.text === b.text;
 }
 
-/** The compiled manifest of a published APK; absent before the first build or for an unreadable archive. */
+/** Read the compiled manifest of an existing APK without invoking a build tool. */
 function apkManifest(apk: string): Promise<Uint8Array | undefined> {
   const { promise, resolve } = Promise.withResolvers<Uint8Array | undefined>();
   yauzl.open(apk, { lazyEntries: true, autoClose: false }, (error, zip) => {
@@ -72,43 +66,15 @@ function apkManifest(apk: string): Promise<Uint8Array | undefined> {
   return promise;
 }
 
-/**
- * The ID the artifact installs as. The published APK is authoritative: `--rename-manifest-package` and placeholders
- * apply while linking. Before a build, the source manifest's `package` is only a suggestion.
- */
-async function applicationId(artifact: AndroidTargetModel): Promise<string | undefined> {
-  const manifest = await apkManifest(artifact.output);
-  const built = manifest && binaryManifestPackage(manifest);
-  if (built && PACKAGE_NAME.test(built)) return built;
-  try {
-    const xml = await readFile(artifact.manifestFile, "utf8");
-    const declared = /<manifest\b[^>]*\bpackage\s*=\s*["']([^"']+)["']/.exec(xml)?.[1];
-    return declared && PACKAGE_NAME.test(declared) ? declared : undefined;
-  } catch {
-    return undefined;
-  }
+/** The compiled APK is authoritative for its installed application ID. */
+async function applicationId(apk: string): Promise<string | undefined> {
+  const manifest = await apkManifest(apk);
+  const id = manifest && binaryManifestPackage(manifest);
+  return id && PACKAGE_NAME.test(id) ? id : undefined;
 }
 
-/** Which of `candidates` the device has installed for its current user; undefined when adb cannot say. */
-async function installedOf(device: Pick<AndroidLogcatOptions, "adb" | "device">, candidates: readonly string[]): Promise<string[] | undefined> {
-  try {
-    const { stdout } = await promisify(execFile)(
-      device.adb,
-      ["-s", device.device, "shell", "cmd", "package", "list", "packages", "--user", "current", "-U"],
-      { encoding: "utf8", timeout: 15_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
-    );
-    return candidates.filter((candidate) => parseAndroidPackageUid(stdout, candidate) !== undefined);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Registers the palette/tree commands and owns all adb processes and output channels. Showing logcat never asks to
- * confirm filters: it reuses the open stream's, else the deployment target's application. Only an ambiguous project,
- * device or application is chosen interactively; **Filter Android Logcat** edits the filters.
- */
-export function registerAndroidLogcat(workspace: ElideWorkspace, deploymentTarget: () => Readonly<AndroidDeploymentTarget> | undefined): vscode.Disposable {
+/** Standalone adb streams scoped to open folders, independent of Elide build/deployment models. */
+export function registerAndroidLogcat(workspace: ElideWorkspace): vscode.Disposable {
   const views = new Map<string, LogcatView>();
   const registrations: vscode.Disposable[] = [registerAndroidStackLinks(workspace)];
   let disposed = false;
@@ -121,7 +87,7 @@ export function registerAndroidLogcat(workspace: ElideWorkspace, deploymentTarge
     discovery = undefined;
   };
   const usable = (root: string, revision: number) =>
-    !disposed && vscode.workspace.isTrusted && revision === generation && workspace.projectAt(root) !== undefined;
+    !disposed && vscode.workspace.isTrusted && revision === generation && androidFolderAt(root)?.uri.fsPath === root;
   const trusted = () => {
     if (vscode.workspace.isTrusted) return true;
     void vscode.window.showWarningMessage("Elide: trust this workspace before running Android logcat.");
@@ -131,40 +97,9 @@ export function registerAndroidLogcat(workspace: ElideWorkspace, deploymentTarge
     if (!disposed) void vscode.window.showErrorMessage(`Elide logcat: ${error instanceof Error ? error.message : String(error)}`);
   };
 
-  /** Explicit, the only Android project, the active editor's app, the open stream, the deployment target, the only app. */
-  const pickProject = async (value: unknown): Promise<ElideProject | undefined> => {
-    const target = toAndroidTarget(value);
-    if (target) {
-      const project = workspace.projectAt(target.root);
-      if (!project?.model?.android) void vscode.window.showWarningMessage("Elide: sync an Android project before opening logcat.");
-      return project?.model?.android ? project : undefined;
-    }
-    const projects = workspace.projects.filter((project) => project.model?.android);
-    if (!projects.length) {
-      void vscode.window.showWarningMessage("Elide: no synced project declares an `android` block.");
-      return undefined;
-    }
-    if (projects.length === 1) return projects[0];
-    const editor = vscode.window.activeTextEditor;
-    const owner = editor?.document.uri.scheme === "file" ? workspace.projectFor(editor.document.uri.fsPath) : undefined;
-    const editing = preferredAndroidProject(projects, owner, undefined);
-    if (editing) return editing;
-    const open = projects.filter((project) => views.has(project.root));
-    if (open.length === 1) return open[0];
-    const remembered = preferredAndroidProject(projects, undefined, deploymentTarget()?.root);
-    if (remembered) return remembered;
-    const apps = projects.filter((project) => androidApks(project).length > 0);
-    if (apps.length === 1) return apps[0];
-    const picked = await vscode.window.showQuickPick(
-      (apps.length ? apps : projects).map((project) => ({ label: project.model?.name ?? project.root, description: project.root, project })),
-      { placeHolder: "Android project for logcat" },
-    );
-    return picked?.project;
-  };
-
   const pickView = async (value: unknown): Promise<LogcatView | undefined> => {
     const target = toAndroidTarget(value);
-    if (target) return views.get(target.root);
+    if (target) return views.get(androidFolderAt(target.root)?.uri.fsPath ?? target.root);
     const sessions = [...views.values()];
     if (!sessions.length) {
       void vscode.window.showInformationMessage("Elide: open Android Logcat first.");
@@ -179,11 +114,11 @@ export function registerAndroidLogcat(workspace: ElideWorkspace, deploymentTarge
   };
 
   /** An explicit serial must be ready; otherwise the first ready preferred serial, the only ready device, or a choice. */
-  const deviceOptions = async (project: ElideProject, serial: string | undefined, preferred: readonly (string | undefined)[] = []): Promise<Pick<AndroidLogcatOptions, "adb" | "device"> | undefined> => {
-    const sdk = androidSdkFor(project);
+  const deviceOptions = async (folder: vscode.WorkspaceFolder, serial: string | undefined, preferred: readonly (string | undefined)[] = []): Promise<Pick<AndroidLogcatOptions, "adb" | "device"> | undefined> => {
+    const sdk = androidSdkFor(folder);
     if (!sdk || !existsSync(adbExecutable(sdk))) throw new Error("Android platform-tools are missing. Install the SDK or set elide.android.sdk.");
     const controller = new AbortController();
-    discovery = { root: project.root, controller };
+    discovery = { root: folder.uri.fsPath, controller };
     let timedOut = false;
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -217,14 +152,30 @@ export function registerAndroidLogcat(workspace: ElideWorkspace, deploymentTarge
   };
 
   const filters = async (initial: Pick<AndroidLogcatOptions, "packageName" | "priority" | "text">): Promise<Pick<AndroidLogcatOptions, "packageName" | "priority" | "text"> | undefined> => {
-    const packageName = await vscode.window.showInputBox({
-      title: "Android Logcat: application",
-      prompt: "Application ID (blank for all applications). Includes every process using the app UID.",
-      value: initial.packageName ?? "",
-      validateInput: (value) => !value.trim() || PACKAGE_NAME.test(value.trim()) ? undefined : "Enter an application ID such as com.example.app, or leave blank.",
-      ignoreFocusOut: true,
-    });
-    if (packageName === undefined) return undefined;
+    const source = await vscode.window.showQuickPick([
+      { label: "Enter application ID", value: "manual", description: initial.packageName ?? "All applications" },
+      { label: "Read application ID from APK…", value: "apk" },
+      { label: "All applications", value: "all" },
+    ], { placeHolder: "Application filter" });
+    if (!source) return undefined;
+    let packageName = "";
+    if (source.value === "apk") {
+      const files = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { "Android package": ["apk"] }, title: "Select an existing APK" });
+      if (!files?.[0]) return undefined;
+      const id = await applicationId(files[0].fsPath);
+      if (!id) throw new Error("Could not read an application ID from the APK's compiled AndroidManifest.xml.");
+      packageName = id;
+    } else if (source.value === "manual") {
+      const entered = await vscode.window.showInputBox({
+        title: "Android Logcat: application",
+        prompt: "Application ID (blank for all applications). Includes every process using the app UID.",
+        value: initial.packageName ?? "",
+        validateInput: (value) => !value.trim() || PACKAGE_NAME.test(value.trim()) ? undefined : "Enter an application ID such as com.example.app, or leave blank.",
+        ignoreFocusOut: true,
+      });
+      if (entered === undefined) return undefined;
+      packageName = entered.trim();
+    }
     const priorities = [initial.priority, ...ANDROID_LOGCAT_PRIORITIES.filter((priority) => priority !== initial.priority)];
     const priority = await vscode.window.showQuickPick(
       priorities.map((value) => ({ label: `${value}: ${PRIORITIES[value]}`, description: value === initial.priority ? "current" : undefined, value })),
@@ -247,65 +198,28 @@ export function registerAndroidLogcat(workspace: ElideWorkspace, deploymentTarge
     await view.stream.start(view.options);
   };
 
-  /**
-   * The application to filter when no stream exists yet: explicit, deployed, the only APK, the one ID every APK
-   * shares, or the only one installed on the device. Several installed variants are a genuine choice.
-   */
-  const defaultPackage = async (project: ElideProject, explicit: string | undefined, device: Pick<AndroidLogcatOptions, "adb" | "device">): Promise<{ packageName?: string } | undefined> => {
-    const apks = project.model?.android?.targets.filter((artifact) => artifact.kind === "apk") ?? [];
-    if (explicit) {
-      const artifact = apks.find((apk) => apk.name === explicit);
-      if (!artifact) throw new Error(`Artifact ${explicit} is not an Android application package.`);
-      const packageName = await applicationId(artifact);
-      return packageName ? { packageName } : {};
-    }
-    const deployed = deploymentTarget();
-    const artifact = (deployed?.root === project.root ? apks.find((apk) => apk.name === deployed.artifact) : undefined) ?? (apks.length === 1 ? apks[0] : undefined);
-    if (artifact || !apks.length) {
-      const packageName = artifact && await applicationId(artifact);
-      return packageName ? { packageName } : {};
-    }
-    const ids = await Promise.all(apks.map(applicationId));
-    const candidates = [...new Set(ids.filter((id): id is string => id !== undefined))];
-    if (candidates.length <= 1) return candidates[0] ? { packageName: candidates[0] } : {};
-    const installed = await installedOf(device, candidates);
-    if (installed?.length === 1) return { packageName: installed[0] };
-    const offered = installed?.length ? installed : candidates;
-    const picked = await vscode.window.showQuickPick(
-      [
-        { label: "All applications", packageName: undefined },
-        ...offered.map((id) => ({ label: id, description: apks.filter((_, index) => ids[index] === id).map((apk) => apk.name).join(", "), packageName: id })),
-      ],
-      { placeHolder: "Application to filter" },
-    );
-    if (!picked) return undefined;
-    return picked.packageName ? { packageName: picked.packageName } : {};
-  };
-
   const start = async (value: unknown) => {
     if (!trusted()) return;
     cancelPending();
     const revision = generation;
-    const project = await pickProject(value);
-    if (!project || !usable(project.root, revision)) return;
+    const folder = await pickAndroidFolder(value);
+    if (!folder || !usable(folder.uri.fsPath, revision)) return;
+    const root = folder.uri.fsPath;
     const target = toAndroidTarget(value);
-    const existing = views.get(project.root);
-    const deployed = deploymentTarget();
-    const deployedSerial = deployed?.root === project.root && deployed.destination.kind === "device" ? deployed.destination.serial : undefined;
-    const device = await deviceOptions(project, target?.device, [existing?.options.device, deployedSerial]);
-    if (!device || !usable(project.root, revision)) return;
-    const application = existing && !target?.artifact
-      ? (existing.options.packageName ? { packageName: existing.options.packageName } : {})
-      : await defaultPackage(project, target?.artifact, device);
-    if (!application || !usable(project.root, revision)) return;
-    const options: AndroidLogcatOptions = { ...device, ...application, priority: existing?.options.priority ?? "I", text: existing?.options.text ?? "" };
+    const existing = views.get(root);
+    const device = await deviceOptions(folder, target?.device, [existing?.options.device]);
+    if (!device || !usable(root, revision)) return;
+    const options: AndroidLogcatOptions = {
+      ...device, ...(existing?.options.packageName ? { packageName: existing.options.packageName } : {}),
+      priority: existing?.options.priority ?? "I", text: existing?.options.text ?? "",
+    };
     if (existing?.stream.active && sameOptions(existing.options, options)) {
       existing.output.show(true);
       return;
     }
     let view = existing;
     if (!view) {
-      const output = vscode.window.createOutputChannel(`Elide Logcat: ${project.model?.name ?? project.root} (${project.root})`, ANDROID_LOGCAT_LANGUAGE);
+      const output = vscode.window.createOutputChannel(`Elide Logcat: ${folder.name} (${root})`, ANDROID_LOGCAT_LANGUAGE);
       const formatter = new AndroidLogcatFormatter();
       const stream = new AndroidLogcatSession(
         (line) => output.appendLine(formatter.format(line)),
@@ -314,8 +228,8 @@ export function registerAndroidLogcat(workspace: ElideWorkspace, deploymentTarge
           if (error) report(error);
         },
       );
-      view = { root: project.root, output, formatter, stream, options };
-      views.set(project.root, view);
+      view = { root, output, formatter, stream, options };
+      views.set(root, view);
     } else view.options = options;
     await startView(view);
   };
@@ -335,9 +249,9 @@ export function registerAndroidLogcat(workspace: ElideWorkspace, deploymentTarge
       view.stream.stop();
       notice(view, "Stopped.");
     } else {
-      const project = workspace.projectAt(view.root);
-      if (!project) return;
-      const device = await deviceOptions(project, view.options.device);
+      const folder = androidFolderAt(view.root);
+      if (!folder) return;
+      const device = await deviceOptions(folder, view.options.device);
       if (!device || !usable(view.root, revision)) return;
       const chosen = action === "filter" ? await filters(view.options) : view.options;
       if (!chosen || !usable(view.root, revision)) return;
@@ -356,10 +270,10 @@ export function registerAndroidLogcat(workspace: ElideWorkspace, deploymentTarge
   register("elide.androidLogcatClear", (value) => control("clear", value));
   register("elide.androidLogcatStop", (value) => control("stop", value));
   register("elide.androidLogcatRestart", (value) => control("restart", value));
-  registrations.push(workspace.onDidChange(() => {
-    if (discovery && !workspace.projectAt(discovery.root)) cancelPending();
+  registrations.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
+    if (discovery && androidFolderAt(discovery.root)?.uri.fsPath !== discovery.root) cancelPending();
     for (const [root, view] of views) {
-      if (workspace.projectAt(root)?.model?.android && vscode.workspace.isTrusted) continue;
+      if (androidFolderAt(root)?.uri.fsPath === root && vscode.workspace.isTrusted) continue;
       view.stream.dispose();
       view.output.dispose();
       views.delete(root);

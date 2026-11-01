@@ -50,10 +50,14 @@ export function registerAndroidStackLinks(workspace: ElideWorkspace): vscode.Dis
     invalidate();
     for (const watcher of watchers) watcher.dispose();
     watchers = [];
-    roots = [...new Set(workspace.projects.flatMap((project) =>
+    const modelRoots = workspace.projects.flatMap((project) =>
       project.model?.modules.flatMap((module) => module.contentRoots.flatMap((content) =>
         content.sourceRoots.filter((root) => root.kind === "source" || root.kind === "test").map((root) => path.resolve(root.path)))) ?? [],
-    ))];
+    );
+    const unsyncedRoots = (vscode.workspace.workspaceFolders ?? [])
+      .filter((folder) => !workspace.projects.some((project) => project.folder.uri.toString() === folder.uri.toString() && project.model))
+      .map((folder) => folder.uri.fsPath);
+    roots = [...new Set([...modelRoots, ...unsyncedRoots])];
     for (const root of roots) {
       const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(root), SOURCE_GLOB));
       watchers.push(watcher, watcher.onDidCreate(invalidate),
@@ -87,10 +91,12 @@ export function registerAndroidStackLinks(workspace: ElideWorkspace): vscode.Dis
     },
   );
   const projects = workspace.onDidChange(refresh);
+  const folders = vscode.workspace.onDidChangeWorkspaceFolders(refresh);
   return new vscode.Disposable(() => {
     disposed = true;
     registration.dispose();
     projects.dispose();
+    folders.dispose();
     for (const watcher of watchers) watcher.dispose();
     watchers = [];
     roots = [];

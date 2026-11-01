@@ -25,15 +25,12 @@ describe("libraryFor", () => {
     const lib = libraryFor("/r/a/b/1/b-1.jar", "/r", (p) => present.has(p));
     expect(lib.sources).toBe("/r/a/b/1/b-1-sources.jar");
     expect(lib.javadoc).toBeUndefined();
-    expect(lib.coordinate).toBeUndefined();
   });
 
-  test("an exploded published .aar is named by its coordinate and keeps the sources of the archive it came from", () => {
-    const present = new Set(["/ws/.dev/dependencies/m2/androidx/core/core/1.13.0/core-1.13.0-sources.jar"]);
-    const lib = libraryFor("/app/.dev/android/libraries/androidx/core/core/1.13.0/classes.jar", "/ws/.dev/dependencies/m2", (p) => present.has(p));
-    expect(lib.name).toBe("Elide: androidx.core:core:1.13.0");
-    expect(lib.coordinate).toBe("androidx.core:core:1.13.0");
-    expect(lib.sources).toBe("/ws/.dev/dependencies/m2/androidx/core/core/1.13.0/core-1.13.0-sources.jar");
-    expect(lib.javadoc).toBeUndefined();
+  test("an explicitly supplied Android platform jar has a descriptive name", () => {
+    expect(libraryFor("/sdk/platforms/android-36/android.jar", undefined, () => false)).toEqual({
+      name: "Elide: Android API 36 platform",
+      classes: "/sdk/platforms/android-36/android.jar",
+    });
   });
 });

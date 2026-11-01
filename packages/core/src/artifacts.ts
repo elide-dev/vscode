@@ -75,36 +75,6 @@ export function isNativeImageBinary(artifact: ManifestArtifact): boolean {
   return artifact.type === NATIVE_IMAGE_TYPE && (artifact.imageType ?? "binary") === "binary";
 }
 
-/** Pkl classes of the Android artifacts, as `new Android.AndroidApk { … }` instantiates them. */
-const ANDROID_APK_TYPE = "AndroidApk";
-const ANDROID_AAB_TYPE = "AndroidAab";
-const ANDROID_AAR_TYPE = "AndroidAar";
-
-/** Whether `elide build` publishes an APK for this artifact, which the `android-run-*` targets install and launch. */
-export function isAndroidApk(artifact: ManifestArtifact): boolean {
-  return artifact.type === ANDROID_APK_TYPE;
-}
-
-/** Whether `elide build` publishes an AAR for this artifact: a library archive, which nothing runs. */
-export function isAndroidAar(artifact: ManifestArtifact): boolean {
-  return artifact.type === ANDROID_AAR_TYPE;
-}
-
-/** Whether `elide build` publishes an app bundle for this artifact: Play's upload format, which no device runs. */
-export function isAndroidAab(artifact: ManifestArtifact): boolean {
-  return artifact.type === ANDROID_AAB_TYPE;
-}
-
-/** Dynamic bundle module; it builds through `android-module-<name>` rather than publishing an APK. */
-export function isAndroidFeature(artifact: ManifestArtifact): boolean {
-  return artifact.type === "AndroidFeature";
-}
-
-/** Whether the artifact is built by the Android pipeline at all, whichever archive it publishes. */
-export function isAndroidArtifact(artifact: ManifestArtifact): boolean {
-  return isAndroidApk(artifact) || isAndroidAab(artifact) || isAndroidAar(artifact) || isAndroidFeature(artifact);
-}
-
 /** Where `elide build` writes a Native Image artifact to, and what its parts are named. */
 export interface NativeImageOutput {
   /** The artifact's own `name`, when it declares one. */

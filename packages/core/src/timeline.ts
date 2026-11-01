@@ -1,7 +1,7 @@
 /**
  * Where an operation's time goes: a tree of timed steps, each with the output lines it produced.
  *
- * A root covers one user-visible operation (a project sync, a Compose preview build); its children are the steps it
+ * A root covers one user-visible operation (a project sync or build); its children are the steps it
  * went through, the CLI invocations each step made, and the build tasks those invocations reported. Nodes either run
  * under this clock (`start` … `end`) or are recorded after the fact with the duration a tool measured itself.
  */
