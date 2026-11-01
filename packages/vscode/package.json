@@ -1256,10 +1256,10 @@
     "yauzl": "^3.2.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.0",
-    "@types/vscode": "^1.105.0",
-    "@types/yauzl": "^2.10.3",
+    "@types/node": "^26.6.6",
+    "@types/vscode": "^1.144.0",
+    "@types/yauzl": "^3.4.0",
     "@vscode/test-electron": "^3.1.0",
-    "@vscode/vsce": "^3.6.0"
+    "@vscode/vsce": "^4.1.0"
   }
 }
