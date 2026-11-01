@@ -16,7 +16,11 @@
  * emulator. Set `ELIDE_ANDROID_APP_MEMBER`, `ELIDE_ANDROID_APP_ARTIFACT`, and `ELIDE_ANDROID_APP_ID` for that app.
  *
  * Prerequisites: VS Code at /Applications/Visual Studio Code.app, `JetBrains.kotlin-server` installed in
- * ~/.vscode/extensions, `elide` installed. Usage: `bun run test:integration` from packages/vscode.
+ * ~/.vscode/extensions, `elide` installed. Usage: `bazel run //packages/vscode:integration_test`.
+ *
+ * Bazel runs the bundle of this file from the target's runfiles, which mirror the repository: the extension (manifest,
+ * `dist/extension.js`, `dist-test/index.js`) two levels up, `samples/ktjvm` and `samples/workspace` under the runfiles
+ * root.
  *
  * `ELIDE_TEST_HOME` runs the scenario against another Elide distribution, such as a local build's
  * `.dev/artifacts/dist/current`, through the `elide.home` setting: the extension host does not see an `ELIDE_HOME`
@@ -29,7 +33,7 @@ import { runTests } from "@vscode/test-electron";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
 const extensionDevelopmentPath = path.resolve(here, "..", "..");
-const repoRoot = path.resolve(extensionDevelopmentPath, "..", "..");
+const runfilesRoot = path.resolve(extensionDevelopmentPath, "..", "..");
 const extensionTestsPath = path.resolve(extensionDevelopmentPath, "dist-test", "index.js");
 
 const vscodeExecutablePath = process.env.VSCODE_EXECUTABLE ?? "/Applications/Visual Studio Code.app/Contents/MacOS/Code";
@@ -60,7 +64,8 @@ writeFileSync(
       "intellij.dataSharing": "none",
       "security.workspace.trust.enabled": false,
       "update.mode": "none",
-      // The installed extensions directory is shared with the user; a smoke run must not update it.
+      // The extensions dir is the user's, shared with their own VS Code and with runs from other worktrees: never
+      // rewrite it from a test instance.
       "extensions.autoUpdate": false,
       "extensions.autoCheckUpdates": false,
       "telemetry.telemetryLevel": "off",
@@ -97,15 +102,17 @@ function prepareAndroidSample(): void {
 }
 
 function prepareWorkspaceSample(): void {
-  const source = process.env.ELIDE_WORKSPACE_SAMPLE ?? path.join(repoRoot, "samples", "workspace");
+  const source = process.env.ELIDE_WORKSPACE_SAMPLE ?? path.join(runfilesRoot, "samples", "workspace");
   if (!existsSync(path.join(source, "elide.pkl"))) throw new Error(`no Elide workspace sample at ${source}; set ELIDE_WORKSPACE_SAMPLE`);
   // Build outputs, IDE state and a previously generated workspace.json would stand in for what the sync must produce.
+  // Runfiles are symlinks into the source tree: copy their targets, or the suite's edits would land in the repository.
   const skipped = new Set([".dev", ".idea", "workspace.json"]);
-  cpSync(source, sample, { recursive: true, filter: (src) => !skipped.has(path.basename(src)) });
+  cpSync(source, sample, { recursive: true, dereference: true, filter: (src) => !skipped.has(path.basename(src)) });
 }
 
 function prepareKtjvmSample(): void {
-  cpSync(path.join(repoRoot, "samples", "ktjvm"), sample, { recursive: true, filter: (src) => !src.includes(`${path.sep}.dev`) && !src.endsWith("workspace.json") });
+  // Runfiles are symlinks into the source tree: copy their targets, or the suite's edits would land in the repository.
+  cpSync(path.join(runfilesRoot, "samples", "ktjvm"), sample, { recursive: true, dereference: true });
 
   // The manifest takes its dependency versions from a local module: editing only that module must resync (index.ts 3b).
   const manifest = path.join(sample, "elide.pkl");

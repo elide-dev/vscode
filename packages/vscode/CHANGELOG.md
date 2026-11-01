@@ -64,6 +64,8 @@ All notable changes to the Elide extension are documented here. The format follo
 
 ### Changed
 
+- Updated the extension and activity-bar icons to the Elide block mark, with the gradient SVG source included.
+
 - Kotlin by JetBrains is installed as a companion extension instead of a hard activation dependency. Elide's CLI
   features remain available independently of language-server startup; Kotlin and Java source documents activate
   the companion on demand, including Java-first projects.

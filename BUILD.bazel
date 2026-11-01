@@ -1,0 +1,30 @@
+# One Bazel package per npm package, matching the tsconfig projects: Gazelle fills in existing BUILD files only.
+# gazelle:generation_mode update_only
+# rules_js links workspace packages (`workspace:*`) through a `:pkg` target. A js_library links the package's own output
+# directory, so its compiled files (and their source maps) keep the source tree's layout.
+# gazelle:js_npm_package_target_name pkg
+# gazelle:js_package_rule_kind js_library
+# tsc reads package.json (`"type": "module"` decides NodeNext's emit format): keep it in the sandbox.
+# gazelle:js_tsconfig_package_deps enabled
+# The database-inspector helper is a standalone release-time script run on Bun (CONTRIBUTING.md), not a tsc project.
+# gazelle:exclude tools/build-database-inspector.ts
+
+load("@aspect_gazelle_prebuilt//:def.bzl", "aspect_gazelle")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+npm_link_all_packages(name = "node_modules")
+
+# Extended by each package's tsconfig.json; Gazelle resolves the `extends` to this target.
+ts_config(
+    name = "tsconfig_base",
+    src = "tsconfig.base.json",
+    visibility = ["//packages:__subpackages__"],
+)
+
+# `bazel run //:gazelle` regenerates BUILD files; `bazel run //:gazelle.check` fails when they are stale.
+aspect_gazelle(
+    name = "gazelle",
+    languages = ["js"],
+    with_check = True,
+)

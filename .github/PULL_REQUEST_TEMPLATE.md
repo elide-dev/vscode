@@ -12,10 +12,9 @@ Closes #
 
 <!-- Which of the following did you run, and what was the result? -->
 
-- [ ] `bun run build`
-- [ ] `bun run --filter elide typecheck`
-- [ ] `bun test`
-- [ ] `cd packages/vscode && bun run test:integration` (local only)
+- [ ] `bazel test //...` (builds and type-checks everything, packages the `.vsix`, runs the unit tests)
+- [ ] `bazel run //:gazelle.check` (BUILD files up to date)
+- [ ] `bazel run //packages/vscode:integration_test` (local only)
 
 ## Checklist
 

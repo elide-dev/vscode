@@ -1251,14 +1251,6 @@
       }
     ]
   },
-  "scripts": {
-    "vscode:prepublish": "cd ../.. && bun run build",
-    "build": "esbuild src/extension.ts --bundle --platform=node --target=node22 --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build:test": "esbuild test/integration/index.ts --bundle --platform=node --target=node22 --format=cjs --external:vscode --outfile=dist-test/index.js",
-    "test:integration": "bun run build && bun run build:test && bun test/integration/runner.ts",
-    "package": "vsce package --no-dependencies"
-  },
   "dependencies": {
     "@elide/ide-core": "workspace:*",
     "yauzl": "^3.2.0"
@@ -1268,8 +1260,6 @@
     "@types/vscode": "^1.105.0",
     "@types/yauzl": "^2.10.3",
     "@vscode/test-electron": "^3.1.0",
-    "@vscode/vsce": "^3.6.0",
-    "esbuild": "^0.25.0",
-    "typescript": "^5.9.0"
+    "@vscode/vsce": "^3.6.0"
   }
 }

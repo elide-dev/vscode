@@ -2,9 +2,11 @@
 set -euo pipefail
 
 # Packages packages/vscode into a .vsix and publishes it to plugins.elide.dev for manual installs, mirroring
-# elide-intellij/tools/deploy.sh: presigned R2 upload of the archive, then a metadata upsert.
+# elide-intellij/tools/deploy.sh: presigned R2 upload of the archive, then a metadata upsert. The archive is left at
+# dist/<name>-<version>.vsix for later release steps.
 #
-# Env: ELIDE_PLUGINS_URL (or PLUGINS_URL), ELIDE_PLUGINS_KEY. Requires jq and a vsce (bunx @vscode/vsce).
+# Env: ELIDE_PLUGINS_URL (or PLUGINS_URL), ELIDE_PLUGINS_KEY; BAZEL_FLAGS (e.g. `--config=ci`). Requires jq and Bazel
+# (bazelisk).
 
 if ! command -v jq &> /dev/null; then
     echo "Error: jq is required but not installed"
@@ -25,7 +27,7 @@ ENGINE=$(jq -r '.engines.vscode // ""' "$MANIFEST")
 REPOSITORY=$(jq -r 'if .repository == null then "" elif (.repository | type) == "string" then .repository else .repository.url end' "$MANIFEST")
 
 EXTENSION_ID="${PUBLISHER}.${NAME}"
-VSIX_FILE="$PACKAGE_DIR/${NAME}-${VERSION}.vsix"
+VSIX_FILE="$ROOT/dist/${NAME}-${VERSION}.vsix"
 
 echo "Publishing extension:"
 echo "ID=$EXTENSION_ID"
@@ -34,15 +36,15 @@ echo "Version=$VERSION"
 echo "Engine=${ENGINE:-n/a}"
 echo "Repository=${REPOSITORY:-n/a}"
 
-# `bun run package` runs the extension's `vscode:prepublish`, which builds `@elide/ide-core` and the bundle from the
-# workspace root — packaging alone is enough, even from a clean checkout.
+# Bazel builds `@elide/ide-core`, the bundle and the archive from a clean checkout.
 echo "Packaging..."
-(cd "$PACKAGE_DIR" && bun run package)
-
-if [[ ! -f "$VSIX_FILE" ]]; then
-    echo "Error: package did not produce $VSIX_FILE"
-    exit 1
-fi
+# shellcheck disable=SC2086 # BAZEL_FLAGS is a list of flags
+(cd "$ROOT" && bazel build ${BAZEL_FLAGS:-} //packages/vscode:vsix)
+# shellcheck disable=SC2086
+BUILT_VSIX="$ROOT/$(cd "$ROOT" && bazel cquery ${BAZEL_FLAGS:-} --output=files //packages/vscode:vsix 2>/dev/null)"
+mkdir -p "$(dirname "$VSIX_FILE")"
+cp -f "$BUILT_VSIX" "$VSIX_FILE"
+chmod u+w "$VSIX_FILE"
 
 url_encode() {
     jq -rn --arg str "$1" '$str | @uri'

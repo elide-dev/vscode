@@ -23,6 +23,9 @@ const fixture = (project: string) => readFileSync(path.join(import.meta.dir, "fi
 
 const manifestWith = (json: object): Manifest => decodeManifest(JSON.stringify(json));
 
+// Whether the host has a JDK or an Android SDK is not under test: tests run without `JAVA_HOME` or `ANDROID_HOME`.
+const projectWarnings = (model: ProjectModel) => model.warnings.filter((w) => !/^No (JDK|Android SDK) found/.test(w));
+
 describe("ArtifactIndex", () => {
   const index = new ArtifactIndex(
     [
@@ -577,6 +580,6 @@ describe("buildProjectModels: published Android libraries", () => {
     const [app] = await model((p) => p === exploded || p === rClasses);
     expect(built()).toEqual([`${root} android-r-app`]);
     expect(app!.modules[0]!.libraries.map((l) => l.name)).toContain("Elide: Android resources of app");
-    expect(app!.warnings).toEqual([]);
+    expect(projectWarnings(app!)).toEqual([]);
   });
 });

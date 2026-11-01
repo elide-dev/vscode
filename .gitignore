@@ -5,6 +5,7 @@ dist/
 .dev/
 workspace.json
 .DS_Store
-dist-test/
 .claude/
+/bazel-*
+/user.bazelrc
 .idea/

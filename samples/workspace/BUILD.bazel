@@ -1,0 +1,14 @@
+# The Elide workspace the integration suite's `workspace` scenario opens (from a scratch copy). Build state of the root
+# (.bazelignore) and of its members stays out.
+filegroup(
+    name = "workspace",
+    srcs = glob(
+        ["**"],
+        exclude = [
+            "BUILD.bazel",
+            "**/.dev/**",
+            "**/workspace.json",
+        ],
+    ),
+    visibility = ["//packages/vscode:__pkg__"],
+)

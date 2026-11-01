@@ -84,10 +84,6 @@ const path = require("node:path");
 const root = __dirname;
 const args = process.argv.slice(2);
 fs.appendFileSync(path.join(root, "calls"), JSON.stringify(args) + "\\n");
-process.on("SIGTERM", () => {
-  fs.writeFileSync(path.join(root, "stopped-" + process.pid), "yes");
-  process.exit(0);
-});
 if (args.includes("shell")) {
   if (args.at(-1) === "com.example.slow") {
     fs.writeFileSync(path.join(root, "pending"), String(process.pid));
@@ -142,6 +138,23 @@ async function waitForFile(file: string): Promise<string> {
   }
 }
 
+async function waitForExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (true) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+      throw error;
+    }
+    if (Date.now() >= deadline) throw new Error(`adb process ${pid} survived cancellation`);
+    // Let the OS reap the real child; fake timers cannot advance a subprocess exit.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setImmediate(resolve);
+    await promise;
+  }
+}
+
 // The fixture uses a POSIX executable; argument and identity tests above also run on Windows.
 describe.skipIf(process.platform === "win32")("owned adb streams", () => {
   test("resolves a UID, frames UTF-8 chunks and filters literal text case-insensitively", async () => {
@@ -189,13 +202,13 @@ describe.skipIf(process.platform === "win32")("owned adb streams", () => {
     await session.start(options);
     const firstPid = await waitForFile(path.join(fake.root, "live"));
     session.stop();
-    await waitForFile(path.join(fake.root, `stopped-${firstPid}`));
+    await waitForExit(Number(firstPid));
     rmSync(path.join(fake.root, "live"));
     await session.start(options);
     const secondPid = await waitForFile(path.join(fake.root, "live"));
     expect(secondPid).not.toBe(firstPid);
     session.dispose();
-    await waitForFile(path.join(fake.root, `stopped-${secondPid}`));
+    await waitForExit(Number(secondPid));
     expect(endCount).toBe(0);
     await expect(session.start(options)).rejects.toThrow("disposed");
   });
@@ -208,7 +221,7 @@ describe.skipIf(process.platform === "win32")("owned adb streams", () => {
     const pid = await waitForFile(path.join(fake.root, "pending"));
     session.stop();
     await pending;
-    await waitForFile(path.join(fake.root, `stopped-${pid}`));
+    await waitForExit(Number(pid));
     expect(fake.calls()).toHaveLength(1);
   });
 });

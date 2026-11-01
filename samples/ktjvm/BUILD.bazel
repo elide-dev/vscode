@@ -1,0 +1,12 @@
+# The project the integration suite opens (from a scratch copy). Its `.dev` build state is outside Bazel (.bazelignore).
+filegroup(
+    name = "ktjvm",
+    srcs = glob(
+        ["**"],
+        exclude = [
+            "BUILD.bazel",
+            "workspace.json",
+        ],
+    ),
+    visibility = ["//packages/vscode:__pkg__"],
+)
