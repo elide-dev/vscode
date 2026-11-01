@@ -415,12 +415,12 @@ export class KomodoLanguageServer implements vscode.Disposable {
       const session = await client.sendRequest<KomodoPreviewSession>("komodo/preview/open", { textDocument: { uri } });
       if (session?.protocol !== 2 || !Number.isInteger(session.port) || session.port < 1 || session.port > 65535
         || typeof session.token !== "string" || !session.token || /[\r\n]/.test(session.token)) {
-        throw new Error("Komodo returned an invalid preview session. Use an Elide distribution with a newer Komodo (lib/komodo).");
+        throw new Error("Komodo returned an invalid preview session. Install a compatible Komodo through Elide.");
       }
       return session;
     } catch (error) {
       if (error instanceof ResponseError && error.code === ErrorCodes.MethodNotFound) {
-        throw new Error("This Komodo language server is too old for the Komodo preview engine. Use an Elide distribution with a newer Komodo (lib/komodo); there is no fallback.");
+        throw new Error("This Komodo language server is too old for the Komodo preview engine. Install a compatible Komodo through Elide; there is no fallback.");
       }
       throw error;
     }
@@ -439,7 +439,7 @@ export class KomodoLanguageServer implements vscode.Disposable {
       await client.sendRequest("komodo/preview/sync", { documents });
     } catch (error) {
       if (error instanceof ResponseError && error.code === ErrorCodes.MethodNotFound) {
-        throw new Error("This Komodo language server is too old to synchronize unsaved edits with the Komodo preview engine. Use an Elide distribution with a newer Komodo (lib/komodo).");
+        throw new Error("This Komodo language server is too old to synchronize unsaved edits with the Komodo preview engine. Install a compatible Komodo through Elide.");
       }
       throw error;
     }

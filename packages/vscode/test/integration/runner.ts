@@ -50,6 +50,8 @@
  * `ELIDE_TEST_HOME` runs the scenario against another Elide distribution, such as a local build's
  * `.dev/artifacts/dist/current`, through the `elide.home` setting: the extension host does not see an `ELIDE_HOME`
  * set in the shell that starts the run.
+ * `ELIDE_TEST_COMPONENTS_HOME` forwards an isolated component store as `ELIDE_COMPONENTS_HOME` to the extension host.
+ * Install the candidate there explicitly before managed scenarios; omit all ELIDE_KOMODO_* path/JDK overrides.
  */
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -118,7 +120,7 @@ writeFileSync(
       // The Komodo preview engine discovers previews through Komodo's language server.
       ...(komodoServer ? {
         "elide.kotlinLsp.server": "komodo",
-        // Without ELIDE_KOMODO_LSP the extension finds the launcher in the Elide distribution (`lib/komodo`).
+        // Without developer overrides, Elide resolves the managed executable, plugins and JDK inputs.
         ...(process.env.ELIDE_KOMODO_LSP ? { "elide.kotlinLsp.komodo.path": process.env.ELIDE_KOMODO_LSP } : {}),
         ...(process.env.ELIDE_KOMODO_PLUGINS ? { "elide.kotlinLsp.komodo.pluginDirectory": process.env.ELIDE_KOMODO_PLUGINS } : {}),
         ...(process.env.ELIDE_KOMODO_JAVA_HOME ? { "elide.kotlinLsp.komodo.javaHome": process.env.ELIDE_KOMODO_JAVA_HOME } : {}),
@@ -304,6 +306,7 @@ try {
     extensionTestsEnv: {
       ELIDE_TEST_SAMPLE: sample,
       ELIDE_TEST_SCENARIO: scenario,
+      ...(process.env.ELIDE_TEST_COMPONENTS_HOME ? { ELIDE_COMPONENTS_HOME: path.resolve(process.env.ELIDE_TEST_COMPONENTS_HOME) } : {}),
       ...(process.env.ELIDE_KOMODO_SAMPLE ? { ELIDE_KOMODO_SAMPLE: process.env.ELIDE_KOMODO_SAMPLE } : {}),
       ...(process.env.ELIDE_KOMODO_COEXIST ? { ELIDE_KOMODO_COEXIST: process.env.ELIDE_KOMODO_COEXIST } : {}),
     },

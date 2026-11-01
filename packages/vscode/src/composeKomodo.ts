@@ -77,7 +77,7 @@ export class KomodoRenderer {
     try {
       const ready = await renderer.next((event) => event.event === "ready", timeoutMs);
       if (typeof ready.protocol !== "number" || ready.protocol < KOMODO_PROTOCOL) {
-        throw new KomodoUnavailable("this Komodo is too old for the Komodo preview engine; use an Elide distribution with a newer Komodo (lib/komodo)");
+        throw new KomodoUnavailable("this Komodo is too old for the Komodo preview engine; install a compatible Komodo through Elide and reload the window");
       }
       renderer.ready = ready;
       return renderer;
@@ -599,7 +599,7 @@ export class KomodoBackend extends ComposeBackend {
     // A delta rejected while the cards were being hosted.
     this.reconfigureRejected();
     if (request.inspect && this.daemon && !supports(this.daemon, "layout")) {
-      throw new Error("Layout inspection needs a newer Komodo. Use an Elide distribution with a newer Komodo (lib/komodo) and reload the window.");
+      throw new Error("Layout inspection needs a newer Komodo. Install a compatible Komodo through Elide and reload the window.");
     }
     return { images: this.gallery(), verified: true, reused: false };
   }
@@ -779,7 +779,7 @@ export class KomodoBackend extends ComposeBackend {
     const connected = await KomodoRenderer.connect(session.port, session.token, this.options.log, 60_000, signal);
     if (connected.ready.compiler !== "workspace-fir") {
       connected.dispose();
-      throw new KomodoUnavailable("The Komodo preview engine needs a newer Komodo language server. Use an Elide distribution with a newer Komodo (lib/komodo) and reload the window.");
+      throw new KomodoUnavailable("The Komodo preview engine needs a newer Komodo language server. Install a compatible Komodo through Elide and reload the window.");
     }
     if (signal.aborted) {
       connected.dispose();
@@ -795,7 +795,7 @@ export class KomodoBackend extends ComposeBackend {
     const runtime = this.runtime;
     if (!runtime) return "the layoutlib runtime is not installed yet";
     if (this.appendices.size && !supports(daemon, "appendices")) {
-      throw new KomodoUnavailable("Previewing a composable without @Preview needs a newer Komodo (the appendices feature). Use an Elide distribution with a newer Komodo (lib/komodo) and reload the window.");
+      throw new KomodoUnavailable("Previewing a composable without @Preview needs a newer Komodo (the appendices feature). Install a compatible Komodo through Elide and reload the window.");
     }
     const appendices = JSON.stringify([...this.appendices]);
     await this.pushing;

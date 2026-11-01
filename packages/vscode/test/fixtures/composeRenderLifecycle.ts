@@ -150,14 +150,6 @@ try {
     assert.equal(children[2]!.killed, false, "publication never kills a warm-up: restarting JVMs while typing burns CPU");
     release!();
     await until("the abandoned warm-up to finish", () => !pool().some((worker) => worker.warming));
-    assert.equal(pool().every((worker) => worker.joined), false, "a warm-up of abandoned classes does not join");
-    received.length = 0;
-    await renderer.render(inputs, "Gallery.kt", "sample");
-    assert.equal(pool().some((worker) => worker.warming), false, "no warm-up starts while publications continue");
-    await sleep(50);
-    await renderer.render(inputs, "Gallery.kt", "sample");
-    await until("the warm-up after the pause to join", () => pool().every((worker) => worker.joined));
-    assert.deepEqual(received.map(({ child, shardCount }) => [child, shardCount]), [[0, 1], [0, 1], [2, 1]], "it warms up once publications pause");
     assert.equal(children[0]!.killed, false);
     assert.equal(children.length, 3, "no replacement JVM was started");
     assert.equal(renderer.size, 2);

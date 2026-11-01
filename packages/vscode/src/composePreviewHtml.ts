@@ -255,7 +255,7 @@ function updateInspector(card) {
   card.canvas.setAttribute('aria-roledescription', inspecting ? 'layout inspector' : 'Compose preview');
   card.canvas.setAttribute('aria-describedby', inspecting ? 'keyboard-help' : 'input-help');
   card.canvas.title = !inspecting && card.live && !card.keyboard
-    ? 'Keyboard input unavailable: this Komodo does not support it. Use an Elide distribution with a newer Komodo.' : '';
+    ? 'Keyboard input unavailable: this Komodo does not support it. Install a compatible Komodo through Elide.' : '';
   card.size.textContent = card.image ? card.dimensions : '';
   // Inspection details take room only while Inspect is on; the toolbar's Inspect toggle is the one way in.
   card.inspector.hidden = !inspecting;

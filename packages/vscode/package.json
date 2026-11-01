@@ -303,7 +303,7 @@
           "enum": ["layoutlib", "komodo"],
           "enumDescriptions": ["Design-time snapshots rendered by layoutlib.", "Experimental: every card is live, rendered by the workspace's Komodo language server; a card it cannot render shows why."],
           "default": "layoutlib",
-          "markdownDescription": "Engine of the Compose preview. `layoutlib` (the default) renders design-time snapshots, with source navigation from **Inspect**. `komodo` (experimental) renders live cards inside the workspace's Komodo language server: unsaved Kotlin edits, clicks, keyboard input into a focused card, compile errors in Problems, and **Inspect** for composable calls by their measured bounds, with source navigation to their call sites. It requires `#elide.kotlinLsp.server#` = `komodo`, which uses the Komodo the Elide distribution ships (`lib/komodo`); there is no fallback to `layoutlib`. Takes effect when a preview panel opens."
+          "markdownDescription": "Engine of the Compose preview. `layoutlib` (the default) renders design-time snapshots, with source navigation from **Inspect**. `komodo` (experimental) renders live cards inside the workspace's Komodo language server: unsaved Kotlin edits, clicks, keyboard input into a focused card, compile errors in Problems, and **Inspect** for composable calls by their measured bounds, with source navigation to their call sites. It requires `#elide.kotlinLsp.server#` = `komodo`, with a compatible component installed explicitly through Elide; there is no fallback to `layoutlib`. Takes effect when a preview panel opens."
         },
         "elide.android.composePreview.mcp.enabled": {
           "type": "boolean",

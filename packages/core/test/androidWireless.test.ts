@@ -45,13 +45,12 @@ const path = require("node:path");
 const args = process.argv.slice(2);
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, "behavior"), "utf8"));
 fs.writeFileSync(path.join(__dirname, "args"), JSON.stringify(args));
-process.on("SIGTERM", () => { fs.writeFileSync(path.join(__dirname, "killed"), "yes"); process.exit(0); });
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", chunk => { input += chunk; });
 process.stdin.on("end", () => {
   fs.writeFileSync(path.join(__dirname, "input"), input);
-  if (config.hang) { fs.writeFileSync(path.join(__dirname, "ready"), "yes"); fs.watch(__dirname, () => {}); return; }
+  if (config.hang) { fs.writeFileSync(path.join(__dirname, "ready"), String(process.pid)); fs.watch(__dirname, () => {}); return; }
   if (config.flood) { process.stdout.write("x".repeat(300000)); return; }
   if (config.echoSecret) { console.error("error: rejected " + input.trim()); console.log(input.trim()); }
   const defaults = args[0] === "pair" ? "Enter pairing code: Successfully paired to " + args[1] + " [guid=adb-example]\n"
@@ -67,7 +66,7 @@ process.stdin.on("end", () => {
 
 async function waitForFile(file: string): Promise<void> {
   const { promise, resolve, reject } = Promise.withResolvers<void>();
-  const check = () => { if (existsSync(file)) resolve(); };
+  const check = () => { if (existsSync(file) && readFileSync(file, "utf8")) resolve(); };
   const watcher = watch(path.dirname(file), check);
   watcher.on("error", reject);
   // Await the real subprocess event; this deadline only bounds a broken fixture, not its success path.
@@ -80,6 +79,21 @@ async function waitForFile(file: string): Promise<void> {
   } finally {
     deadline.removeEventListener("abort", expired);
     watcher.close();
+  }
+}
+
+async function waitForExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (true) {
+    try { process.kill(pid, 0); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+      throw error;
+    }
+    if (Date.now() >= deadline) throw new Error(`adb process ${pid} survived cancellation`);
+    // Await real OS reaping rather than requiring an incidental SIGTERM handler to run.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setImmediate(resolve);
+    await promise;
   }
 }
 
@@ -215,9 +229,10 @@ describe.skipIf(process.platform === "win32")("wireless adb subprocess behavior"
       const active = new AbortController();
       const pending = operation(fake.adb, active.signal).catch((error: unknown) => error);
       await waitForFile(path.join(fake.root, "ready"));
+      const pid = Number(readFileSync(path.join(fake.root, "ready"), "utf8"));
       active.abort();
       expect(await pending).toMatchObject({ name: "AbortError" });
-      await waitForFile(path.join(fake.root, "killed"));
+      await waitForExit(pid);
     }
   });
   test("bounds subprocess output and reports unavailable executables without secrets", async () => {

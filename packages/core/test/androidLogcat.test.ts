@@ -147,7 +147,6 @@ const root = __dirname;
 const args = process.argv.slice(2);
 fs.appendFileSync(path.join(root, "calls"), JSON.stringify(args) + "\\n");
 process.on("SIGTERM", () => {
-  fs.writeFileSync(path.join(root, "stopped-" + process.pid), "yes");
   if (args.at(-1) === "com.example.stubborn") return;
   process.exit(0);
 });

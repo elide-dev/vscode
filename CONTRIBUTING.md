@@ -100,8 +100,9 @@ managed Komodo component, including its compiler plugins and JDK inputs. Install
 `elide komodo install --yes --json` or **Elide: Install Komodo**; ordinary activation and sync never install it.
 An older CLI reports an upgrade requirement, without changing the selected language server.
 For an unpublished local candidate, explicitly authorize the producer's development catalog with
-`elide komodo install --catalog /absolute/catalog.json --yes --json` in an isolated component store.
-Then run without executable/JDK overrides to exercise managed resolution.
+`ELIDE_COMPONENTS_HOME=/absolute/temp/components elide komodo install --catalog /absolute/catalog.json --yes --json`.
+Set `ELIDE_TEST_COMPONENTS_HOME` to that same absolute store when launching integration scenarios.
+The runner forwards it to the extension host; omit executable/JDK overrides to exercise managed resolution.
 For developer builds only, `ELIDE_KOMODO_LSP` names an absolute executable in an intact native bundle,
 `ELIDE_KOMODO_JAVA_HOME` its JDK inputs, and `ELIDE_KOMODO_PLUGINS` its compiler plugin directory.
 Build the standalone bundle in Komodo; do not copy it into an Elide distribution.
@@ -145,8 +146,8 @@ It is a correctness bound, not a debugger latency benchmark.
 
 Install Android SDK platform/build tools for API 36, boot a dedicated API 36 emulator headlessly, wait for boot
 completion, and dismiss its keyguard before starting. Select an Android-capable Elide distribution using
-`ELIDE_TEST_HOME`; it must provide Komodo under `lib/komodo`, or set `ELIDE_KOMODO_LSP` and
-`ELIDE_KOMODO_JAVA_HOME` as above. Other installed extensions are disabled. With `emulator-5580` already ready:
+`ELIDE_TEST_HOME`; explicitly install Komodo through that CLI before running. Developer-only builds may use
+`ELIDE_KOMODO_LSP` and `ELIDE_KOMODO_JAVA_HOME` as above. Other installed extensions are disabled. With `emulator-5580` already ready:
 
 ```sh
 ELIDE_TEST_SCENARIO=komodo-android-debug \
