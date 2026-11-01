@@ -4,6 +4,34 @@ All notable changes to the Elide extension are documented here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/elide-dev/vscode/compare/v0.6.1...v0.7.0) (2026-11-01)
+
+
+### Added
+
+* adopt Elide's structured progress records ([97aca17](https://github.com/elide-dev/vscode/commit/97aca17dbaacd7d249bd7b0aaf0144424a9b2d4d))
+* **android:** boot a stopped emulator target before Run and Debug ([f7c3e45](https://github.com/elide-dev/vscode/commit/f7c3e457f527c41e0a362758c7838c31488800b3))
+* **android:** streamline deployment, diagnostics, and source navigation ([d9ed147](https://github.com/elide-dev/vscode/commit/d9ed147fd217d7ca3579e390f7afadb98b4e114b))
+* **core:** format logcat records and read APK application IDs ([ba487cd](https://github.com/elide-dev/vscode/commit/ba487cdffdc337aae974b7585f07b8b54a544fad))
+* **vscode:** automatic Compose preview resource context ([bedce8c](https://github.com/elide-dev/vscode/commit/bedce8c46116b4175c9bfb5756e83e688e947041))
+* **vscode:** color-coded, aligned logcat without filter prompts ([c943fdc](https://github.com/elide-dev/vscode/commit/c943fdc570111679e60362484bc130f54ee43c16))
+* **vscode:** Komodo engine hosts Android cards on layoutlib, with live input ([bb993df](https://github.com/elide-dev/vscode/commit/bb993df1747f16721860b70026f6a30ea2cb87de))
+* **vscode:** opt-in Komodo engine for the Compose preview, with per-card fallback ([83d5d21](https://github.com/elide-dev/vscode/commit/83d5d21bb6e675dd798ca49c8b8455739bb95b2d))
+* **vscode:** suppress FunctionName on @Composable functions ([178a46b](https://github.com/elide-dev/vscode/commit/178a46bf14793fe6b4ba5d392c5fd2f4d3714293))
+
+
+### Fixed
+
+* remove integrations requiring unreleased runtime features ([d2c1760](https://github.com/elide-dev/vscode/commit/d2c1760e93a63785253cbae4794e6dc9cc993e2c))
+* **sync:** keep skipped tasks, honor mid-sync manifest edits and imported modules ([e6961fc](https://github.com/elide-dev/vscode/commit/e6961fcc74900cdb83d3b29631482a86417790a3))
+* **sync:** regenerate R classes the build no longer records ([ee9302d](https://github.com/elide-dev/vscode/commit/ee9302df0b48770fa2f1bf61150fe5e77d58a35b))
+* **sync:** watch the local Pkl modules manifests import ([e8dfc4f](https://github.com/elide-dev/vscode/commit/e8dfc4fc22ec6f1fd350bd010034ec358979daf3))
+
+
+### Changed
+
+* **sync:** resolve workspace projects concurrently, batch platform queries ([2454de3](https://github.com/elide-dev/vscode/commit/2454de3b95c71fa12366be3665cf96a68b6b3941))
+
 ## [Unreleased]
 
 ### Added
