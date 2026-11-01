@@ -151,6 +151,10 @@ Releases are cut on demand by maintainers, driven by
    version, derived from the commits since the last tag.
 2. Amend that section in the pull request if the generated entries need polish; the merged text is what the
    Marketplace shows. Run the workflow again to fold in commits that landed after the pull request was opened.
+   After any release-PR version bump, run `bazel run @npm//:sync` on its branch and commit the regenerated
+   `.aspect/rules/external_repository_action_cache/` record and any `pnpm-lock.yaml` changes. The frozen npm
+   lock check hashes the whole package manifest, including its version, even when dependencies are unchanged.
+   Verify with `bazel run --config=ci //:gazelle.check` and `bazel test --config=ci //...`.
 3. Merging it tags `v<version>` and creates the GitHub Release, which triggers the publish job: unit tests, the
    `.vsix` published to `plugins.elide.dev` via `tools/deploy.sh`, publication to the Visual Studio Marketplace when
    the `VSCE_PAT` secret is configured, and the `.vsix` attached to the release.
