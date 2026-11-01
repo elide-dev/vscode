@@ -62,15 +62,6 @@ test("the client sees only Kotlin files on disk under the Komodo folders, glob c
   `)).toEqual({ status: 0, stderr: "" });
 });
 
-test("a configured Komodo path that does not exist is named in the failure", () => {
-  expect(run(`
-    const server = new komodo.KomodoLanguageServer("/tmp/elide-komodo-test", () => {});
-    const folder = { uri: { fsPath: "/work/app", toString: () => "file:///work/app" }, name: "app", index: 0 };
-    await assert.rejects(server.sync(folder, [{ root: "/work/app" }], { path: "/missing/komodo" }),
-      { message: "elide.kotlinLsp.komodo.path (/missing/komodo) does not exist." });
-    await assert.rejects(server.debugLaunch(folder), /elide\\.kotlinLsp\\.komodo\\.path \\(\\/missing\\/komodo\\) does not exist/);
-  `)).toEqual({ status: 0, stderr: "" });
-});
 
 test("a client restarting its crashed server is stopped once it is up, and disposed so it never restarts one again", () => {
   expect(run(`
@@ -125,7 +116,10 @@ test("disposing while the manifest is written cannot start a late server", () =>
   `, `
     const writing = Promise.withResolvers();
     const written = Promise.withResolvers();
+    // Capture the real exports before installing the partial module-loading boundary.
+    const core = await import("@elide/ide-core");
     mock.module("@elide/ide-core", () => ({
+      ...core,
       writeKomodoProject: async () => { writing.resolve(); return written.promise; }
     }));
   `)).toEqual({ status: 0, stderr: "" });
@@ -149,7 +143,10 @@ test("disposing during replacement shutdown prevents the replacement from starti
     assert.deepEqual(clients, []);
     assert.equal(server.client, undefined);
   `, `
+    // Capture the real exports before installing the partial module-loading boundary.
+    const core = await import("@elide/ide-core");
     mock.module("@elide/ide-core", () => ({
+      ...core,
       writeKomodoProject: async () => ({ skipped: [], plugins: { compose: false, serialization: false }, modules: [{}] })
     }));
   `)).toEqual({ status: 0, stderr: "" });

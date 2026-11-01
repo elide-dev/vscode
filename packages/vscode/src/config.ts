@@ -28,12 +28,11 @@ export interface ElideConfig {
   syncNotification: boolean;
   writeWorkspaceJson: boolean;
   kotlinLspServer: KotlinLspServer;
-  /** `komodo` executable; empty resolves `<elide home>/lib/komodo/bin`, `<elide home>/bin`, then `PATH`. */
+  /** Developer executable override; empty delegates optional-component resolution to the selected Elide CLI. */
   komodoLspPath: string | undefined;
   /** Compiler plugin jars for Komodo's compiler; empty is `plugins/` beside the launcher. */
   komodoPluginDirectory: string | undefined;
-  /** JDK class/module resolution inputs of `komodo` (its JAVA_HOME); undefined: the Elide distribution's JDK for its own
-   * `komodo`, else the environment's. */
+  /** Developer JDK input override; empty uses managed resolution, or JAVA_HOME for a developer executable. */
   komodoLspJavaHome: string | undefined;
   /** Heap cap (`-Xmx`) of the native `komodo`, such as `768m`; undefined leaves the image's default. */
   komodoLspMaxHeap: string | undefined;

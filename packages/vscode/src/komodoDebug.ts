@@ -7,7 +7,10 @@ export interface KomodoDebugTargets {
   komodoDebugLaunch(folder: vscode.WorkspaceFolder): Promise<KomodoDebugLaunch>;
 }
 
-/** The same native executable in DAP mode; JAVA_HOME supplies target JDK resolution inputs. */
+/**
+ * The same native executable and resolved JDK inputs in DAP mode. DAP evaluates through JDWP, not the analysis
+ * compiler, so compiler-plugin arguments belong to the language server rather than this adapter.
+ */
 export function komodoDebugAdapterExecutable(launch: KomodoDebugLaunch): vscode.DebugAdapterExecutable {
   return new vscode.DebugAdapterExecutable(launch.launcher, ["--dap", "--project", launch.manifest], {
     cwd: path.dirname(launch.manifest),

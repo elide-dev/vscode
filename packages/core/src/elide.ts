@@ -417,8 +417,8 @@ export class ElideCli {
    * Several classpaths of this project → entries keyed by query. One query that cannot be resolved fails the call.
    *
    * Elide 1.6.1 answers them all from one `elide classpath --json <query…>`, which resolves the project once; an
-   * older release rejects `--json` and is asked one query per process. A version that cannot be read is tried with
-   * `--json` first, and whichever form answered is kept for the rest of this instance's life.
+   * older release rejects `--json` and is asked one query per process. Development distributions can report
+   * the new version before gaining the option: an explicit CLI option rejection overrides the version hint.
    */
   async classpaths(queries: readonly ClasspathQuery[], opts: RunOptions = {}): Promise<Map<ClasspathQuery, string[]>> {
     const answers = new Map<ClasspathQuery, string[]>();
@@ -430,7 +430,10 @@ export class ElideCli {
         this.batchedClasspath = true;
         return batched;
       } catch (e) {
-        if (this.batchedClasspath) throw e;
+        const unsupported = e instanceof ElideCommandFailedError && e.exitCode === 2
+          && /(?:unexpected argument|Unknown option:)\s+'--json'/.test(e.stderr);
+        if (this.batchedClasspath && !unsupported) throw e;
+        this.batchedClasspath = false;
       }
     }
     for (const query of queries) {

@@ -24,6 +24,7 @@ import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider, KOMODO_DEBUG_TYPE } 
 import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./explorer.js";
 import { JETBRAINS_EXTENSION_ID, jetBrainsExtension } from "./jetbrains.js";
 import { KomodoDebugAdapterFactory } from "./komodoDebug.js";
+import { installKomodo, resolveKomodo } from "./komodoDistribution.js";
 import { ELIDE_NATIVE_DEBUG_TYPE, ElideNativeDebugConfigurationProvider } from "./nativeDebug.js";
 import { addWorkspaceMember, newProject } from "./newProject.js";
 import { ElideUi } from "./output.js";
@@ -64,6 +65,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     codeLenses,
     vscode.languages.registerCodeLensProvider(ElideCodeLensProvider.selector, codeLenses),
     vscode.commands.registerCommand("elide.sync", (target: unknown) => syncCommand(workspace, target)),
+    vscode.commands.registerCommand("elide.installKomodo", () => installKomodoCommand(workspace, ui)),
     vscode.commands.registerCommand("elide.showOutput", () => ui.output.show(true)),
     vscode.commands.registerCommand("elide.showMenu", () => showMenu(workspace)),
     vscode.commands.registerCommand("elide.openWorkspaceJson", () => openWorkspaceJson(workspace)),
@@ -274,6 +276,39 @@ async function promptReload(folder: vscode.WorkspaceFolder, workspace: ElideWork
     if (pick === "Reload") await workspace.syncFolder(folder, "manifest-change");
   } finally {
     prompting.delete(key);
+  }
+}
+
+/** Installation is an explicit command, never a side effect of activation or sync. */
+async function installKomodoCommand(workspace: ElideWorkspace, ui: ElideUi): Promise<void> {
+  const config = readConfig();
+  if (config.komodoLspPath) {
+    void vscode.window.showErrorMessage("Komodo uses elide.kotlinLsp.komodo.path. Fix or clear that developer override before installing a managed component.");
+    return;
+  }
+  try {
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Elide: installing Komodo", cancellable: true },
+      async (progress, token) => {
+        const abort = new AbortController();
+        const cancellation = token.onCancellationRequested(() => abort.abort(new Error("Komodo installation cancelled.")));
+        try {
+          if (token.isCancellationRequested) abort.abort(new Error("Komodo installation cancelled."));
+          await installKomodo(config.home, {
+            signal: abort.signal,
+            onLine: (message) => { progress.report({ message }); ui.log(`Komodo: ${message}`); },
+          });
+          await resolveKomodo(undefined, config.home, { signal: abort.signal });
+        } finally {
+          cancellation.dispose();
+        }
+      },
+    );
+    await workspace.syncAll("manual", (folder) => readConfig(folder).kotlinLspServer === "komodo");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ui.log(`Komodo: ${message}`);
+    void vscode.window.showErrorMessage(`Komodo: ${message}`);
   }
 }
 

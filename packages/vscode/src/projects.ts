@@ -794,7 +794,7 @@ export class ElideWorkspace implements vscode.Disposable {
       signal.throwIfAborted();
       await sync.run("Starting the Komodo language server", async (step) => {
         try {
-          step.setDetail(await this.komodoServer.sync(state.folder, models, komodoSettings()));
+          step.setDetail(await this.komodoServer.sync(state.folder, models, { ...komodoSettings(), signal }));
         } catch (e) {
           // The resolved models remain usable for builds, but a failed analysis reload is not a successful sync.
           const message = e instanceof Error ? e.message : String(e);
@@ -1144,22 +1144,14 @@ function manifestErrorRange(at: ManifestErrorLocation): vscode.Range {
 }
 
 /**
- * Komodo's launch settings, read for the window rather than a folder: the window has one server. Without a configured
- * launcher, the Elide distribution the window resolves to is searched for one.
+ * Komodo's launch settings are window-wide, like its shared server. Without a developer launcher,
+ * the selected Elide CLI resolves the optional component from its managed store.
  */
 function komodoSettings(): KomodoSettings {
   const config = readConfig();
-  let elideHome = config.home;
-  if (!elideHome) {
-    try {
-      elideHome = resolveElideDistribution({}).home;
-    } catch {
-      // No distribution: the configured path or PATH must provide the launcher.
-    }
-  }
   return {
     path: config.komodoLspPath,
-    elideHome,
+    elideHome: config.home,
     pluginDirectory: config.komodoPluginDirectory,
     javaHome: config.komodoLspJavaHome,
     maxHeap: config.komodoLspMaxHeap,

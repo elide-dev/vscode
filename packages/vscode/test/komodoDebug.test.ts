@@ -31,7 +31,7 @@ test("Komodo's adapter uses the current workspace manifest and rejects unavailab
 
     const root = mkdtempSync(path.join(tmpdir(), "komodo-debug-"));
     const launcher = path.join(root, "komodo");
-    writeFileSync(launcher, "#!/bin/sh\\n");
+    writeFileSync(launcher, "#!/bin/sh\\n", { mode: 0o755 });
     const folder = { name: "app", uri: { fsPath: path.join(root, "app"), toString: () => "file://" + path.join(root, "app") } };
     const model = {
       root: folder.uri.fsPath, name: "app", elideVersion: "1.5.1", kotlin: { freeCompilerArgs: [] },

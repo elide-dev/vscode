@@ -28,8 +28,8 @@ and a pinned (`&version=`) link.
   installed separately from the Marketplace. Complete its one-time region / data-sharing setup for Kotlin/Java
   analysis and JVM debugging. Elide activates independently: sync, build, previews and environment diagnostics do not
   wait for the language server. Opening an Elide Kotlin or Java source document starts the companion when needed.
-  It is not needed with Komodo (`elide.kotlinLsp.server` = `komodo`), which instead needs an Elide distribution that
-  ships `lib/komodo` (macOS arm64 is currently the qualified platform).
+  It is not needed with Komodo (`elide.kotlinLsp.server` = `komodo`), which requires an Elide release with
+  on-demand Komodo resolution. Choose **Elide: Install Komodo** explicitly; default use never downloads it.
 - A JDK for symbol resolution (`$JAVA_HOME`, SDKMAN, `/Library/Java/JavaVirtualMachines`, `/usr/lib/jvm`, …). Elide's
   bundled JDK image cannot serve this role: it ships without a `release` file, which IntelliJ needs to enumerate modules.
 
@@ -442,8 +442,8 @@ unlinked. Obfuscated release traces still require the matching R8 mapping; this 
 | `elide.sync.onStartup` | `true` | Sync when the workspace opens. |
 | `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` changes, or when the lockfile's resolved dependencies do. Every `elide` invocation rewrites `.dev/elide.lock*.bin`, so rewrites with unchanged content are ignored. |
 | `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json` for the JetBrains server; never for a Komodo folder. |
-| `elide.kotlinLsp.server` | `"jetbrains"` | `komodo` (experimental): Komodo's native language server from the Elide distribution's `lib/komodo` instead. |
-| `elide.kotlinLsp.komodo.path`, `.pluginDirectory`, `.javaHome`, `.maxHeap` | `""` | Overrides for Komodo's executable, compiler plugins, JDK inputs and heap. Leave empty to use the Elide distribution's `lib/komodo` and JDK. |
+| `elide.kotlinLsp.server` | `"jetbrains"` | `komodo` (experimental): native Kotlin services resolved and installed on demand by Elide. |
+| `elide.kotlinLsp.komodo.path`, `.pluginDirectory`, `.javaHome`, `.maxHeap` | `""` | Developer overrides for executable, compiler plugins, JDK inputs and heap. Empty uses Elide's managed resolution. |
 | `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
 | `elide.flags` | `[]` | `-f NAME[=VALUE]` build flags for every invocation, sync included; changing them marks the model stale. |
 | `elide.build.options` | `{}` | Default options for `elide build`, e.g. `{ "no-cache": true }`. |

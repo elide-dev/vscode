@@ -94,20 +94,22 @@ ELIDE_TEST_SCENARIO=workspace bazel run //packages/vscode:integration_test
 with every installed extension disabled (as on a machine without the JetBrains extension), and exercises each
 capability the server advertises through VS Code's provider commands, logging `PASS`/`FAIL`/`SKIP` per check and a
 count. It also exercises repeated reloads with unsaved declarations, CodeLens after declaration edits/reverts, and
-failed-sync activity reporting/recovery. By default the extension runs the `komodo` executable of the Elide distribution under test (`lib/komodo`).
-To test a Komodo build of your own, install it into an Elide distribution from a Komodo checkout with
-`bazel run --config=local //tools/vscode:install` (`-- <elide home>` for another distribution than the default
-one, then point `ELIDE_TEST_HOME` or `elide.home` at it), and run `lib/komodo/bin/komodo --version` once: macOS
-verifies the new executable's signature on its first run, which can take more than ten seconds. Alternatively
-`ELIDE_KOMODO_LSP` names a `komodo` executable elsewhere (keep its bundle directory intact),
-`ELIDE_KOMODO_JAVA_HOME` the JDK 25 whose modules it resolves against, and `ELIDE_KOMODO_PLUGINS` optionally a compiler
-plugin directory.
+failed-sync activity reporting/recovery. By default the extension asks the selected Elide CLI to resolve its
+managed Komodo component, including its compiler plugins and JDK inputs. Install it explicitly with
+`elide komodo install --yes --json` or **Elide: Install Komodo**; ordinary activation and sync never install it.
+An older CLI reports an upgrade requirement, without changing the selected language server.
+For an unpublished local candidate, explicitly authorize the producer's development catalog with
+`elide komodo install --catalog /absolute/catalog.json --yes --json` in an isolated component store.
+Then run without executable/JDK overrides to exercise managed resolution.
+For developer builds only, `ELIDE_KOMODO_LSP` names an absolute executable in an intact native bundle,
+`ELIDE_KOMODO_JAVA_HOME` its JDK inputs, and `ELIDE_KOMODO_PLUGINS` its compiler plugin directory.
+Build the standalone bundle in Komodo; do not copy it into an Elide distribution.
 `ELIDE_KOMODO_TRACE=1` records the protocol in the `Elide: Komodo` output channel's log, and `ELIDE_KOMODO_COEXIST=1`
 keeps the JetBrains extension enabled and logs which `kotlin` grammar VS Code applies:
 
 ```sh
 ELIDE_TEST_SCENARIO=komodo \
-ELIDE_TEST_HOME="${ELIDE_TEST_HOME:?set to an Elide distribution with lib/komodo}" \
+ELIDE_TEST_HOME="${ELIDE_TEST_HOME:?set to an Elide distribution with managed Komodo support}" \
 bazel run //packages/vscode:integration_test
 ```
 

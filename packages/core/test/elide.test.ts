@@ -392,6 +392,13 @@ esac
     ["main:runtime", ["/m2/a.jar", "/m2/r.jar"]],
   ]);
 
+  test("an option rejection overrides a development distribution's new version hint", async () => {
+    const { cli, root, argv } = cliReporting("1.6.1+extensions", false);
+    expect(await cli.classpaths(["main:compile", "main:runtime"])).toEqual(answers(root));
+    expect(await cli.classpaths(["main:compile"])).toEqual(new Map([["main:compile", answers(root).get("main:compile")]]));
+    expect(argv().filter((line) => line.startsWith("classpath --json"))).toEqual(["classpath --json main:compile main:runtime"]);
+  });
+
   test("1.6.1 answers every query from one process; an older release is asked one query at a time", async () => {
     const recent = cliReporting("1.6.1+abc1234", true);
     expect(await recent.cli.classpaths(["main:compile", "main:runtime"])).toEqual(answers(recent.root));

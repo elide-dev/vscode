@@ -23,8 +23,8 @@
  * root.
  *
  * `ELIDE_TEST_SCENARIO=komodo` opens a copy of `samples/ktjvm` with `elide.kotlinLsp.server` set to `komodo` and the
- * JetBrains extension disabled. `ELIDE_KOMODO_LSP` names its native executable, `ELIDE_KOMODO_PLUGINS` optionally
- * its compiler plugin directory, and `ELIDE_KOMODO_JAVA_HOME` the JDK resolution inputs.
+ * JetBrains extension disabled. By default the selected Elide resolves its managed component, including JDK inputs.
+ * For developer builds only, ELIDE_KOMODO_LSP, ELIDE_KOMODO_PLUGINS and ELIDE_KOMODO_JAVA_HOME override that identity.
  * `ELIDE_TEST_SCENARIO=komodo-debug` debugs the same sample through Komodo's debug adapter.
  *
  * `ELIDE_TEST_HOME` runs the scenario against another Elide distribution, such as a local build's

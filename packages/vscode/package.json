@@ -180,28 +180,28 @@
           "enum": ["jetbrains", "komodo"],
           "enumDescriptions": [
             "The JetBrains Kotlin LSP (`JetBrains.kotlin-server`, installed separately) imports the generated `workspace.json`.",
-            "Experimental: Komodo's native language server (`komodo`), shipped by the Elide distribution under `lib/komodo`, analyzes the folder's Kotlin sources from the Elide project model: no `workspace.json`, no JetBrains server for the folder. One server serves every Komodo folder of the window."
+            "Experimental: Komodo's native language server, installed on demand by Elide, analyzes Kotlin sources from the Elide project model. No workspace.json or JetBrains server is needed for the folder. One server serves every Komodo folder of the window."
           ],
           "default": "jetbrains",
-          "markdownDescription": "Kotlin language server for the folder's Elide projects. `komodo` requires an Elide distribution that ships Komodo (`lib/komodo`). With `komodo`, `#elide.debug.adapter#` defaults to `komodo`, Komodo's own Kotlin debugger (the JetBrains debugger runs inside the JetBrains server)."
+          "markdownDescription": "Kotlin language server for the folder's Elide projects. `komodo` requires an Elide release supporting on-demand Komodo resolution. If missing, choose **Install Komodo** explicitly; activation and sync never download it. With `komodo`, `#elide.debug.adapter#` defaults to Komodo's debugger."
         },
         "elide.kotlinLsp.komodo.path": {
           "type": "string",
           "scope": "machine-overridable",
           "default": "",
-          "markdownDescription": "Komodo `komodo` executable. Leave empty to use the one the Elide distribution ships (`lib/komodo/bin/komodo`, else `bin/komodo`), then `PATH`. Applies to the whole window, which runs one Komodo server."
+          "markdownDescription": "Absolute executable path to a developer-managed Komodo build. Leave empty to resolve through the selected Elide CLI's managed component store, not PATH or the Elide distribution. An invalid override is reported and never replaced. Applies to the whole window."
         },
         "elide.kotlinLsp.komodo.pluginDirectory": {
           "type": "string",
           "scope": "machine-overridable",
           "default": "",
-          "markdownDescription": "Kotlin compiler plugin jars built for Komodo's compiler (`kotlin-compose-compiler-plugin[-embeddable][-<version>].jar`, `kotlin-serialization-compiler-plugin[-embeddable][-<version>].jar`). Leave empty to use the plugins Komodo ships under `plugins/`."
+          "markdownDescription": "Developer override for Kotlin compiler plugin jars built for Komodo's compiler. Empty uses Elide's resolved plugin directory for a managed component, or the explicit developer bundle's own plugins."
         },
         "elide.kotlinLsp.komodo.javaHome": {
           "type": "string",
           "scope": "machine-overridable",
           "default": "",
-          "markdownDescription": "JDK 25 home whose platform classes and modules Komodo resolves against (passed as `JAVA_HOME`); Komodo does not run a JVM. Leave empty: a `komodo` from the Elide distribution uses the distribution's own JDK, any other inherits `JAVA_HOME` from the environment."
+          "markdownDescription": "Developer override for the JDK home whose platform classes and modules Komodo resolves against (JAVA_HOME). Empty uses the JDK inputs returned by Elide's resolver. An explicit developer executable inherits JAVA_HOME instead."
         },
         "elide.kotlinLsp.komodo.maxHeap": {
           "type": "string",
@@ -406,6 +406,11 @@
       }
     },
     "commands": [
+      {
+        "command": "elide.installKomodo",
+        "category": "Elide",
+        "title": "Install Komodo"
+      },
       {
         "command": "elide.sync",
         "category": "Elide",

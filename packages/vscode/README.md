@@ -6,7 +6,7 @@
 VS Code integration for the [Elide](https://elide.dev) build tool. Any folder containing an `elide.pkl` manifest
 becomes a real project: resolved dependencies and source roots are handed to a Kotlin language server — the
 [JetBrains Kotlin LSP](https://marketplace.visualstudio.com/items?itemName=JetBrains.kotlin-server) by default, or
-the experimental Komodo language server shipped with Elide (`elide.kotlinLsp.server`) — and Elide's build, run,
+the experimental native Komodo language server installed on demand by Elide (`elide.kotlinLsp.server`) — and Elide's build, run,
 test, and debug commands are available from the editor.
 
 ## Features
@@ -63,7 +63,7 @@ test, and debug commands are available from the editor.
 | | |
 | --- | --- |
 | [Elide](https://elide.dev) **1.5+** | Found via `elide.home`, `$ELIDE_HOME`, the platform install locations, or `PATH`. **1.6.1+** reports live task progress and resolves a project's classpaths in one call; older releases sync with one call per classpath and show tasks once they finish. |
-| **Kotlin by JetBrains** (`JetBrains.kotlin-server`, ≥ 0.0.11), for the default language server | Install it from the Marketplace. Complete its one-time region / data-sharing prompt for Kotlin/Java analysis and JVM debugging. Not needed with Komodo's language server (`elide.kotlinLsp.server` = `komodo`), which instead needs an Elide distribution that ships `lib/komodo`. |
+| **Kotlin by JetBrains** (`JetBrains.kotlin-server`, ≥ 0.0.11), for the default language server | Install it from the Marketplace and complete its region/data-sharing prompt. Not needed with Komodo, which requires an Elide release supporting on-demand component resolution. |
 | A JDK | `$JAVA_HOME`, SDKMAN, `/Library/Java/JavaVirtualMachines`, `/usr/lib/jvm`, or `elide.jdk.home`. Elide's bundled JDK image cannot be used for symbol resolution: it ships without a `release` file. |
 | An Android SDK, for Android projects | `android.sdk` in the manifest, `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or where the SDK installs itself on this platform. `Elide: Install Android SDK Components` installs what a build is missing. |
 
@@ -130,9 +130,9 @@ accept); add it to `.gitignore` instead to cover every clone.
 | `elide.sync.showProgressNotification` | `true` | Show a notification with the step in progress and a Cancel button while a sync runs for more than two seconds. |
 | `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json` for the JetBrains server; never for a Komodo folder. |
 | `elide.kotlinLsp.server` | `"jetbrains"` | `komodo` (experimental) replaces the JetBrains server for the folder with Komodo's native language server. See below. |
-| `elide.kotlinLsp.komodo.path` | `""` | Leave empty: the Elide distribution's `lib/komodo/bin/komodo` (else `bin/komodo`), then `PATH`. |
-| `elide.kotlinLsp.komodo.pluginDirectory` | `""` | Compose and kotlinx.serialization compiler plugin jars built for Komodo's compiler; empty: the ones Komodo ships under `plugins/`. |
-| `elide.kotlinLsp.komodo.javaHome` | `""` | JDK 25 whose classes and modules Komodo resolves against (not a JVM it runs). Leave empty: the Elide distribution's JDK for its own `komodo`, else the environment's `JAVA_HOME`. |
+| `elide.kotlinLsp.komodo.path` | `""` | Absolute executable override for a developer build. Empty delegates to Elide's resolver; no bundled/PATH search. Invalid overrides are never replaced. |
+| `elide.kotlinLsp.komodo.pluginDirectory` | `""` | Developer compiler-plugin override. Empty uses the managed bundle's directory or an explicit developer executable's own plugins. |
+| `elide.kotlinLsp.komodo.javaHome` | `""` | Developer JDK input override. Empty uses Elide's resolved JDK inputs; an explicit developer executable instead inherits `JAVA_HOME`. |
 | `elide.kotlinLsp.komodo.maxHeap` | `""` | Native heap cap (`768m`, `1g`); empty leaves Komodo's default. |
 | `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`), by sync and the `install` task (`--slim --with …`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
 | `elide.flags` | `[]` | `-f NAME[=VALUE]` build flags for every Elide invocation, project sync included. |
@@ -165,17 +165,21 @@ The extension also maintains two Kotlin LSP settings, and explicit values you se
 
 ### Komodo language server (experimental)
 
-Komodo is a native Kotlin language server and debugger shipped with Elide. It is
+Komodo is an optional native Kotlin language server and debugger managed by Elide. It is
 opt-in; the JetBrains Kotlin LSP stays the default. To use it, set:
 
 ```jsonc
 "elide.kotlinLsp.server": "komodo" // per folder: Kotlin language server and debugger
 ```
 
-Komodo needs an Elide distribution that ships it under `lib/komodo`; macOS arm64 is currently the qualified
-platform. Leave `elide.kotlinLsp.komodo.path` and `elide.kotlinLsp.komodo.javaHome` empty: the extension runs
-`<elide home>/lib/komodo/bin/komodo` from the distribution it resolves (`elide.home`, `$ELIDE_HOME`, the platform
-install locations, `PATH`) and gives it that distribution's JDK to resolve platform classes against.
+Leave executable, plugin and JDK overrides empty for managed use. The selected Elide CLI runs
+`elide komodo resolve --json` without downloading or installing anything. If Komodo is missing, choose
+**Install Komodo** from the notification, or run **Elide: Install Komodo** from the Command Palette.
+That explicit action runs Elide's installer with progress and cancellation, resolves the installed identity,
+and resyncs Komodo folders. Declining or failing installation leaves the feature unavailable; it never changes
+engines. Ordinary Elide installs and default JetBrains/layoutlib use do not acquire Komodo.
+Older Elide versions remain usable for existing features but need an upgrade for managed Komodo.
+Elide validates supported platforms, compatible protocols, JDK inputs and trusted artifact checksums.
 
 With `elide.kotlinLsp.server` set to `komodo`, `komodo` is the folder's Kotlin language server. Each sync writes a
 Komodo project manifest into the extension's storage (nothing in the project: no `workspace.json`) and starts the
@@ -203,10 +207,10 @@ files when there are none; these documents have `komodo-library:` URIs and are s
 VS Code cannot open.
 
 **Runtime.** `komodo` is a native executable: it does not start a JVM, and it ships its libraries and compiler plugins
-beside it in `lib/komodo`; keep that directory together. It compiles with its own pinned Kotlin
+beside it in its managed component bundle; keep that directory together. It compiles with its own pinned Kotlin
 compiler and applies its bundled Compose and kotlinx.serialization plugins to modules whose classpath has their
 runtime (`elide.kotlinLsp.komodo.pluginDirectory` overrides them); `elide.kotlinLsp.komodo.maxHeap` caps its heap.
-When no `komodo` is found, the sync says so and names the settings above.
+Missing components offer an explicit installation action; invalid developer overrides must be fixed or cleared.
 
 **Coexistence with the JetBrains extension.** The JetBrains extension is not required and no longer installed with
 this one. A Komodo folder gets no `workspace.json` and never starts the JetBrains server, but the JetBrains extension

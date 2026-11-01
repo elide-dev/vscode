@@ -6,7 +6,7 @@ import { writeKomodoProject, type ProjectModel } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { LanguageClient, State, type LanguageClientOptions, type ServerOptions } from "vscode-languageclient/node";
 import type * as lsp from "vscode-languageclient/node";
-import { KOMODO_LSP, elideJdkHome, resolveKomodoLauncher } from "./komodoDistribution.js";
+import { KomodoResolutionError, resolveKomodo } from "./komodoDistribution.js";
 
 /**
  * Library declarations the server opens (`komodo-library:/<path>?<origin>`): a `-sources.jar` entry or a stub it renders
@@ -69,6 +69,7 @@ export interface KomodoSettings {
   javaHome?: string | undefined;
   /** Native heap cap (`768m`, `1g`); undefined leaves the image's default. */
   maxHeap?: string | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 /** What Komodo's debug adapter (`komodo --dap`) runs with. */
@@ -107,6 +108,7 @@ export class KomodoLanguageServer implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   /** What the last {@link apply} left for the debug adapter, or why it left nothing. */
   private debugTarget: { launch: KomodoDebugLaunch } | { unavailable: string } = { unavailable: "no folder has synced with Komodo yet" };
+  private missingOffered = false;
 
   constructor(private readonly storage: string, private readonly log: (message: string) => void) {
     this.disposables.push(
@@ -167,16 +169,23 @@ export class KomodoLanguageServer implements vscode.Disposable {
       await this.stop();
       return "no Elide projects";
     }
-    const launcher = resolveKomodoLauncher(KOMODO_LSP, settings.path, settings.elideHome);
-    if (!launcher) {
-      // A configured path is used as it is: name it rather than suggest setting it.
-      const message = settings.path
-        ? `elide.kotlinLsp.komodo.path (${settings.path}) does not exist.`
-        : `Komodo was not found: use an Elide distribution that ships it (lib/komodo/bin/${KOMODO_LSP}), or set elide.kotlinLsp.komodo.path to a ${KOMODO_LSP} executable.`;
-      this.debugTarget = { unavailable: message.replace(/\.$/, "") };
+    let resolved;
+    try {
+      resolved = await resolveKomodo(settings.path, settings.elideHome, { signal: settings.signal });
+      this.missingOffered = false;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.debugTarget = { unavailable: message };
       await this.stop();
-      throw new Error(message);
+      if (error instanceof KomodoResolutionError && error.status === "missing" && !this.missingOffered) {
+        this.missingOffered = true;
+        void vscode.window.showErrorMessage(`Komodo: ${message}`, "Install Komodo").then((choice) => {
+          if (choice === "Install Komodo" && !this.disposed) void vscode.commands.executeCommand("elide.installKomodo");
+        });
+      }
+      throw error;
     }
+    const launcher = resolved.executable;
     // Per window: two windows must not rewrite each other's manifest; a multi-root window keys by its workspace file.
     const windowKey = vscode.workspace.workspaceFile?.toString() ?? [...this.folders.keys()].sort()[0]!;
     const manifest = path.join(this.storage, "komodo-lsp", createHash("sha256").update(windowKey).digest("hex").slice(0, 16), "project.properties");
@@ -188,10 +197,11 @@ export class KomodoLanguageServer implements vscode.Disposable {
       return "no Kotlin sources";
     }
     for (const skipped of project.skipped) this.log(`Komodo: skipped ${skipped}`);
-    const plugins = komodoPluginArguments(project.plugins, settings.pluginDirectory);
-    if (plugins.missing.length > 0) this.log(`Komodo: no ${plugins.missing.join(", ")} compiler plugin in ${settings.pluginDirectory}; the server falls back to the plugins its distribution ships`);
+    const pluginDirectory = settings.pluginDirectory ?? resolved.pluginDirectory;
+    const plugins = komodoPluginArguments(project.plugins, pluginDirectory);
+    if (plugins.missing.length > 0) throw new Error(`Komodo: missing ${plugins.missing.join(", ")} compiler plugin in ${pluginDirectory}. Check the configured plugin directory or reinstall the managed component.`);
     const args = [...(settings.maxHeap ? [`-Xmx${settings.maxHeap}`] : []), "--project", manifest, ...plugins.args];
-    const javaHome = settings.javaHome ?? elideJdkHome(launcher, settings.elideHome);
+    const javaHome = settings.javaHome ?? resolved.javaHome;
     // Before the server starts: the adapter needs only the manifest and launcher, not a running server.
     this.debugTarget = { launch: { launcher, manifest, javaHome } };
     const folders = [...this.folders.values()].map(({ folder }) => folder.uri.fsPath).sort();
