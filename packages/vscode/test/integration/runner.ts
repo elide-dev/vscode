@@ -53,6 +53,7 @@
  * `ELIDE_TEST_COMPONENTS_HOME` forwards an isolated component store as `ELIDE_COMPONENTS_HOME` to the extension host.
  * Install the candidate there explicitly before managed scenarios; omit all ELIDE_KOMODO_* path/JDK overrides.
  */
+import { execFileSync } from "node:child_process";
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -64,21 +65,38 @@ const runfilesRoot = path.resolve(runfilesExtension, "..", "..");
 // Runfiles are links into the output tree, and Node loads `dist/extension.js` at its real path: VS Code must know the
 // extension at that path too, or it attributes the extension's `vscode` API to no extension, and the calls that check
 // their caller's manifest (registering the `komodo-kotlin` debug adapter factory) fail.
-const extensionDevelopmentPath = path.dirname(realpathSync(path.join(runfilesExtension, "package.json")));
-const extensionTestsPath = path.resolve(extensionDevelopmentPath, "dist-test", "index.js");
+const builtExtensionPath = path.dirname(realpathSync(path.join(runfilesExtension, "package.json")));
+let extensionTestsPath = path.resolve(builtExtensionPath, "dist-test", "index.js");
+// Smoke the shipped contents too: the development host loads the extracted VSIX, not the output-tree assets.
+const extractedVsix = process.env.ELIDE_TEST_VSIX ? mkdtempSync(path.join(tmpdir(), "elide-vsix-")) : undefined;
+if (extractedVsix) {
+  const archive = path.resolve(process.env.BUILD_WORKSPACE_DIRECTORY ?? process.cwd(), process.env.ELIDE_TEST_VSIX!);
+  execFileSync("unzip", ["-q", archive, "-d", extractedVsix]);
+}
+const extensionDevelopmentPath = extractedVsix ? path.join(extractedVsix, "extension") : builtExtensionPath;
+if (extractedVsix) {
+  // VS Code scopes its API object to the importing extension. Keep the test bundle under the same
+  // extracted extension so dialog interception uses its API rather than the anonymous fallback API.
+  const testDirectory = path.join(extensionDevelopmentPath, ".integration-tests");
+  mkdirSync(testDirectory);
+  const packagedTestsPath = path.join(testDirectory, "index.js");
+  copyFileSync(extensionTestsPath, packagedTestsPath);
+  extensionTestsPath = packagedTestsPath;
+}
 
 const vscodeExecutablePath = process.env.VSCODE_EXECUTABLE ?? "/Applications/Visual Studio Code.app/Contents/MacOS/Code";
 
-const scenarios = ["workspace", "compose", "compose-komodo", "compose-agent", "android", "komodo", "komodo-debug", "komodo-android-debug"] as const;
+const scenarios = ["workspace", "compose", "compose-komodo", "compose-agent", "android", "komodo", "komodo-debug", "komodo-android-debug", "build-extension", "self-build"] as const;
 const scenario = scenarios.find((name) => name === process.env.ELIDE_TEST_SCENARIO) ?? "ktjvm";
 const composeScenario = scenario === "compose" || scenario === "compose-komodo" || scenario === "compose-agent";
 /** The Komodo preview engine's scenarios. */
 const komodoPreview = scenario === "compose-komodo" || (scenario === "compose-agent" && process.env.ELIDE_COMPOSE_ENGINE === "komodo");
 const androidScenario = scenario === "android" || scenario === "komodo-android-debug";
 /** Komodo's scenarios: the folder on Komodo's language server, every other extension disabled. */
-const komodo = scenario === "komodo" || scenario === "komodo-debug" || scenario === "komodo-android-debug";
+const komodo = scenario === "komodo" || scenario === "komodo-debug" || scenario === "komodo-android-debug" || scenario === "self-build";
 /** Every scenario on Komodo's language server: Komodo's own, and the Komodo preview engine's (it discovers previews through it). */
 const komodoServer = komodo || komodoPreview;
+const buildExtension = scenario === "build-extension";
 if (androidScenario) {
   const missing = ["ELIDE_ANDROID_APP_SAMPLE", "ELIDE_ANDROID_APP_MEMBER", "ELIDE_ANDROID_APP_ARTIFACT", "ELIDE_ANDROID_APP_ID"]
     .filter((name) => !process.env[name]);
@@ -87,11 +105,14 @@ if (androidScenario) {
 if (scenario === "komodo-android-debug" && !process.env.ELIDE_ANDROID_DEVICE) {
   throw new Error("Android debugging requires ELIDE_ANDROID_DEVICE naming a ready disposable emulator");
 }
+if (scenario === "self-build" && !process.env.ELIDE_SELF_BUILD_ROOT) {
+  throw new Error("Self-build verification requires ELIDE_SELF_BUILD_ROOT naming the Elide self-build checkout");
+}
 
 // The user's extensions dir is used as-is so the already-installed JetBrains extension (1.2 GB) is reused. Komodo's
 // scenarios run without it (it is disabled for the instance), so it need not be installed.
 const extensionsDir = path.join(homedir(), ".vscode", "extensions");
-if (!komodo && !readdirSync(extensionsDir).some((d) => d.startsWith("jetbrains.kotlin-server-"))) throw new Error(`JetBrains.kotlin-server is not installed in ${extensionsDir}`);
+if (!komodo && !buildExtension && !readdirSync(extensionsDir).some((d) => d.startsWith("jetbrains.kotlin-server-"))) throw new Error(`JetBrains.kotlin-server is not installed in ${extensionsDir}`);
 
 // Keep macOS IPC paths short without overriding TMPDIR: the Kotlin client and JVM must agree on their port-file directory.
 const scratchRoot = process.platform === "darwin" ? "/tmp" : tmpdir();
@@ -114,6 +135,11 @@ writeFileSync(
       "telemetry.telemetryLevel": "off",
       // An emulator the test boots runs headless.
       ...(androidScenario ? { "elide.android.emulatorWindow": false } : {}),
+      ...(buildExtension ? {
+        "elide.sync.onStartup": false,
+        "elide.kotlinLsp.writeWorkspaceJson": false,
+        "typescript.tsserver.log": "verbose",
+      } : {}),
       ...(komodoPreview ? {
         "elide.android.composePreview.engine": "komodo",
       } : {}),
@@ -137,14 +163,15 @@ writeFileSync(
 );
 
 // Work on a scratch copy of the sample so the test can mutate elide.pkl freely; the Android sample stays in place.
-const inPlace = composeScenario || (scenario === "komodo" && process.env.ELIDE_KOMODO_SAMPLE === "android");
-const sample = inPlace
-  ? composeSampleDirectory()
-  : mkdtempSync(path.join(realpathSync(scratchRoot), `elide-${scenario}-`));
+const inPlace = composeScenario || scenario === "self-build" || (scenario === "komodo" && process.env.ELIDE_KOMODO_SAMPLE === "android");
+const sample = scenario === "self-build"
+  ? realpathSync(process.env.ELIDE_SELF_BUILD_ROOT!)
+  : inPlace ? composeSampleDirectory() : mkdtempSync(path.join(realpathSync(scratchRoot), `elide-${scenario}-`));
 let restoreComposeSettings: (() => void) | undefined;
 if (scenario === "workspace") prepareWorkspaceSample();
 else if (composeScenario) prepareComposeSample();
 else if (androidScenario) prepareAndroidSample();
+else if (buildExtension) copyFiles(path.join(runfilesRoot, "samples", "build-extension"), sample);
 else if (komodo) { if (!inPlace) copyFiles(path.join(runfilesRoot, "samples", "ktjvm"), sample); }
 else prepareKtjvmSample();
 
@@ -302,7 +329,7 @@ try {
       // (the JetBrains server would contribute its own diagnostics, locations, `kotlin` grammar and debugger; others
       // their own formatters and providers), leaving this extension under development. ELIDE_KOMODO_COEXIST keeps them
       // enabled.
-      ...(komodoServer && !process.env.ELIDE_KOMODO_COEXIST ? ["--disable-extensions"] : [])],
+      ...((komodoServer && !process.env.ELIDE_KOMODO_COEXIST) || buildExtension ? ["--disable-extensions"] : [])],
     extensionTestsEnv: {
       ELIDE_TEST_SAMPLE: sample,
       ELIDE_TEST_SCENARIO: scenario,
@@ -316,7 +343,8 @@ try {
   if (!process.env.KEEP_TEST_DIRS) {
     rmSync(userDataDir, { recursive: true, force: true });
     if (!inPlace) rmSync(sample, { recursive: true, force: true });
+    if (extractedVsix) rmSync(extractedVsix, { recursive: true, force: true });
   } else {
-    console.log("kept", { userDataDir, sample });
+    console.log("kept", { userDataDir, sample, extractedVsix });
   }
 }

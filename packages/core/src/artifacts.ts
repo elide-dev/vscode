@@ -1,9 +1,10 @@
 import path from "node:path";
+import { androidFeatureTask } from "./android.js";
 import { braceDelta, stripComment } from "./pkl.js";
 
 /** One entry of the `artifacts` block of `elide.pkl`. */
 export interface ManifestArtifact {
-  /** Mapping key of the entry, which is the build target name `elide build` takes. */
+  /** Mapping key of the entry; most artifact classes use it directly as their build target. */
   name: string;
   /** Unqualified Pkl class the entry instantiates (`NativeImage`, `Jar`, `StaticSite`); empty when it is not a `new`. */
   type: string;
@@ -126,6 +127,13 @@ export function isAndroidAab(artifact: ManifestArtifact): boolean {
 /** Dynamic bundle module; it builds through `android-module-<name>` rather than publishing an APK. */
 export function isAndroidFeature(artifact: ManifestArtifact): boolean {
   return artifact.type === "AndroidFeature";
+}
+
+/** Build target registered for a manifest artifact; some pipelines prefix the artifact's mapping key. */
+export function artifactBuildTarget(artifact: ManifestArtifact): string {
+  if (isAndroidFeature(artifact)) return androidFeatureTask(artifact.name);
+  if (artifact.type === "ExtensionArchive") return `package-extension-${artifact.name}`;
+  return artifact.name;
 }
 
 /** Whether the artifact is built by the Android pipeline at all, whichever archive it publishes. */

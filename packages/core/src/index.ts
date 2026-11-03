@@ -33,6 +33,7 @@ export * from "./androidTests.js";
 export * from "./composeInputs.js";
 export * from "./artifacts.js";
 export * from "./buildTasks.js";
+export * from "./buildExtensions.js";
 export * from "./coverage.js";
 export * from "./invocation.js";
 export * from "./init.js";

@@ -20,10 +20,14 @@ import { runKomodoScenario } from "./komodo.js";
 import { runKomodoDebugScenario } from "./komodoDebug.js";
 import { runKomodoAndroidDebugScenario } from "./komodoAndroidDebug.js";
 import { runWorkspaceScenario } from "./workspace.js";
+import { runBuildExtensionScenario } from "./buildExtension.js";
+import { runSelfBuildScenario } from "./selfBuild.js";
 
 const sample = process.env.ELIDE_TEST_SAMPLE!;
 
 export async function run(): Promise<void> {
+  if (process.env.ELIDE_TEST_SCENARIO === "self-build") return await runSelfBuildScenario();
+  if (process.env.ELIDE_TEST_SCENARIO === "build-extension") return await runBuildExtensionScenario();
   if (process.env.ELIDE_TEST_SCENARIO === "workspace") return await runWorkspaceScenario();
   if (process.env.ELIDE_TEST_SCENARIO === "compose") return await runComposeScenario();
   if (process.env.ELIDE_TEST_SCENARIO === "compose-komodo") return await runComposeKomodoScenario();
@@ -35,6 +39,9 @@ export async function run(): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   assert.ok(folder, "sample workspace folder open");
   assert.equal(folder.uri.fsPath, sample);
+  const elideConfig = vscode.workspace.getConfiguration("elide", folder);
+  const originalHome = elideConfig.inspect<string>("home")?.globalValue;
+  const realElide = resolveElideDistribution({ explicitHome: elideConfig.get<string>("home") }).bin;
   const workspaceJson = path.join(sample, "workspace.json");
 
   // 1. Startup sync writes workspace.json and points the Kotlin LSP at a JDK.
@@ -347,7 +354,7 @@ export async function run(): Promise<void> {
   //      source, where `main` is never called by the test and `greeting` is. Elide 1.6 moved the setting from
   //      `testing.coverage` to a top-level `coverage` block.
   const manifestSource = readFileSync(manifest, "utf8");
-  const elideVersion = parseElideVersion(execFileSync(resolveElideDistribution({}).bin, ["--version"], { encoding: "utf8" }));
+  const elideVersion = parseElideVersion(execFileSync(realElide, ["--version"], { encoding: "utf8" }));
   const legacyCoverage = elideVersion !== undefined && compareElideVersions(elideVersion, { major: 1, minor: 6, patch: 0 }) < 0;
   appendFileSync(
     manifest,
@@ -625,7 +632,7 @@ export async function run(): Promise<void> {
   await vscode.workspace.getConfiguration("elide").update("home", "/nonexistent/elide", vscode.ConfigurationTarget.Global);
   await vscode.commands.executeCommand("elide.sync");
   assert.equal(readFileSync(workspaceJson, "utf8"), before, "workspace.json untouched after failed sync");
-  await vscode.workspace.getConfiguration("elide").update("home", undefined, vscode.ConfigurationTarget.Global);
+  await vscode.workspace.getConfiguration("elide").update("home", originalHome, vscode.ConfigurationTarget.Global);
   log("failed sync left workspace.json intact");
 
   // 6b. A manifest Elide rejects is reported in Elide's words, located on elide.pkl, and cleared by the next sync.
@@ -661,8 +668,6 @@ export async function run(): Promise<void> {
   // 7. An Elide older than the extension's minimum warns the user, and the sync still completes against it.
   const stubHome = path.join(tmpdir(), `elide-old-${process.pid}`);
   mkdirSync(path.join(stubHome, "bin"), { recursive: true });
-  // The same distribution the extension resolves, so the stub wraps it whether or not `elide` is on this PATH.
-  const realElide = resolveElideDistribution({}).bin;
   writeFileSync(
     path.join(stubHome, "bin", "elide"),
     `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "1.4.0+stub"; exit 0; fi\nexec ${realElide} "$@"\n`,
@@ -686,7 +691,7 @@ export async function run(): Promise<void> {
     );
   } finally {
     windowApi.showWarningMessage = realWarn;
-    await vscode.workspace.getConfiguration("elide").update("home", undefined, vscode.ConfigurationTarget.Global);
+    await vscode.workspace.getConfiguration("elide").update("home", originalHome, vscode.ConfigurationTarget.Global);
     rmSync(stubHome, { recursive: true, force: true });
   }
   log("outdated Elide warning ok");

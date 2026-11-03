@@ -18,6 +18,7 @@ ts_project(
         "src/androidTests.ts",
         "src/androidWireless.ts",
         "src/artifacts.ts",
+        "src/buildExtensions.ts",
         "src/buildOutput.ts",
         "src/buildTasks.ts",
         "src/commandTimeline.ts",

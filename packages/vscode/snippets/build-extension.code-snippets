@@ -1,0 +1,26 @@
+{
+  "Elide build extension": {
+    "prefix": "elide-build-extension",
+    "description": "Declare an Elide build extension with a typed task action",
+    "body": [
+      "export default ({ task }: ElideBuild) => {",
+      "  task(\"${1:greet}\", {",
+      "    description: \"${2:Greet from the build}\",",
+      "  }, (ctx) => {",
+      "    ${0:ctx.log(\"Hello from\", ctx.project.name);}",
+      "  });",
+      "};"
+    ]
+  },
+  "Elide build task": {
+    "prefix": "elide-build-task",
+    "description": "Declare a task inside an Elide build extension",
+    "body": [
+      "task(\"${1:greet}\", {",
+      "  description: \"${2:Greet from the build}\",",
+      "}, (ctx) => {",
+      "  ${0:ctx.log(\"Hello from\", ctx.project.name);}",
+      "});"
+    ]
+  }
+}

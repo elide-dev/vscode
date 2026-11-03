@@ -25,6 +25,7 @@ import { registerAndroidLogcat } from "./androidLogcat.js";
 import { registerAndroidReadiness } from "./androidReadiness.js";
 import { registerAndroidWireless } from "./androidWireless.js";
 import { ElideCodeLensProvider } from "./codelens.js";
+import { registerBuildExtensionLinks } from "./buildExtensions.js";
 import { ComposeAgentPreviews } from "./composeAgent.js";
 import { registerComposePreviewMcp, type ElideComposePreviewMcpApi } from "./composeAgentMcp.js";
 import { registerComposePreview, type ElideComposePreviewApi } from "./composePreview.js";
@@ -80,6 +81,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const explorer = new ElideProjectsView(workspace, ui);
   context.subscriptions.push(
     codeLenses,
+    registerBuildExtensionLinks(workspace),
     vscode.languages.registerCodeLensProvider(ElideCodeLensProvider.selector, codeLenses),
     vscode.commands.registerCommand("elide.sync", (target: unknown) => syncCommand(workspace, target)),
     vscode.commands.registerCommand("elide.installKomodo", () => installKomodoCommand(workspace, ui)),

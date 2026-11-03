@@ -1,0 +1,14 @@
+{
+  "Elide build extension": {
+    "prefix": "elide-build-extension",
+    "description": "Declare an Elide build extension with JSDoc API types",
+    "body": [
+      "/** @param {ElideBuild} build */",
+      "export default function ({ task }) {",
+      "  task(\"${1:greet}\", { description: \"${2:Greet from the build}\" }, (ctx) => {",
+      "    ${0:ctx.log(\"Hello from\", ctx.project.name);}",
+      "  });",
+      "}"
+    ]
+  }
+}

@@ -69,6 +69,19 @@
     "onWebviewPanel:elide.composePreview"
   ],
   "contributes": {
+    "typescriptServerPlugins": [
+      {
+        "name": "elide-build-typescript-plugin",
+        "enableForWorkspaceTypeScriptVersions": true
+      }
+    ],
+    "snippets": [
+      { "language": "typescript", "path": "./snippets/build-extension.code-snippets" },
+      { "language": "typescriptreact", "path": "./snippets/build-extension.code-snippets" },
+      { "language": "javascript", "path": "./snippets/build-extension-js.code-snippets" },
+      { "language": "javascriptreact", "path": "./snippets/build-extension-js.code-snippets" },
+      { "path": "./snippets/build-extension-pkl.code-snippets" }
+    ],
     "mcpServerDefinitionProviders": [
       {
         "id": "elide.composePreview",

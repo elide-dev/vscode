@@ -1,0 +1,14 @@
+# Guest extension sources are run by Elide, not compiled by Bazel.
+# gazelle:exclude tools
+
+filegroup(
+    name = "build-extension",
+    srcs = glob(
+        ["**"],
+        exclude = [
+            "BUILD.bazel",
+            "workspace.json",
+        ],
+    ),
+    visibility = ["//packages/vscode:__pkg__"],
+)

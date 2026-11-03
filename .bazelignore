@@ -3,3 +3,4 @@ packages/core/node_modules
 packages/vscode/node_modules
 samples/ktjvm/.dev
 samples/workspace/.dev
+samples/build-extension/.dev
