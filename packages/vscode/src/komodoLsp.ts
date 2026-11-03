@@ -405,7 +405,16 @@ export class KomodoLanguageServer implements vscode.Disposable {
    */
   async previews(file: string): Promise<KomodoPreviews> {
     const { client, uri } = await this.clientFor(file);
-    return client.sendRequest<KomodoPreviews>("komodo/previews", { textDocument: { uri } });
+    try {
+      return await client.sendRequest<KomodoPreviews>("komodo/previews", { textDocument: { uri } });
+    } catch (error) {
+      if (error instanceof ResponseError && error.code === ErrorCodes.MethodNotFound) {
+        const reason = "This Komodo language server cannot discover previews. Install a compatible Komodo through Elide, then sync.";
+        if (this.running?.client === client) this.rejectPreview(reason);
+        throw new Error(reason);
+      }
+      throw error;
+    }
   }
 
   /** Opens a preview in the workspace server; an older server must be upgraded, never replaced by a preview child. */
@@ -415,12 +424,16 @@ export class KomodoLanguageServer implements vscode.Disposable {
       const session = await client.sendRequest<KomodoPreviewSession>("komodo/preview/open", { textDocument: { uri } });
       if (session?.protocol !== 2 || !Number.isInteger(session.port) || session.port < 1 || session.port > 65535
         || typeof session.token !== "string" || !session.token || /[\r\n]/.test(session.token)) {
-        throw new Error("Komodo returned an invalid preview session. Install a compatible Komodo through Elide.");
+        const reason = "Komodo returned an invalid preview session. Install a compatible Komodo through Elide, then sync.";
+        if (this.running?.client === client) this.rejectPreview(reason);
+        throw new Error(reason);
       }
       return session;
     } catch (error) {
       if (error instanceof ResponseError && error.code === ErrorCodes.MethodNotFound) {
-        throw new Error("This Komodo language server is too old for the Komodo preview engine. Install a compatible Komodo through Elide; there is no fallback.");
+        const reason = "This Komodo language server is too old for the Komodo preview engine. Install a compatible Komodo through Elide; there is no fallback.";
+        if (this.running?.client === client) this.rejectPreview(reason);
+        throw new Error(reason);
       }
       throw error;
     }
@@ -439,7 +452,9 @@ export class KomodoLanguageServer implements vscode.Disposable {
       await client.sendRequest("komodo/preview/sync", { documents });
     } catch (error) {
       if (error instanceof ResponseError && error.code === ErrorCodes.MethodNotFound) {
-        throw new Error("This Komodo language server is too old to synchronize unsaved edits with the Komodo preview engine. Install a compatible Komodo through Elide.");
+        const reason = "This Komodo language server is too old to synchronize unsaved edits with the Komodo preview engine. Install a compatible Komodo through Elide, then sync.";
+        if (this.running?.client === client) this.rejectPreview(reason);
+        throw new Error(reason);
       }
       throw error;
     }
@@ -447,14 +462,10 @@ export class KomodoLanguageServer implements vscode.Disposable {
 
   /** The running client serving `file`'s folder, started, and the file's protocol URI; throws without a server for it. */
   private async clientFor(file: string): Promise<{ client: LanguageClient; uri: string }> {
-    await this.queue.catch(() => undefined);
+    await this.requirePreview(file);
     const client = this.running?.client;
     const uri = vscode.Uri.file(file);
-    const folder = vscode.workspace.getWorkspaceFolder(uri);
-    if (!client || !folder || !this.folders.has(folder.uri.toString())) {
-      throw new Error(`Komodo's language server is not running for ${path.basename(file)}: the Komodo preview engine discovers previews through it (elide.kotlinLsp.server = komodo).`);
-    }
-    if (client.state !== State.Running) await client.start();
+    if (!client || !this.available) throw new Error("Komodo previews are disabled. Sync with a compatible component before trying again.");
     return { client, uri: client.code2ProtocolConverter.asUri(uri) };
   }
 

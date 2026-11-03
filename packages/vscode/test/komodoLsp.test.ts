@@ -40,6 +40,7 @@ function run(body: string, setup = ""): { status: number | null; stderr: string 
         async dispose() { this.disposed = true; this.state = 1; }
       },
       State: { Stopped: 1, Running: 2, Starting: 3 }, CloseAction: { DoNotRestart: 1 }, ErrorAction: { Shutdown: 2 },
+      ResponseError: class extends Error {}, ErrorCodes: { MethodNotFound: -32601 },
     }));
     mock.module(${JSON.stringify(debug)}, () => ({ requireKomodoDebugProtocol: async () => { if (dapFailure) throw dapFailure; } }));
     ${setup}
@@ -108,33 +109,41 @@ test("preview sessions require protocol 2 and report old servers instead of fall
   `)).toEqual({ status: 0, stderr: "" });
 });
 
-test("preview sync awaits the same client with original URIs and current buffer versions", () => {
+test("unsupported preview methods and invalid sessions latch preview unavailability without disabling native analysis", () => {
   expect(run(`
-    const server = Object.create(komodo.KomodoLanguageServer.prototype);
-    const original = "/workspace/Original.kt";
-    editorDocuments.push(
-      { uri: { scheme: "file", fsPath: original, toString: () => "file://" + original }, version: 7, getText: () => "unsaved newest" },
-      { uri: { scheme: "file", fsPath: "/other.kt", toString: () => "file:///other.kt" }, version: 2, getText: () => "unrelated" }
-    );
-    const entered = Promise.withResolvers();
-    let completed = false;
-    const pending = Promise.withResolvers();
-    server.clientFor = async (file) => {
-      assert.equal(file, original);
-      return { client: { sendRequest: async (method, params) => {
-        assert.equal(method, "komodo/preview/sync");
-        assert.deepEqual(params, { documents: [{ uri: "file://" + original, version: 7, text: "unsaved newest" }] });
-        entered.resolve();
-        await pending.promise;
-      } } };
-    };
-    const syncing = server.syncPreview([original]).then(() => { completed = true; });
-    await entered.promise;
-    assert.equal(completed, false);
-    pending.resolve(null);
-    await syncing;
-    assert.equal(completed, true);
-  `)).toEqual({ status: 0, stderr: "" });
+    // Import after the subprocess installs the mocked language-client module boundary.
+    const { ResponseError } = await import("vscode-languageclient/node");
+    const server = new komodo.KomodoLanguageServer("/tmp/elide-komodo-test", () => {});
+    const sync = () => server.sync(previewFolder, [{ root: "/work/app" }], {});
+    for (const method of ["previews", "previewSession", "syncPreview"]) {
+      await sync();
+      const client = server.client;
+      client.code2ProtocolConverter = { asUri: () => "file:///work/app/Screen.kt" };
+      const reload = client.sendRequest.bind(client);
+      let requests = 0;
+      client.sendRequest = async () => {
+        requests++;
+        const error = new ResponseError("unsupported");
+        error.code = -32601;
+        throw error;
+      };
+      const call = () => server[method](method === "syncPreview" ? ["/work/app/Screen.kt"] : "/work/app/Screen.kt");
+      await assert.rejects(call(), /compatible Komodo/);
+      assert.equal(server.previewAvailable, false);
+      assert.equal(server.available, true);
+      await server.debugLaunch(previewFolder);
+      await assert.rejects(call(), /disabled/);
+      assert.equal(requests, 1, "a rejected capability is not probed repeatedly");
+      client.sendRequest = reload;
+    }
+    await sync();
+    const client = server.client;
+    client.sendRequest = async () => ({ protocol: 1, port: 12345, token: "secret" });
+    await assert.rejects(server.previewSession("/work/app/Screen.kt"), /invalid preview session/);
+    assert.equal(server.previewAvailable, false);
+    assert.equal(server.available, true);
+    server.dispose();
+  `, lifecycleSetup)).toEqual({ status: 0, stderr: "" });
 });
 
 test("a client restarting its crashed server is stopped once it is up, and disposed so it never restarts one again", () => {
