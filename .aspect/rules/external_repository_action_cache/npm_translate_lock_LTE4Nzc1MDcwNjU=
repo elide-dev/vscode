@@ -3,6 +3,6 @@
 # This file should be checked into version control along with the pnpm-lock.yaml file.
 package.json=1645056029
 packages/core/package.json=-1407934132
-packages/vscode/package.json=985935702
-pnpm-lock.yaml=136557580
+packages/vscode/package.json=1948518263
+pnpm-lock.yaml=1115513514
 pnpm-workspace.yaml=-1673009026
