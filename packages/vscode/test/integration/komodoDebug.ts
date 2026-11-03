@@ -44,7 +44,7 @@ export async function runKomodoDebugScenario(): Promise<void> {
   const komodoStep = await waitFor("a sync that started Komodo", () => activity.getChildren()
     .filter((op) => op.label.startsWith("Sync ") && !op.running)
     .flatMap((op) => op.children)
-    .find((step) => step.label === "Starting the Komodo language server" && /· (started|reloaded)$/.test(step.detail ?? "")), 300_000, 1_000);
+    .find((step) => step.label === "Checking Komodo native services" && /· (started|reloaded)$/.test(step.detail ?? "")), 300_000, 1_000);
   log("Komodo:", komodoStep.detail);
 
   // Every DAP event of the Komodo sessions, by session.

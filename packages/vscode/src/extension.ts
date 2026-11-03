@@ -101,8 +101,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   );
 
   registerWatchers(context, workspace, ui);
+  const komodoSessions = new Set<vscode.DebugSession>();
+  const updateKomodoAvailability = () => {
+    void vscode.commands.executeCommand("setContext", "elide.komodoAvailable", workspace.komodoAvailable);
+    void vscode.commands.executeCommand("setContext", "elide.komodoPreviewAvailable", workspace.komodoPreviewAvailable);
+    if (!workspace.komodoAvailable) {
+      for (const session of komodoSessions) void vscode.debug.stopDebugging(session);
+    }
+  };
+  updateKomodoAvailability();
   context.subscriptions.push(
     workspace.onDidChange(() => void vscode.commands.executeCommand("setContext", "elide.hasProjects", workspace.projects.length > 0)),
+    workspace.onDidChangeKomodoAvailability(updateKomodoAvailability),
+    vscode.debug.onDidStartDebugSession((session) => {
+      if (session.type !== KOMODO_DEBUG_TYPE) return;
+      komodoSessions.add(session);
+      if (!workspace.komodoAvailable) void vscode.debug.stopDebugging(session);
+    }),
+    vscode.debug.onDidTerminateDebugSession((session) => komodoSessions.delete(session)),
   );
 
   // Kotlin's own activation events do not cover Java-only Elide projects. Start the companion
@@ -118,7 +134,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     const komodo = (document: vscode.TextDocument) => vscode.workspace.getConfiguration("elide", document.uri).get<KotlinLspServer>("kotlinLsp.server") === "komodo";
     const extension = jetBrainsExtension();
     if (!extension) return;
-    if (!duplicateWarned && elideDocuments.some((document) => document.languageId === "kotlin" && komodo(document))) {
+    if (!duplicateWarned && workspace.komodoAvailable && elideDocuments.some((document) => document.languageId === "kotlin" && komodo(document))) {
       duplicateWarned = true;
       void vscode.window.showWarningMessage(
         `Elide: ${JETBRAINS_EXTENSION_ID} is enabled, and it analyzes Kotlin files beside Komodo's language server (duplicate diagnostics and completions). Disable it for this workspace to use Komodo alone.`,
@@ -137,6 +153,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument(startKotlinForDocuments),
     workspace.onDidChange(startKotlinForDocuments),
+    workspace.onDidChangeKomodoAvailability(startKotlinForDocuments),
   );
 
   for (const folder of vscode.workspace.workspaceFolders ?? []) await workspace.discover(folder);
@@ -361,6 +378,7 @@ async function openWorkspaceJson(workspace: ElideWorkspace): Promise<void> {
 /** Actions offered by the status-bar menu, in order; entries whose command is not registered are skipped. */
 const MENU_ACTIONS: { label: string; description: string; command: string }[] = [
   { label: "$(sync) Sync Project(s)", description: "Re-resolve the project model and refresh the Kotlin LSP", command: "elide.sync" },
+  { label: "$(cloud-download) Install Komodo", description: "Explicitly install the managed native Kotlin component", command: "elide.installKomodo" },
   { label: "$(play) Run Elide Command…", description: "Build, test, install, or run an entrypoint", command: "elide.runTask" },
   { label: "$(device-mobile) Select Android Deployment Target…", description: "Choose the application and device for Run and Debug", command: "elide.androidSelectTarget" },
   { label: "$(play) Run Android App…", description: "Build, install and launch on the selected device", command: "elide.androidRun" },
@@ -390,7 +408,8 @@ async function showMenu(workspace: ElideWorkspace): Promise<void> {
     });
     break;
   }
-  items.push(...MENU_ACTIONS.filter((a) => registered.has(a.command)));
+  items.push(...MENU_ACTIONS.filter((a) => registered.has(a.command) &&
+    (a.command !== "elide.androidComposePreview" || readConfig().composePreviewEngine !== "komodo" || workspace.komodoPreviewAvailable)));
   const pick = await vscode.window.showQuickPick(items, { placeHolder: "Elide" });
   if (pick) await vscode.commands.executeCommand(pick.command);
 }

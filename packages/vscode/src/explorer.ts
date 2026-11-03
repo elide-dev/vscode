@@ -135,6 +135,10 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         this.artifacts.clear();
         this.changed.fire(undefined);
       }),
+      workspace.onDidChangeKomodoAvailability(() => this.changed.fire(undefined)),
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration("elide.debug.adapter")) this.changed.fire(undefined);
+      }),
       vscode.commands.registerCommand("elide.androidRefreshDevices", () => this.changed.fire(undefined)),
       vscode.tasks.onDidEndTask((event) => {
         if (event.execution.task.source === "elide") this.changed.fire(undefined);
@@ -150,6 +154,12 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
   getTreeItem(node: ElideNode): vscode.TreeItem {
     const item = new vscode.TreeItem(node.label, collapsibleState(node));
     item.contextValue = contextValueOf(node);
+    if ((node.kind === "entrypoint" && !node.script) || (node.kind === "buildTarget" && node.debuggable && !node.runnable)) {
+      const project = this.workspace.projectAt(node.root);
+      if (project && !this.workspace.komodoDebugAvailable(project.folder)) {
+        item.contextValue = node.kind === "entrypoint" ? "entrypointRunOnly" : "buildTarget";
+      }
+    }
     const id = nodeId(node);
     if (id) item.id = id;
     switch (node.kind) {

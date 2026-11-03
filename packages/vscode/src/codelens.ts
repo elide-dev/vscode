@@ -47,8 +47,9 @@ export class ElideCodeLensProvider implements vscode.CodeLensProvider, vscode.Di
     this.subscriptions = [
       // A new model can add source roots or change `jvm.main`, both of which decide the lenses below.
       workspace.onDidChange(() => this.changed.fire()),
+      workspace.onDidChangeKomodoAvailability(() => this.changed.fire()),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration("elide.codeLens")) this.changed.fire();
+        if (e.affectsConfiguration("elide.codeLens") || e.affectsConfiguration("elide.debug.adapter")) this.changed.fire();
       }),
     ];
   }
@@ -61,13 +62,11 @@ export class ElideCodeLensProvider implements vscode.CodeLensProvider, vscode.Di
   provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
     if (!readConfig(document.uri).codeLens) return [];
     const fsPath = document.uri.fsPath;
-    if (path.basename(fsPath) === MANIFEST_NAME) {
-      const root = path.dirname(fsPath);
-      // Only the manifest of a tracked project: a nested manifest belongs to a build this one does not include.
-      return this.workspace.projectAt(root) ? manifestLenses(document, root) : [];
-    }
-    const project = this.workspace.projectFor(fsPath);
-    return project ? sourceLenses(document, project) : [];
+    const manifest = path.basename(fsPath) === MANIFEST_NAME;
+    const project = manifest ? this.workspace.projectAt(path.dirname(fsPath)) : this.workspace.projectFor(fsPath);
+    if (!project) return [];
+    const lenses = manifest ? manifestLenses(document, project.root) : sourceLenses(document, project);
+    return this.workspace.komodoDebugAvailable(project.folder) ? lenses : lenses.filter((lens) => lens.command?.command !== "elide.debug");
   }
 }
 

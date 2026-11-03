@@ -35,11 +35,16 @@ test("explicit developer builds remain authoritative, including invalid override
   await expect(resolveKomodo(notExecutable, home)).rejects.toMatchObject({ status: "override" });
 });
 
-test("managed resolution preserves external bundle and JDK identity instead of inferring an Elide-relative JDK", async () => {
-  const data = identity();
-  expect(await resolveKomodo(undefined, distribution(data))).toEqual({
-    executable: data.executable, bundle: data.bundle, pluginDirectory: data.pluginDirectory, javaHome: data.javaHome,
-  });
+test("unknown version labels do not impose guessed floors, and preview incompatibility is retained for its consumer", async () => {
+  for (const preview of [undefined, 1, 3, "2"]) {
+    const data = { ...identity(), version: "development", protocol: { lsp: 1, dap: 1, preview } };
+    const resolved = await resolveKomodo(undefined, distribution(data));
+    // Analysis/debug compatibility remains usable; dropping this field would incorrectly enable preview consumers.
+    expect(resolved.protocol?.preview).toBe(preview);
+  }
+  const data = { ...identity(), capabilities: ["lsp", "dap"] };
+  const resolved = await resolveKomodo(undefined, distribution(data));
+  expect(resolved.capabilities?.includes("preview")).toBe(false);
 });
 
 test("nonzero missing results are actionable but never trigger an install or PATH fallback", async () => {

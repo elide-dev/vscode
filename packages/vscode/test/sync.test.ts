@@ -13,6 +13,7 @@ describe("Sync lifecycle", () => {
     ["a cancel while the Kotlin LSP is configured ends the sync cancelled, without a reload", "late-cancel"],
     ["the window's JDK for symbol resolution is its first folder's, whichever folder syncs last", "window-jdk"],
     ["settings the model is resolved with mark it stale; a new elide.home re-syncs and restarts Komodo", "settings"],
+    ["disabled Komodo never fails project sync, rewrites preferences or blocks unrelated JetBrains projects", "komodo-disabled"],
     ["a sync running when the window closes ends without logging to the closed output channel", "dispose"],
   ]) {
     test(name!, () => {

@@ -720,7 +720,7 @@
       "view/item/context": [
         {
           "command": "elide.run",
-          "when": "view == elide.projects && viewItem == entrypoint",
+          "when": "view == elide.projects && viewItem =~ /^entrypoint(RunOnly)?$/",
           "group": "inline@1"
         },
         {

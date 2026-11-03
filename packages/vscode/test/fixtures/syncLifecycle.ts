@@ -44,6 +44,7 @@ const diagnostics = new Map<string, unknown>();
 const commands = new Map<string, (...args: unknown[]) => unknown>();
 const reloads: boolean[] = [];
 const komodoSyncs: string[] = [];
+let komodoDetail = "started";
 let inspected: (key: string) => void = () => {};
 let outputClosed = false;
 const lines: string[] = [];
@@ -166,9 +167,10 @@ mock.module("../../src/jetbrains.js", () => ({
 }));
 mock.module("../../src/komodoLsp.js", () => ({
   KomodoLanguageServer: class {
+    invalidate() {}
     async sync(folder: Folder) {
       komodoSyncs.push(folder.name);
-      return "started";
+      return komodoDetail;
     }
     async remove() {}
     dispose() {}
@@ -232,7 +234,24 @@ async function until(condition: () => boolean, what: string): Promise<void> {
 }
 
 try {
-  if (scenario === "install-failure") {
+  if (scenario === "komodo-disabled") {
+    const app = await openFolder("native", ["."], { "kotlinLsp.server": "komodo" });
+    const other = await openFolder("other", ["."], { "kotlinLsp.server": "jetbrains" });
+    const preferences = JSON.stringify([...folderSettings]);
+    for (const reason of ["missing", "incompatible", "project failed", "start failed", "reload failed", "started"]) {
+      komodoDetail = reason === "started" ? "1 modules · started" : "disabled · " + reason;
+      await workspace.syncAll("manual");
+      assert.equal(workspace.lastError(app as never), undefined);
+      assert.equal(workspace.lastError(other as never), undefined);
+      assert.ok(workspace.projectsIn(app as never)[0]?.model, "native project remains usable for builds");
+      assert.ok(workspace.projectsIn(other as never)[0]?.model, "unrelated project remains usable");
+      const native = operations().findLast((operation) => operation.children.some((step) => step.label === "Checking Komodo native services"));
+      assert.equal(native?.state, "succeeded");
+      assert.equal(native?.children.find((step) => step.label === "Checking Komodo native services")?.detail, komodoDetail);
+      assert.equal(JSON.stringify([...folderSettings]), preferences, "runtime disable never rewrites engine preferences");
+    }
+    assert.ok(reloads.length > 0, "JetBrains reload continues independently");
+  } else if (scenario === "install-failure") {
     const app = await openFolder("app");
     const offline = new core.ElideCommandFailedError(["install", "--slim", "--with=sources"], 1, "error: could not resolve com.example:lib:1.0 (network is unreachable)");
     build = async (projectRoot, options) => {

@@ -599,7 +599,7 @@ export async function runKomodoScenario(): Promise<void> {
     return `median ${median} ms (${samples.join(", ")})`;
   });
 
-  await check("failed language server sync is reported and recovers", async () => {
+  await check("unavailable native services leave sync usable and recover", async () => {
     const extension = vscode.extensions.all.find((candidate) => candidate.id.endsWith(".elide"));
     const activity = (extension?.exports as ElideExtensionApi).activity;
     const config = vscode.workspace.getConfiguration("elide");
@@ -608,13 +608,16 @@ export async function runKomodoScenario(): Promise<void> {
       await config.update("kotlinLsp.komodo.path", path.join(process.env.ELIDE_TEST_SAMPLE!, ".missing-komodo-launcher"), vscode.ConfigurationTarget.Global);
       await vscode.commands.executeCommand("elide.sync");
       const sync = activity.getChildren().find((operation) => operation.label.startsWith("Sync "));
-      assert.equal(sync?.state, "failed", "analysis startup failure must not report successful sync");
-      assert.equal(sync?.children.find((step) => step.label === "Starting the Komodo language server")?.state, "failed");
+      assert.equal(sync?.state, "succeeded", "missing native services must not fail unrelated project sync");
+      const native = sync?.children.find((step) => step.label === "Checking Komodo native services");
+      assert.equal(native?.state, "succeeded");
+      assert.match(native?.detail ?? "", /^disabled/);
+      assert.equal(config.get("kotlinLsp.server"), "komodo", "availability does not rewrite the engine preference");
     } finally {
       await config.update("kotlinLsp.komodo.path", previous, vscode.ConfigurationTarget.Global);
       await vscode.commands.executeCommand("elide.sync");
     }
-    await waitFor("analysis recovers after failed sync", async () => {
+    await waitFor("analysis recovers after native services were disabled", async () => {
       const hovers = await vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", edit.uri, at(edit, fixture.hoverAt));
       return hovers.some((hover) => hover.contents.some((content) =>
         (typeof content === "string" ? content : content.value).includes(fixture.hoverAt[0].replace(/\(.*$/, ""))));

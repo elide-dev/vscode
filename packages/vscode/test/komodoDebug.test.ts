@@ -13,6 +13,8 @@ test("Komodo's adapter uses the current workspace manifest and rejects unavailab
     const source = ${JSON.stringify(source)};
     const disposable = { dispose() {} };
     mock.module("vscode", () => ({
+      EventEmitter: class { event = () => disposable; fire() {} dispose() {} },
+      window: { showWarningMessage: async () => undefined },
       workspace: { registerTextDocumentContentProvider: () => disposable, workspaceFile: undefined },
       commands: { registerCommand: () => disposable },
       DebugAdapterExecutable: class { constructor(command, args, options) { Object.assign(this, { command, args, options }); } },
@@ -20,8 +22,13 @@ test("Komodo's adapter uses the current workspace manifest and rejects unavailab
       RelativePattern: class { constructor(base, pattern) { Object.assign(this, { base, pattern }); } },
     }));
     mock.module("vscode-languageclient/node", () => ({
-      LanguageClient: class { state = 2; async start() {} async dispose() {} },
-      State: { Running: 2, Starting: 3 },
+      LanguageClient: class {
+        state = 2;
+        initializeResult = { capabilities: { completionProvider: {}, hoverProvider: true, definitionProvider: true, executeCommandProvider: { commands: ["komodo.reload"] } } };
+        onDidChangeState = () => disposable;
+        async start() {} async dispose() {} async sendRequest() { return "reloaded"; }
+      },
+      State: { Stopped: 1, Running: 2, Starting: 3 }, CloseAction: { DoNotRestart: 1 }, ErrorAction: { Shutdown: 2 },
       ResponseError: class extends Error {},
       ErrorCodes: { MethodNotFound: -32601 },
     }));
@@ -31,7 +38,8 @@ test("Komodo's adapter uses the current workspace manifest and rejects unavailab
 
     const root = mkdtempSync(path.join(tmpdir(), "komodo-debug-"));
     const launcher = path.join(root, "komodo");
-    writeFileSync(launcher, "#!/bin/sh\\n", { mode: 0o755 });
+    const response = JSON.stringify({ type: "response", command: "initialize", request_seq: 1, success: true, body: { supportsConfigurationDoneRequest: true, supportsEvaluateForHovers: true } });
+    writeFileSync(launcher, "#!" + process.execPath + "\\nprocess.stdin.once('data', () => process.stdout.write('Content-Length: " + Buffer.byteLength(response) + "' + String.fromCharCode(13,10,13,10) + " + JSON.stringify(response) + "));", { mode: 0o755 });
     const folder = { name: "app", uri: { fsPath: path.join(root, "app"), toString: () => "file://" + path.join(root, "app") } };
     const model = {
       root: folder.uri.fsPath, name: "app", elideVersion: "1.5.1", kotlin: { freeCompilerArgs: [] },
@@ -46,7 +54,7 @@ test("Komodo's adapter uses the current workspace manifest and rejects unavailab
     const server = new KomodoLanguageServer(path.join(root, "storage"), () => {});
 
     await assert.rejects(server.debugLaunch(folder), /needs the Komodo project manifest of 'app'/, "a folder that never synced with Komodo");
-    await assert.rejects(server.sync(folder, [model], { path: path.join(root, "missing") }));
+    assert.match(await server.sync(folder, [model], { path: path.join(root, "missing") }), /disabled/);
     await assert.rejects(server.debugLaunch(folder));
 
     assert.equal(await server.sync(folder, [model], settings), "1 modules · started");
@@ -64,6 +72,56 @@ test("Komodo's adapter uses the current workspace manifest and rejects unavailab
     await assert.rejects(server.debugLaunch(folder), /cannot start: no Elide projects/);
     server.dispose();
     rmSync(root, { recursive: true, force: true });
+  `], { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 20_000 });
+  expect(result.error).toBeUndefined();
+  expect(result.stderr).toBe("");
+  expect(result.status).toBe(0);
+});
+
+test("developer DAP handshake rejects old and malformed adapters, accepts capabilities, and kills cancelled probes", () => {
+  const source = new URL("../src/komodoDebug.ts", import.meta.url).pathname;
+  const result = spawnSync(process.execPath, ["--eval", `
+    import assert from "node:assert/strict";
+    import { mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+    import { tmpdir } from "node:os";
+    import path from "node:path";
+    import { mock } from "bun:test";
+    mock.module("vscode", () => ({}));
+    // The production module must load after the VS Code boundary is installed.
+    const { requireKomodoDebugProtocol } = await import(${JSON.stringify(source)});
+    const root = mkdtempSync(path.join(tmpdir(), "komodo-dap-probe-"));
+    const launcher = path.join(root, "komodo");
+    const marker = path.join(root, "pid");
+    const launch = { launcher, manifest: path.join(root, "project.properties"), javaHome: undefined };
+    const install = (body) => writeFileSync(launcher,
+      "#!" + process.execPath + "\\nimport { renameSync, writeFileSync } from 'node:fs'; writeFileSync(" + JSON.stringify(marker + ".tmp") + ", String(process.pid)); renameSync(" + JSON.stringify(marker + ".tmp") + ", " + JSON.stringify(marker) + "); " + body,
+      { mode: 0o755 });
+    const response = (body) => {
+      const message = JSON.stringify({ type: "response", command: "initialize", request_seq: 1, success: true, body });
+      return "process.stdin.once('data', () => { process.stdout.write('Content-Length: " + Buffer.byteLength(message) + "' + String.fromCharCode(13,10,13,10)); process.stdout.write(" + JSON.stringify(message) + "); });";
+    };
+    try {
+      install("process.exit(2);");
+      await assert.rejects(requireKomodoDebugProtocol(launch), /adapter exited/);
+      install(response({ supportsConfigurationDoneRequest: true }));
+      await assert.rejects(requireKomodoDebugProtocol(launch), /Kotlin evaluation/);
+      install("process.stdin.once('data', () => process.stdout.write('Content-Length: 1' + String.fromCharCode(13,10,13,10) + '{'));");
+      await assert.rejects(requireKomodoDebugProtocol(launch), /invalid DAP JSON/);
+      install("process.stdin.once('data', () => process.stdout.write('Content-Length: 1048577' + String.fromCharCode(13,10,13,10)));");
+      await assert.rejects(requireKomodoDebugProtocol(launch), /invalid initialize response length/);
+      install(response({ supportsConfigurationDoneRequest: true, supportsEvaluateForHovers: true }));
+      await requireKomodoDebugProtocol(launch);
+      assert.throws(() => process.kill(Number(readFileSync(marker, "utf8")), 0), /ESRCH/, "successful probe is not left running");
+      install("process.stdin.resume();");
+      const abort = new AbortController();
+      const watcher = watch(root, (_event, file) => {
+        if (file === "pid") abort.abort(new Error("cancelled probe"));
+      });
+      try {
+        await assert.rejects(requireKomodoDebugProtocol(launch, abort.signal), /cancelled probe/);
+      } finally { watcher.close(); }
+      assert.throws(() => process.kill(Number(readFileSync(marker, "utf8")), 0), /ESRCH/, "cancelled probe is not left running");
+    } finally { rmSync(root, { recursive: true, force: true }); }
   `], { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 20_000 });
   expect(result.error).toBeUndefined();
   expect(result.stderr).toBe("");

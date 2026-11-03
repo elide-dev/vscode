@@ -94,7 +94,7 @@ ELIDE_TEST_SCENARIO=workspace bazel run //packages/vscode:integration_test
 with every installed extension disabled (as on a machine without the JetBrains extension), and exercises each
 capability the server advertises through VS Code's provider commands, logging `PASS`/`FAIL`/`SKIP` per check and a
 count. It also exercises repeated reloads with unsaved declarations, CodeLens after declaration edits/reverts, and
-failed-sync activity reporting/recovery. By default the extension asks the selected Elide CLI to resolve its
+native-service disabled activity reporting/recovery without failing project sync. By default the extension asks the selected Elide CLI to resolve its
 managed Komodo component, including its compiler plugins and JDK inputs. Install it explicitly with
 `elide komodo install --yes --json` or **Elide: Install Komodo**; ordinary activation and sync never install it.
 An older CLI reports an upgrade requirement, without changing the selected language server.

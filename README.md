@@ -26,10 +26,13 @@ and a pinned (`&version=`) link.
   progress and batched classpath queries; older releases work without them.
 - For the default language server, the **Kotlin by JetBrains** extension (`JetBrains.kotlin-server`, ≥ 0.0.11),
   installed separately from the Marketplace. Complete its one-time region / data-sharing setup for Kotlin/Java
-  analysis and JVM debugging. Elide activates independently: sync, build, previews and environment diagnostics do not
+  analysis and JVM debugging. Elide activates independently: sync, build, layoutlib previews and environment diagnostics do not
   wait for the language server. Opening an Elide Kotlin or Java source document starts the companion when needed.
   It is not needed with Komodo (`elide.kotlinLsp.server` = `komodo`), which requires an Elide release with
   on-demand Komodo resolution. Choose **Elide: Install Komodo** explicitly; default use never downloads it.
+  Missing, incompatible or failed Komodo disables native analysis/debug actions and stops stale native resources,
+  while ordinary project sync and builds remain available. Fix the component or override and sync again to recover
+  without reloading the window; settings are never rewritten and no alternative engine is selected automatically.
 - A JDK for symbol resolution (`$JAVA_HOME`, SDKMAN, `/Library/Java/JavaVirtualMachines`, `/usr/lib/jvm`, …). Elide's
   bundled JDK image cannot serve this role: it ships without a `release` file, which IntelliJ needs to enumerate modules.
 

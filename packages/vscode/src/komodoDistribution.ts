@@ -8,6 +8,9 @@ export interface KomodoResolution {
   bundle: string;
   pluginDirectory?: string;
   javaHome?: string;
+  /** Managed protocol claims; developer overrides must negotiate with the live services instead. */
+  protocol?: { lsp: number; dap: number; preview?: unknown };
+  capabilities?: readonly string[];
 }
 
 export class KomodoResolutionError extends Error {
@@ -94,5 +97,9 @@ async function managedKomodo(elideHome: string | undefined, install: boolean, op
   }
   const launcher = absolute("executable");
   if (!executable(launcher)) throw new KomodoResolutionError("incompatible", `Elide resolved a missing or non-executable Komodo: ${launcher}. Reinstall Komodo through Elide.`);
-  return { executable: launcher, bundle: absolute("bundle"), pluginDirectory: absolute("pluginDirectory"), javaHome: absolute("javaHome") };
+  return {
+    executable: launcher, bundle: absolute("bundle"), pluginDirectory: absolute("pluginDirectory"), javaHome: absolute("javaHome"),
+    protocol: { lsp: 1, dap: 1, ...(protocol.preview !== undefined ? { preview: protocol.preview } : {}) },
+    capabilities,
+  };
 }

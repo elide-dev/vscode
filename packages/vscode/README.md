@@ -67,8 +67,8 @@ test, and debug commands are available from the editor.
 | A JDK | `$JAVA_HOME`, SDKMAN, `/Library/Java/JavaVirtualMachines`, `/usr/lib/jvm`, or `elide.jdk.home`. Elide's bundled JDK image cannot be used for symbol resolution: it ships without a `release` file. |
 | An Android SDK, for Android projects | `android.sdk` in the manifest, `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or where the SDK installs itself on this platform. `Elide: Install Android SDK Components` installs what a build is missing. |
 
-Elide activates independently of the Kotlin language server: sync, build, previews and environment diagnostics
-remain available while it starts or if it is unavailable. Opening an Elide Kotlin or Java source document starts
+Elide activates independently of the Kotlin language server: sync, build, layoutlib previews and environment diagnostics
+remain available while it starts or if it is unavailable. Komodo-dependent features require compatible live native services. Opening an Elide Kotlin or Java source document starts
 the JetBrains companion when its folder uses it, including Java-first projects. The extension contributes the
 `kotlin` language itself (`.kt`, `.kts`: comments, brackets, indentation, a TextMate grammar), so Kotlin files are
 highlighted without the JetBrains extension.
@@ -181,12 +181,25 @@ engines. Ordinary Elide installs and default JetBrains/layoutlib use do not acqu
 Older Elide versions remain usable for existing features but need an upgrade for managed Komodo.
 Elide validates supported platforms, compatible protocols, JDK inputs and trusted artifact checksums.
 
+Missing, incompatible or failed Komodo disables its native analysis and debugger at runtime: Activity reports a
+`disabled` detail, while the rest of project sync succeeds and the resolved models remain usable for builds.
+The extension stops stale native services and debug sessions, withdraws Komodo debug actions, and blocks new
+dependent operations. Preferences are never rewritten, no replacement engine is selected, and nothing downloads
+without **Install Komodo**. Fix the component or explicit override and sync again; installing or changing its
+settings also rechecks availability without a window reload.
+
+Compatibility uses Elide's schema/protocol metadata and the live LSP initialize response, followed by a successful
+project reload. Developer overrides also negotiate DAP initialization before enabling debugging. An executable
+file or version banner alone is not proof of compatibility; no guessed version cutoff is used. A `komodo.project`
+load error disables native services just like a failed start or reload. Managed preview protocol/capability metadata
+is retained for preview consumers, independently of native analysis/debug compatibility.
+
 With `elide.kotlinLsp.server` set to `komodo`, `komodo` is the folder's Kotlin language server. Each sync writes a
 Komodo project manifest into the extension's storage (nothing in the project: no `workspace.json`) and starts the
 server, or makes it reload the manifest without a restart. One server serves the whole window: every Komodo
 folder's projects go into one manifest. The server keeps one analysis session over the folders' source sets and
-workspace members, unsaved text included. A rejected server start or reload marks the sync and its language-server
-step as failed in Activity; it does not discard the resolved build models or report `reloaded`. The server answers:
+workspace members, unsaved text included. A rejected server start or reload disables native services in Activity;
+it does not fail unrelated sync steps, discard resolved build models or report `reloaded`. When ready, the server answers:
 
 - diagnostics of the compiler and its extended checkers (pulled per file: the edited file first), quick fixes
   (missing imports, overrides, types, Compose annotations…), organize imports and generated members;

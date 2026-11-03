@@ -158,6 +158,20 @@ export class ElideWorkspace implements vscode.Disposable {
     return [...this.folders.values()].flatMap((f) => [...f.projects.values()]);
   }
 
+  /** Effective live state, not the persisted engine preference. */
+  get komodoAvailable(): boolean { return this.komodoServer.available; }
+  get komodoPreviewAvailable(): boolean { return this.komodoServer.previewAvailable; }
+  get onDidChangeKomodoAvailability(): vscode.Event<void> { return this.komodoServer.onDidChangeAvailability; }
+
+  requireKomodoPreview(file: string): Promise<void> { return this.komodoServer.requirePreview(file); }
+  rejectKomodoPreview(reason: string): void { this.komodoServer.rejectPreview(reason); }
+
+  /** Only Komodo-dependent debug actions are withdrawn; Java/JetBrains and native-image debugging are unchanged. */
+  komodoDebugAvailable(folder: vscode.WorkspaceFolder): boolean {
+    return readConfig(folder).debugAdapter !== "komodo" ||
+      (readConfig(folder).kotlinLspServer === "komodo" && this.komodoAvailable);
+  }
+
   /**
    * What Komodo's debug adapter runs with for `folder` (`elide.debug.adapter` `komodo`): the launcher, project manifest
    * and JDK of the Komodo language server its sync configured. Throws, saying why, when there is none yet.
@@ -792,14 +806,9 @@ export class ElideWorkspace implements vscode.Disposable {
     }
     if (config.kotlinLspServer === "komodo" && models.length > 0) {
       signal.throwIfAborted();
-      await sync.run("Starting the Komodo language server", async (step) => {
-        try {
-          step.setDetail(await this.komodoServer.sync(state.folder, models, { ...komodoSettings(), signal }));
-        } catch (e) {
-          // The resolved models remain usable for builds, but a failed analysis reload is not a successful sync.
-          const message = e instanceof Error ? e.message : String(e);
-          throw new Error(`Komodo language server: ${message}`, { cause: e });
-        }
+      await sync.run("Checking Komodo native services", async (step) => {
+        // Native-service failure disables its dependents, not the resolved project model or unrelated build steps.
+        step.setDetail(await this.komodoServer.sync(state.folder, models, { ...komodoSettings(), signal }));
       });
     } else {
       await this.komodoServer.remove(state.folder, komodoSettings());
@@ -818,6 +827,8 @@ export class ElideWorkspace implements vscode.Disposable {
       if (state.projects.size === 0) continue;
       const folder = state.folder;
       if (event.affectsConfiguration("elide.kotlinLsp.server", folder) || (state.elideMissing && event.affectsConfiguration("elide.home", folder))) {
+        if (readConfig(folder).kotlinLspServer === "komodo") this.komodoServer.invalidate("the Kotlin language server configuration changed");
+        else void this.komodoServer.remove(folder, komodoSettings());
         void this.syncFolder(folder, "manual");
         continue;
       }
