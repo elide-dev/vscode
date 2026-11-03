@@ -268,6 +268,7 @@ describe("ElideCli command observers", () => {
         seen.push(entry);
         return {
           line: (line: string, stderr: boolean) => entry.lines.push(`${stderr ? "err" : "out"} ${line}`),
+          record: (record: { type: string }) => entry.lines.push(`record ${record.type}`),
           end: ({ exitCode }: { exitCode: number | null }) => { entry.exitCode = exitCode; },
         };
       },
@@ -287,28 +288,32 @@ describe("ElideCli command observers", () => {
     expect(observer.seen).toEqual([{ argv: ["build", "app"], lines: ["out compiled", "err ✗ Build failed in (1.0s)"], exitCode: 3 }]);
   });
 
-  test("stderr diagnostics and tool output reach observers, callbacks and failure reports unchanged", async () => {
+  test("progress records reach the observer as records, and everyone else as the text they stand for", async () => {
     const observer = observe();
     const lines: string[] = [];
-    const text = [
-      "error: kotlinc: Unresolved reference 'x'.",
-      "In file: src/Main.kt:3:5",
-      "",
-      "→3 │ fun broken() = x",
-      "✗ Build failed in (3.0s)",
-      `{"tool":"compiler","message":"failed"}`,
+    const records = [
+      `{"type":"task-started","task":"app:compile-kotlin-main","project":"app","message":"Compiling Kotlin sources","time":1}`,
+      `{"type":"message","level":"error","text":"error: kotlinc: Unresolved reference 'x'.\\nIn file: src/Main.kt:3:5","file":"/p/src/Main.kt","line":3,"column":5,"time":2}`,
+      `{"type":"build-finished","outcome":"failure","exitCode":1,"durationMs":3000,"message":"Build failed","time":3}`,
     ];
-    const failure = cli(`cat >&2 <<'EOF'\n${text.join("\n")}\nEOF\nexit 1`)
+    const failure = cli(`cat >&2 <<'EOF'\n${records.join("\n")}\n{"not":"a record"}\nEOF\nexit 1`)
       .build(["app"], { onCommand: observer.onCommand, onLine: (line) => lines.push(line) });
     const error = await failure.then(() => undefined, (e: unknown) => e as Error);
+    const text = ["error: kotlinc: Unresolved reference 'x'.", "In file: /p/src/Main.kt:3:5", "✗ Build failed in 3.0s", `{"not":"a record"}`];
     expect(lines).toEqual(text);
-    expect(observer.seen[0]!.lines).toEqual(text.map((line) => `err ${line}`));
+    expect(observer.seen[0]!.lines).toEqual([
+      "record task-started",
+      "record message", ...text.slice(0, 2).map((line) => `err ${line}`),
+      "record build-finished", `err ${text[2]}`,
+      `err ${text[3]}`,
+    ]);
     expect(error?.message).toEndWith(text.join("\n"));
   });
 
-  test("caller environment is preserved and color is disabled for piped output", async () => {
-    const elide = cli(`printf '%s\\n' "$ELIDE_TEST_VALUE" "$NO_COLOR"`);
-    expect((await elide.run(["build"], { env: { ELIDE_TEST_VALUE: "custom", NO_COLOR: "0" } })).stdout).toBe("custom\n1\n");
+  test("every process asks for progress records unless the caller picks another mode", async () => {
+    const elide = cli(`echo "$ELIDE_PROGRESS"`);
+    expect((await elide.run(["build"])).stdout).toBe("json\n");
+    expect((await elide.run(["build"], { env: { ELIDE_PROGRESS: "plain" } })).stdout).toBe("plain\n");
   });
 });
 

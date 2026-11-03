@@ -11,12 +11,16 @@ import { compareElideVersions, parseElideVersion, resolveElideDistribution } fro
 import * as vscode from "vscode";
 import type { ElideExtensionApi as ElideApi } from "../../src/extension.js";
 import { errorsOf, hoverAt, log, waitFor } from "./helpers.js";
+import { runAndroidScenario } from "./android.js";
+import { runComposeScenario } from "./compose.js";
 import { runWorkspaceScenario } from "./workspace.js";
 
 const sample = process.env.ELIDE_TEST_SAMPLE!;
 
 export async function run(): Promise<void> {
   if (process.env.ELIDE_TEST_SCENARIO === "workspace") return await runWorkspaceScenario();
+  if (process.env.ELIDE_TEST_SCENARIO === "compose") return await runComposeScenario();
+  if (process.env.ELIDE_TEST_SCENARIO === "android") return await runAndroidScenario();
   const folder = vscode.workspace.workspaceFolders?.[0];
   assert.ok(folder, "sample workspace folder open");
   assert.equal(folder.uri.fsPath, sample);

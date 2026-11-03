@@ -30,6 +30,7 @@ export {
 export * from "./android.js";
 export * from "./androidBinaryXml.js";
 export * from "./androidLogcat.js";
+export * from "./composeInputs.js";
 export * from "./artifacts.js";
 export * from "./buildTasks.js";
 export * from "./coverage.js";
