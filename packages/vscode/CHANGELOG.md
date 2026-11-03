@@ -4,6 +4,16 @@ All notable changes to the Elide extension are documented here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0](https://github.com/elide-dev/vscode/compare/v0.7.0...v0.8.0) (2026-11-03)
+
+
+### Added
+
+* **android:** add device tools and shared live Compose previews ([#30](https://github.com/elide-dev/vscode/issues/30)) ([5e96538](https://github.com/elide-dev/vscode/commit/5e96538d1ef4d756ba043bca645a33c6fb98ef7f))
+* **editor:** integrate native Kotlin services and improve project workflows ([#29](https://github.com/elide-dev/vscode/issues/29)) ([d5741dc](https://github.com/elide-dev/vscode/commit/d5741dc17d551459f3651a46951169187147f462))
+* **editor:** support Elide build extension authoring and self-build projects ([#31](https://github.com/elide-dev/vscode/issues/31)) ([021ac1c](https://github.com/elide-dev/vscode/commit/021ac1c327cea66200514086529e683c8248b0ff))
+* organize sidebar targets with pinned and frequent shortcuts ([#32](https://github.com/elide-dev/vscode/issues/32)) ([0098221](https://github.com/elide-dev/vscode/commit/00982213f8b4a96bb910ad51f8b8976d83556572))
+
 ## [0.7.0](https://github.com/elide-dev/vscode/compare/v0.6.1...v0.7.0) (2026-11-01)
 
 ### Added
