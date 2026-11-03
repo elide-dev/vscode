@@ -40,6 +40,7 @@ function run(body: string, setup = ""): { status: number | null; stderr: string 
         async dispose() { this.disposed = true; this.state = 1; }
       },
       State: { Stopped: 1, Running: 2, Starting: 3 }, CloseAction: { DoNotRestart: 1 }, ErrorAction: { Shutdown: 2 },
+      ResponseError: class extends Error {}, ErrorCodes: { MethodNotFound: -32601 },
     }));
     mock.module(${JSON.stringify(debug)}, () => ({ requireKomodoDebugProtocol: async () => { if (dapFailure) throw dapFailure; } }));
     ${setup}
@@ -81,6 +82,69 @@ test("the client sees only Kotlin files on disk under the Komodo folders, glob c
   `)).toEqual({ status: 0, stderr: "" });
 });
 
+
+test("preview sessions require protocol 2 and report old servers instead of falling back", () => {
+  expect(run(`
+    const server = Object.create(komodo.KomodoLanguageServer.prototype);
+    const requests = [];
+    let answer = { protocol: 2, port: 12345, token: "secret", pid: 42 };
+    server.clientFor = async (file) => {
+      assert.equal(file, "/workspace/Original.kt");
+      return { uri: "file:///workspace/Original.kt", client: {
+        sendRequest: async (method, params) => { requests.push({ method, params }); return answer; }
+      } };
+    };
+    assert.deepEqual(await server.previewSession("/workspace/Original.kt"), answer);
+    assert.deepEqual(requests, [{ method: "komodo/preview/open", params: { textDocument: { uri: "file:///workspace/Original.kt" } } }]);
+    for (const invalid of [undefined, { ...answer, protocol: 1 }, { ...answer, port: 0 }, { ...answer, token: "" }, { ...answer, token: "bad\\nline" }]) {
+      answer = invalid;
+      await assert.rejects(server.previewSession("/workspace/Original.kt"), /invalid preview session/);
+    }
+    // Import after the harness installs its mocked language-client boundary.
+    const { ResponseError } = await import("vscode-languageclient/node");
+    server.clientFor = async () => ({ uri: "file:///workspace/Original.kt", client: {
+      sendRequest: async () => { const error = new ResponseError("missing"); error.code = -32601; throw error; }
+    } });
+    await assert.rejects(server.previewSession("/workspace/Original.kt"), /too old for the Komodo preview engine.*there is no fallback/);
+  `)).toEqual({ status: 0, stderr: "" });
+});
+
+test("unsupported preview methods and invalid sessions latch preview unavailability without disabling native analysis", () => {
+  expect(run(`
+    // Import after the subprocess installs the mocked language-client module boundary.
+    const { ResponseError } = await import("vscode-languageclient/node");
+    const server = new komodo.KomodoLanguageServer("/tmp/elide-komodo-test", () => {});
+    const sync = () => server.sync(previewFolder, [{ root: "/work/app" }], {});
+    for (const method of ["previews", "previewSession", "syncPreview"]) {
+      await sync();
+      const client = server.client;
+      client.code2ProtocolConverter = { asUri: () => "file:///work/app/Screen.kt" };
+      const reload = client.sendRequest.bind(client);
+      let requests = 0;
+      client.sendRequest = async () => {
+        requests++;
+        const error = new ResponseError("unsupported");
+        error.code = -32601;
+        throw error;
+      };
+      const call = () => server[method](method === "syncPreview" ? ["/work/app/Screen.kt"] : "/work/app/Screen.kt");
+      await assert.rejects(call(), /compatible Komodo/);
+      assert.equal(server.previewAvailable, false);
+      assert.equal(server.available, true);
+      await server.debugLaunch(previewFolder);
+      await assert.rejects(call(), /disabled/);
+      assert.equal(requests, 1, "a rejected capability is not probed repeatedly");
+      client.sendRequest = reload;
+    }
+    await sync();
+    const client = server.client;
+    client.sendRequest = async () => ({ protocol: 1, port: 12345, token: "secret" });
+    await assert.rejects(server.previewSession("/work/app/Screen.kt"), /invalid preview session/);
+    assert.equal(server.previewAvailable, false);
+    assert.equal(server.available, true);
+    server.dispose();
+  `, lifecycleSetup)).toEqual({ status: 0, stderr: "" });
+});
 
 test("a client restarting its crashed server is stopped once it is up, and disposed so it never restarts one again", () => {
   expect(run(`

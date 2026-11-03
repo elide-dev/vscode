@@ -13,7 +13,8 @@ export interface AndroidStackFrame {
 
 /** SourceFile attributes, not binary class names, locate nested classes and Kotlin FileKt facades. */
 export function parseAndroidStackFrame(text: string): AndroidStackFrame | undefined {
-  const match = /(?:^|\s)at\s+(?:[\w.$@-]+\/)?([\p{ID_Start}_$][\p{ID_Continue}.$]*)\.[^\s.()]+\(([^\s():/\\]+\.(?:kt|java)):([0-9]+)\)/u.exec(text);
+  // Kotlin and Compose binary names carry `-` (`ComposableSingletons$MainKt$lambda-1$1`, `$lambda$-1868395445$1`).
+  const match = /(?:^|\s)at\s+(?:[\w.$@-]+\/)?([\p{ID_Start}_$][\p{ID_Continue}.$-]*)\.[^\s.()]+\(([^\s():/\\]+\.(?:kt|java)):([0-9]+)\)/u.exec(text);
   if (!match) return undefined;
   const className = match[1]!;
   const fileName = match[2]!;

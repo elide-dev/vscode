@@ -5,12 +5,14 @@ import {
   LIBRARY_NAME_PREFIX,
   androidFeatureTask,
   buildTasksOf,
+  currentAndroidDeviceTargets,
+  isAndroidDeviceTask,
   isNativeImageBinary,
   parseManifestArtifacts,
   resolveElideDistribution,
   unqualifiedTaskName,
   type AndroidArtifactKind,
-  type AndroidProjectModel,
+  type AndroidDeviceTargets,
   type AndroidTargetModel,
   type BuildTaskInfo,
   type ElideCommand,
@@ -21,19 +23,25 @@ import {
 } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { androidSdkFor, attachedDevices } from "./android.js";
+import { androidEmulatorOwners, androidToolsProject } from "./androidDeploymentState.js";
 import { readConfig } from "./config.js";
+import { onDidEndDebugRun } from "./debug.js";
 import type { ElideUi } from "./output.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
 import { entrypointArgs } from "./tasks.js";
 
 export const PROJECTS_VIEW_ID = "elide.projects";
 
-/** The fixed sections of a project, plus the lazily loaded build targets and Android devices nested under them. */
-type GroupKind = "entrypoints" | "android" | "androidDevices" | "tasks" | "buildTargets" | "otherBuildTargets" | "sourceSets" | "dependencies";
+/**
+ * The fixed sections of a project, plus the lazily loaded build targets and Android devices nested under them. A
+ * workspace tree's devices and Android tools are one `androidTools` section of its top-level row, not one per member.
+ */
+type GroupKind = "entrypoints" | "android" | "androidTools" | "androidDevices" | "tasks" | "buildTargets" | "otherBuildTargets" | "sourceSets" | "dependencies";
 
 const GROUP_LABELS: Record<GroupKind, string> = {
   entrypoints: "Entrypoints",
   android: "Android",
+  androidTools: "Android devices & tools",
   androidDevices: "Devices",
   tasks: "Tasks",
   buildTargets: "Build targets",
@@ -45,6 +53,7 @@ const GROUP_LABELS: Record<GroupKind, string> = {
 const GROUP_ICONS: Record<GroupKind, string> = {
   entrypoints: "rocket",
   android: "device-mobile",
+  androidTools: "remote-explorer",
   androidDevices: "plug",
   tasks: "tools",
   buildTargets: "list-tree",
@@ -78,6 +87,11 @@ export type ElideNode =
       debuggable: boolean;
       /** Set when the target is a Native Image binary: `elide.runArtifact` builds it and runs what it produced. */
       runnable: boolean;
+      /**
+       * Set when the target installs onto one device: `elide.androidRunDeviceTask` passes it the deployment target's
+       * `--device`, instead of letting Elide pick whichever device is attached.
+       */
+      deviceBound: boolean;
       /** Output name the artifact declares, which decides the binary `elide.runArtifact` runs. */
       outputName?: string;
     }
@@ -91,12 +105,17 @@ export type ElideNode =
       /** `args` so the row can be handed to `elide.build` unchanged. */
       args: string[];
       description: string;
+      /** What Elide lists for an APK — Run, Debug, instrumented tests — which decides the actions its row offers. */
+      offers?: AndroidDeviceTargets;
     }
   /** The obfuscation mapping a minifying Android artifact publishes, beside the archive it belongs to. */
   | { kind: "androidMapping"; label: string; root: string; artifact: string; path: string; description: string }
-  | { kind: "androidDevice"; label: string; root: string; device: string; description: string; ready: boolean }
-  /** A project-wide Android action the sidebar offers: booting the emulator, creating the AVD, installing the SDK. */
-  | { kind: "androidAction"; label: string; root: string; command: string; description: string; icon: string }
+  | { kind: "androidDevice"; label: string; root: string; device: string; description: string; ready: boolean; emulator: boolean }
+  /**
+   * An Android action of the shared devices & tools section. `bare` actions run as from the palette, choosing among
+   * all of the workspace's Android projects; the others act for the project `root` names.
+   */
+  | { kind: "androidAction"; label: string; root: string; command: string; description: string; icon: string; bare?: boolean }
   | { kind: "module"; label: string; root: string; module: ModuleModel }
   | { kind: "sourceRoot"; label: string; root: string; module: string; path: string; sourceKind: SourceRootKind }
   | { kind: "library"; label: string; root: string; classes: string; attached: string }
@@ -143,6 +162,8 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
       vscode.tasks.onDidEndTask((event) => {
         if (event.execution.task.source === "elide") this.changed.fire(undefined);
       }),
+      // A debug run builds the APK, which can turn out not to be debuggable and withdraw its Debug action.
+      onDidEndDebugRun(() => this.changed.fire(undefined)),
     ];
   }
 
@@ -159,6 +180,10 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
       if (project && !this.workspace.komodoDebugAvailable(project.folder)) {
         item.contextValue = node.kind === "entrypoint" ? "entrypointRunOnly" : "buildTarget";
       }
+    }
+    if (node.kind === "androidTarget" && node.offers?.debuggable) {
+      const project = this.workspace.projectAt(node.root);
+      if (project && !this.workspace.komodoDebugAvailable(project.folder)) item.contextValue = item.contextValue.replace(".debug", "");
     }
     const id = nodeId(node);
     if (id) item.id = id;
@@ -189,13 +214,18 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
       case "buildTarget":
         item.iconPath = new vscode.ThemeIcon("target");
         item.description = node.description;
-        item.tooltip = node.debuggable ? `elide build ${node.label} [--debugger]` : `elide build ${node.label}`;
-        item.command = { command: "elide.executeTask", title: "Build", arguments: [node] };
+        item.tooltip = node.deviceBound ? `elide build ${node.label} --device=<deployment target>`
+          : node.debuggable ? `elide build ${node.label} [--debugger]` : `elide build ${node.label}`;
+        item.command = node.deviceBound
+          ? { command: "elide.androidRunDeviceTask", title: "Run on Deployment Target", arguments: [node] }
+          : { command: "elide.executeTask", title: "Build", arguments: [node] };
         break;
       case "androidTarget":
         item.iconPath = new vscode.ThemeIcon(ANDROID_TARGET_ICONS[node.targetKind]);
         item.description = node.description;
-        item.tooltip = `${node.description ? `${node.description}\n` : ""}elide build ${node.args.join(" ")}`;
+        item.tooltip = `${node.description ? `${node.description}\n` : ""}elide build ${node.args.join(" ")}`
+          + (node.offers && !node.offers.runnable && !node.offers.debuggable
+            ? "\nNot installable: Elide lists no run or debug target for it (an unsigned APK, say)." : "");
         item.command = { command: "elide.build", title: "Build", arguments: [node] };
         break;
       case "androidMapping":
@@ -213,7 +243,7 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
       case "androidAction":
         item.iconPath = new vscode.ThemeIcon(node.icon);
         item.description = node.description;
-        item.command = { command: node.command, title: node.label, arguments: [node] };
+        item.command = { command: node.command, title: node.label, arguments: node.bare ? [] : [node] };
         break;
       case "module":
         item.iconPath = new vscode.ThemeIcon(node.module.kind === "test" ? "beaker" : "symbol-namespace");
@@ -264,17 +294,22 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
 
   /**
    * A project without a model knows no entrypoints, source sets or libraries yet; its tasks still run. A section
-   * with nothing under it is left out: a workspace root commonly declares members and no sources of its own.
+   * with nothing under it is left out: a workspace root commonly declares members and no sources of its own. A
+   * top-level row carries the one devices & tools section of its whole tree, acting for its first application.
    */
   private projectGroups(root: string): ElideNode[] {
-    const model = this.workspace.projectAt(root)?.model;
-    const groups: GroupKind[] = [];
-    if (model && model.entrypoints.length > 0) groups.push("entrypoints");
-    if (model?.android) groups.push("android");
-    groups.push("tasks");
-    if (model && model.modules.length > 0) groups.push("sourceSets");
-    if (model && model.libraries.length > 0) groups.push("dependencies");
-    return groups.map((group) => ({ kind: "group", label: GROUP_LABELS[group], root, group }));
+    const project = this.workspace.projectAt(root);
+    const model = project?.model;
+    const groups: ElideNode[] = [];
+    const group = (kind: GroupKind, owner = root) => groups.push({ kind: "group", label: GROUP_LABELS[kind], root: owner, group: kind });
+    if (model && model.entrypoints.length > 0) group("entrypoints");
+    if (model?.android && model.android.targets.length > 0) group("android");
+    const tools = project && !project.workspaceRoot ? androidToolsProject([project, ...this.workspace.membersOf(root)]) : undefined;
+    if (tools) group("androidTools", tools.root);
+    group("tasks");
+    if (model && model.modules.length > 0) group("sourceSets");
+    if (model && model.libraries.length > 0) group("dependencies");
+    return groups;
   }
 
   private async groupChildren(node: Extract<ElideNode, { kind: "group" }>): Promise<ElideNode[]> {
@@ -296,7 +331,11 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
       case "sourceSets":
         return (model?.modules ?? []).map((module) => ({ kind: "module", label: module.sourceSet, root: node.root, module }));
       case "android":
-        return androidGroupNodes(node.root, model?.android);
+        return (model?.android?.targets ?? []).flatMap((target) => androidTargetNodes(node.root, target));
+      case "androidTools": {
+        const top = project.workspaceRoot ? this.workspace.projectAt(project.workspaceRoot) : project;
+        return androidToolNodes(project, top ? [top, ...this.workspace.membersOf(top.root)] : [project]);
+      }
       case "androidDevices":
         return await this.androidDeviceNodes(project);
       case "dependencies":
@@ -343,6 +382,7 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         // Only a target that starts a JVM declares `--debugger`; compilation targets have nothing to attach to.
         debuggable: target.options.some((option) => option.option === "--debugger"),
         runnable: image !== undefined,
+        deviceBound: isAndroidDeviceTask(target),
         ...(image?.outputName ? { outputName: image.outputName } : {}),
       };
     });
@@ -370,6 +410,7 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         description: device.ready ? (device.emulator ? "emulator" : "device") :
           device.state === "unauthorized" ? "unauthorized — unlock device and accept USB debugging" : `${device.state} — reconnect device`,
         ready: device.ready,
+        emulator: device.emulator,
       }));
     } catch (error) {
       this.ui.log(`Android device discovery: ${error instanceof Error ? error.message : String(error)}`);
@@ -410,33 +451,33 @@ function projectNode(project: ElideProject): ElideNode {
 }
 
 /**
- * The Android section of a project: what it publishes, what is attached, and the project-wide device actions.
- *
- * The emulator, the AVD and the SDK install are one per project rather than one per artifact — the device is the
- * project's, declared once in `android.device` — which is why they sit here and not under each APK.
+ * The devices & tools section of a workspace tree, shown once however many Android members it has: what is attached,
+ * then the actions. `owner` is the project they act for; selection and logcat choose among all Android projects, as
+ * from the palette. Each emulator row belongs to an application that declares its AVD; a library declares none it
+ * could boot, so a library-only tree offers no emulator rows.
  */
-function androidGroupNodes(root: string, android: AndroidProjectModel | undefined): ElideNode[] {
-  if (!android) return [];
-  const nodes: ElideNode[] = android.targets.flatMap((target) => androidTargetNodes(root, target));
-  nodes.push({ kind: "group", label: GROUP_LABELS.androidDevices, root, group: "androidDevices" });
-  nodes.push(
-    { kind: "androidAction", label: "Select deployment target", root, command: "elide.androidSelectTarget", description: "application and device for Run / Debug", icon: "device-mobile" },
+function androidToolNodes(owner: ElideProject, tree: readonly ElideProject[]): ElideNode[] {
+  const root = owner.root;
+  const nodes: ElideNode[] = [
+    { kind: "group", label: GROUP_LABELS.androidDevices, root, group: "androidDevices" },
+    { kind: "androidAction", label: "Select deployment target", root, command: "elide.androidSelectTarget", description: "application and device for Run / Debug", icon: "device-mobile", bare: true },
+    { kind: "androidAction", label: "Pair device over Wi-Fi", root, command: "elide.androidPairWireless", description: "QR code or pairing code", icon: "radio-tower" },
     { kind: "androidAction", label: "Check Android environment", root, command: "elide.androidDoctor", description: "SDK, tools and device readiness", icon: "checklist" },
     { kind: "androidAction", label: "Refresh devices", root, command: "elide.androidRefreshDevices", description: "discover connected devices", icon: "refresh" },
-    { kind: "androidAction", label: "Show logcat", root, command: "elide.androidLogcat", description: "device and application logs", icon: "output" },
-    { kind: "androidAction", label: "Start emulator", root, command: "elide.androidStartEmulator", description: android.avd, icon: "vm-running" },
-    { kind: "androidAction", label: "Stop emulators", root, command: "elide.androidStopEmulator", description: "adb emu kill", icon: "vm-outline" },
-    { kind: "androidAction", label: "Create AVD", root, command: "elide.androidCreateAvd", description: android.avd, icon: "vm-connect" },
-  );
-  if (!android.sdkRoot) {
-    nodes.push({
-      kind: "androidAction",
-      label: "Install Android SDK components",
-      root,
-      command: "elide.androidInstallSdk",
-      description: "sdkmanager --install",
-      icon: "cloud-download",
-    });
+    { kind: "androidAction", label: "Show logcat", root, command: "elide.androidLogcat", description: "device and application logs", icon: "output", bare: true },
+    { kind: "androidAction", label: "Explore databases", root, command: "elide.androidDatabase", description: "connected app's Room / SQLite data", icon: "database" },
+  ];
+  const emulators = androidEmulatorOwners(tree);
+  for (const { avd, project } of emulators) {
+    const description = emulators.length > 1 ? `${avd} · ${project.model?.name ?? path.basename(project.root)}` : avd;
+    nodes.push(
+      { kind: "androidAction", label: "Start emulator", root: project.root, command: "elide.androidStartEmulator", description, icon: "vm-running" },
+      { kind: "androidAction", label: "Stop emulator", root: project.root, command: "elide.androidStopEmulator", description, icon: "vm-outline" },
+      { kind: "androidAction", label: "Create AVD", root: project.root, command: "elide.androidCreateAvd", description, icon: "vm-connect" },
+    );
+  }
+  if (!owner.model?.android?.sdkRoot) {
+    nodes.push({ kind: "androidAction", label: "Install Android SDK components", root, command: "elide.androidInstallSdk", description: "sdkmanager --install", icon: "cloud-download" });
   }
   return nodes;
 }
@@ -455,6 +496,7 @@ function androidTargetNodes(root: string, target: AndroidTargetModel): ElideNode
     args: [target.kind === "feature" ? androidFeatureTask(target.name) : target.name],
     description: target.kind === "feature" ? `${target.delivery} → ${target.base}${target.featureDependencies?.length ? ` · requires: ${target.featureDependencies.join(", ")}` : ""}` :
       target.features?.length ? `${path.basename(target.output)} · features: ${target.features.join(", ")}` : path.basename(target.output),
+    ...(target.device ? { offers: currentAndroidDeviceTargets(root, target) ?? target.device } : {}),
   };
   if (!target.mapping) return [node];
   return [
@@ -477,16 +519,24 @@ const ANDROID_TARGET_CONTEXTS: Record<AndroidArtifactKind, string> = { apk: "and
 /**
  * `view/item/context` key. A member of a workspace takes no member of its own, so its row offers no such action; a
  * script entrypoint offers no Debug action (a script is a shell command line); a build target offers the JVM Debug
- * action only when it declares `--debugger`, and the Run/Debug pair of a Native Image only when it is a binary one.
- * Only an APK is installed, launched and debugged, and only a device in the `device` state can take an install.
+ * action only when it declares `--debugger`, the Run/Debug pair of a Native Image only when it is a binary one, and
+ * runs on the deployment target when it installs onto a device. An APK row carries `.run`, `.debug` and `.test` for
+ * the device targets Elide lists for it; only a device in the `device` state can take an install, and only an
+ * emulator can be stopped.
  */
 function contextValueOf(node: ElideNode): string {
   if (node.kind === "project") return node.member ? "projectMember" : "project";
+  if (node.kind === "group" && (node.group === "android" || node.group === "androidTools" || node.group === "androidDevices")) return node.group;
   if (node.kind === "entrypoint") return node.script ? "script" : node.kind;
   if (node.kind === "buildTarget" && node.runnable) return "buildTargetRunnable";
+  if (node.kind === "buildTarget" && node.deviceBound) return "buildTargetDevice";
   if (node.kind === "buildTarget" && node.debuggable) return "buildTargetDebuggable";
-  if (node.kind === "androidTarget") return ANDROID_TARGET_CONTEXTS[node.targetKind];
-  if (node.kind === "androidDevice") return node.ready ? "androidDevice" : "androidDeviceUnavailable";
+  if (node.kind === "androidTarget") {
+    const offers = node.offers;
+    const actions = offers ? [offers.runnable ? ".run" : "", offers.debuggable ? ".debug" : "", offers.instrumented ? ".test" : ""].join("") : "";
+    return `${ANDROID_TARGET_CONTEXTS[node.targetKind]}${actions}`;
+  }
+  if (node.kind === "androidDevice") return `${node.emulator ? "androidEmulator" : "androidDevice"}${node.ready ? "" : "Unavailable"}`;
   return node.kind;
 }
 
@@ -541,7 +591,8 @@ function nodeId(node: ElideNode): string | undefined {
     case "androidDevice":
       return `d:${node.root}:${node.device}`;
     case "androidAction":
-      return `x:${node.root}:${node.command}`;
+      // The label too: a failed device discovery offers `elide.androidDoctor` beside the section's own row for it.
+      return `x:${node.root}:${node.command}:${node.label}`;
     case "androidMapping":
       return `am:${node.root}:${node.artifact}`;
   }

@@ -19,9 +19,12 @@ is referenced anywhere in this package.
 | `pkl.ts` | Read and edit `elide.pkl` as text, for what the exported project model cannot answer (artifact source positions, the workspace above a folder). |
 | `kotlinLsp.ts` | Emit the JSON workspace (`workspace.json`) consumed by the JetBrains Kotlin language server. |
 | `komodoLsp.ts` | Emit the Komodo project manifest (`project.properties`) that Komodo's language server (`komodo`) analyzes, with the compiler plugins it needs. |
-| `android.ts` | Android build targets, published and staged artifact paths, SDK resolution (`android.sdk`, `ANDROID_HOME`, the conventional location) and the attached devices `adb` reports. |
+| `android.ts` | Android build targets — which device targets (run, debug, instrumented tests) a task listing offers an APK, and which take `--device` — published and staged artifact paths, SDK resolution (`android.sdk`, `ANDROID_HOME`, the conventional location) and the attached devices `adb` reports. |
+| `androidTests.ts` | Per-test results of `android-test-<artifact>` (pass, failure with its stack trace, skip) read from its progress records. |
+| `androidWireless.ts` | Android 11+ wireless pairing: mDNS service discovery, validated endpoints, QR credentials, and bounded, cancellable ADB pairing/connection with stdin-only secrets. |
 | `androidBinaryXml.ts` | The application ID an APK installs as, read from its compiled manifest (after `--rename-manifest-package` and placeholders). |
 | `androidLogcat.ts` | Abortable adb log streams, application UID resolution, priority and literal-text filtering, and explicit stop/restart lifecycle. |
+| `androidDatabase.ts` | Scoped, cancellable `adb run-as` sessions for live SQLite discovery, schemas, bounded queries and explicit writes; exact integer/BLOB values and foreground-user checks. Requires the bundled Android inspector dex supplied by the caller. |
 | `composeInputs.ts` | Host Compose preview build targets and postbuild JVM/runtime inputs: declared source-set/workspace closure, linked resources and merged-manifest namespace, and the library versions the APK ships (newest across members, as Elide dexes them), without dexing or packaging an app. |
 | `mavenVersion.ts` | Maven version ordering (maven-resolver's `GenericVersionScheme`), which picks the shipped version of a library resolved at several. |
 

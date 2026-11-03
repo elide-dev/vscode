@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { composePreviewApplications, composePreviewBuildTargets, composePreviewInputs, decodeManifest, packagedSourceSets, type AndroidTargetModel, type ModuleModel, type ProjectModel } from "../src/index.js";
+import { composePreviewAnnotations, composePreviewApplications, composePreviewBuildTargets, composePreviewInputs, decodeManifest, packagedSourceSets, type AndroidTargetModel, type ModuleModel, type ProjectModel } from "../src/index.js";
 
 const directories: string[] = [];
 afterAll(() => { for (const directory of directories) rmSync(directory, { recursive: true, force: true }); });
@@ -74,6 +74,29 @@ describe("host Compose preview inputs", () => {
     for (const file of [path.join(app.root, "src/test/T.kt"), path.join(app.root, "src/unused/U.kt"), path.join(provided.root, "src/main/P.kt")]) {
       expect(chosen(file)).toEqual([]);
     }
+  });
+
+  test("counts preview annotations, qualified and multipreview, but not preview-named functions or imports alone", () => {
+    for (const text of [
+      "@Preview\n@Composable\nfun Card() {}",
+      "@Preview(showBackground = true, device = Devices.PIXEL_7) @Composable fun Card() {}",
+      "@androidx.compose.ui.tooling.preview.Preview\n@Composable fun Card() {}",
+      "@PreviewLightDark\n@Composable fun Card() {}",
+      "@DevicePreviews\n@Composable fun Card() {}",
+    ]) expect(composePreviewAnnotations(text)).toBe(1);
+    expect(composePreviewAnnotations("@Preview @Composable fun A() {}\n@Preview(name = \"dark\")\n@Composable fun B() {}")).toBe(2);
+    // Delimiters inside the other construct: a URL's `//` in a string, a quote in a comment, a quoted `"`.
+    expect(composePreviewAnnotations("val url = \"https://example.com\"\n// it's \"quoted\"\nval quote = '\"'\n@Preview @Composable fun A() {}")).toBe(1);
+    for (const text of [
+      "package sample\nclass MainActivity : ComponentActivity()",
+      "@Composable\nfun CardPreview() {}",
+      "import androidx.compose.ui.tooling.preview.Preview\n@Composable fun Card() {}",
+      "@Composable fun Card(device: String = androidx.compose.ui.tooling.preview.Devices.PIXEL) {}",
+      "// @Preview\n@Composable fun Card() {}",
+      "/* @Preview\n@Composable */ fun Card() {}",
+      "/** Annotate with @Preview to render. */\n@Composable fun Card() {}",
+      "val hint = \"Add @Preview\"\nval doc = \"\"\"\n  @Preview\n\"\"\"",
+    ]) expect(composePreviewAnnotations(text)).toBe(0);
   });
 
   test("reads merged namespace and fresh original classes, excludes stubs and stale AAR versions", async () => {

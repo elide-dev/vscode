@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   ElideCli,
@@ -6,8 +5,11 @@ import {
   ElideFailureReport,
   elideInvocationArgs,
   elideInvocationOptionsFrom,
+  elideRecordOutput,
   mergeElideInvocationOptions,
+  parseElideOutputLine,
   resolveElideDistribution,
+  type CommandObserver,
   type ElideCommand,
   type ElideDistribution,
   type ElideFailure,
@@ -18,6 +20,7 @@ import {
 import * as vscode from "vscode";
 import { configuredInvocation, readConfig } from "./config.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
+import { WorkspacePaths } from "./workspacePaths.js";
 
 export const ELIDE_TASK_TYPE = "elide";
 
@@ -66,48 +69,71 @@ export async function executeElideTask(
   return await vscode.tasks.executeTask(task);
 }
 
+const IN_FILE = /^In file:\s+(?:file:\/\/)?(.+?)(?::(\d+))?(?::(\d+))?\s*$/;
+/** The tool a diagnostic headline names before its message, as the `$elide` problem matcher drops it: `kotlinc: `. */
+const TOOL_PREFIX = /^(?:\[\w+\]\s*)?(?:[\w.+-]+:\s+)?/;
+
 /**
- * Run one `elide` task whose output the extension follows too. The task terminal shows the output and the `$elide`
- * problem matcher reads it as for any other task, while `onCommand` sees the process start, each line it prints and
- * its exit — what a caller needs to show the build's progress somewhere the terminal is not.
+ * Run one `elide` command for a project as a process the extension follows, not as a VS Code task: VS Code saves
+ * every dirty editor before it runs a task (`task.saveBeforeRun`), which a caller that works from unsaved editor
+ * text must not cause. `onCommand` sees the process start, each line it prints and its exit. The compiler
+ * diagnostics it reports replace those in `diagnostics`, as the `$elide` problem matcher does for a task, at the
+ * paths the workspace spells.
  *
- * `exitCode` settles when the process ends; `undefined` means it was terminated or never started.
+ * Settles with the exit code, or `undefined` when `signal` stopped the process.
  */
-export async function executeObservedElideTask(
+export async function runObservedElide(
   project: ElideProject,
   command: ElideCommand,
   invocation: ElideInvocationOptions,
-  presentation: vscode.TaskPresentationOptions,
-  onCommand: NonNullable<RunOptions["onCommand"]>,
-): Promise<{ execution: vscode.TaskExecution; exitCode: Promise<number | undefined> }> {
-  const { definition, label } = taskDefinition(project, command, invocation);
-  const elide = taskProcess(project, definition);
-  const exit = Promise.withResolvers<number | undefined>();
-  const rel = path.relative(project.folder.uri.fsPath, project.root);
-  const task = new vscode.Task(definition, project.folder, `${label}${rel ? ` (${rel})` : ""}`, ELIDE_TASK_TYPE,
-    new vscode.CustomExecution(async () => new ObservedElideTerminal(elide, onCommand, exit.resolve)), ["$elide"]);
-  task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, clear: true, ...presentation };
-  // VS Code runs one instance of a task: executing it while an earlier run still holds its terminal — as one does
-  // for CLOSE_DELAY_MS after its process exits — hands back that run, which then ends without this one starting.
-  const key = JSON.stringify(definition);
-  await Promise.all(vscode.tasks.taskExecutions
-    .filter((running) => running.task.source === ELIDE_TASK_TYPE && JSON.stringify(running.task.definition) === key)
-    .map((running) => {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      const subscription = vscode.tasks.onDidEndTask((e) => {
-        if (e.execution !== running) return;
-        subscription.dispose();
-        resolve();
-      });
-      return promise;
-    }));
-  const execution = await vscode.tasks.executeTask(task);
-  const ended = vscode.tasks.onDidEndTask((e) => {
-    if (e.execution !== execution) return;
-    ended.dispose();
-    exit.resolve(undefined);
-  });
-  return { execution, exitCode: exit.promise };
+  options: { signal: AbortSignal; onCommand: NonNullable<RunOptions["onCommand"]>; diagnostics: vscode.DiagnosticCollection },
+): Promise<number | undefined> {
+  const { dist, cwd, argv, env } = taskProcess(project, taskDefinition(project, command, invocation).definition);
+  const paths = await WorkspacePaths.of([project.root, project.folder.uri.fsPath]);
+  const found = new Map<string, vscode.Diagnostic[]>();
+  const report = (severity: "error" | "warning" | "hint", message: string, file: string, line?: number, column?: number) => {
+    const position = new vscode.Position(Math.max(0, (line ?? 1) - 1), Math.max(0, (column ?? 1) - 1));
+    const diagnostic = new vscode.Diagnostic(new vscode.Range(position, position), message.replace(TOOL_PREFIX, ""), severity === "error"
+      ? vscode.DiagnosticSeverity.Error : severity === "warning" ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information);
+    diagnostic.source = "elide";
+    const key = paths.lexical(path.resolve(cwd, file));
+    found.set(key, [...found.get(key) ?? [], diagnostic]);
+  };
+  const onCommand = (args: readonly string[], root: string): CommandObserver => {
+    const observer = options.onCommand(args, root);
+    // Records carry each diagnostic's location; without them, a text headline's location is on the next line.
+    let structured = false;
+    let headline: { severity: "error" | "warning" | "hint"; message: string } | undefined;
+    return {
+      record: (record) => {
+        structured = true;
+        observer?.record?.(record);
+        const output = elideRecordOutput(record);
+        if (output?.kind === "diagnostic" && output.file) report(output.severity, output.message, output.file, output.line, output.column);
+      },
+      line: (line, stderr) => {
+        observer?.line?.(line, stderr);
+        if (structured) return;
+        const location = headline && IN_FILE.exec(line);
+        if (headline && location) report(headline.severity, headline.message, location[1]!, location[2] ? Number(location[2]) : undefined, location[3] ? Number(location[3]) : undefined);
+        const parsed = parseElideOutputLine(line);
+        headline = parsed?.kind === "diagnostic" ? { severity: parsed.severity, message: parsed.message } : undefined;
+      },
+      end: (outcome) => observer?.end(outcome),
+    };
+  };
+  let code: number | undefined;
+  try {
+    await new ElideCli(dist, cwd).run(argv, { signal: options.signal, onCommand, ...(env ? { env } : {}) });
+    code = 0;
+  } catch (error) {
+    if (options.signal.aborted) return undefined;
+    if (!(error instanceof ElideCommandFailedError)) throw error;
+    code = error.exitCode ?? 1;
+  }
+  options.diagnostics.clear();
+  for (const [file, diagnostics] of found) options.diagnostics.set(vscode.Uri.file(file), diagnostics);
+  return code;
 }
 
 interface TaskProcess {
@@ -128,69 +154,6 @@ function taskProcess(project: ElideProject, def: ElideTaskDefinition): TaskProce
     argv: elideInvocationArgs(def.command, invocation),
     ...(invocation.env ? { env: { ...invocation.env } } : {}),
   };
-}
-
-/** A task terminal running `elide` with piped output, so the extension sees every line the terminal shows. */
-class ObservedElideTerminal implements vscode.Pseudoterminal {
-  private readonly written = new vscode.EventEmitter<string>();
-  readonly onDidWrite = this.written.event;
-  private readonly closed = new vscode.EventEmitter<number>();
-  readonly onDidClose = this.closed.event;
-  private readonly controller = new AbortController();
-
-  constructor(
-    private readonly elide: TaskProcess,
-    private readonly onCommand: NonNullable<RunOptions["onCommand"]>,
-    private readonly settle: (exitCode: number | undefined) => void,
-  ) {}
-
-  open(): void {
-    const { dist, cwd, argv, env } = this.elide;
-    this.written.fire(`> elide ${argv.join(" ")}\r\n`);
-    void Promise.resolve()
-      .then(() => new ElideCli(dist, cwd).run(argv, {
-        signal: this.controller.signal,
-        onCommand: this.onCommand,
-        onLine: (line) => this.written.fire(`${withAbsoluteLocation(line, cwd)}\r\n`),
-        // The terminal is read by a person and the `$elide` matcher, not as records; with piped output, `plain` is
-        // the mode that still says which task started.
-        env: { ELIDE_PROGRESS: "plain", ...env },
-      }))
-      .then(
-        () => 0,
-        (error: unknown) => {
-          if (error instanceof ElideCommandFailedError) return error.exitCode ?? 1;
-          if (!this.controller.signal.aborted) this.written.fire(`${error instanceof Error ? error.message : String(error)}\r\n`);
-          return 1;
-        },
-      )
-      .then((code) => {
-        this.settle(this.controller.signal.aborted ? undefined : code);
-        // The terminal parses what was written asynchronously, and the task's problem matcher stops reading when the
-        // terminal closes: closing right after the last line loses the compiler errors that precede the verdict.
-        setTimeout(() => this.closed.fire(code), CLOSE_DELAY_MS);
-      });
-  }
-
-  close(): void {
-    this.controller.abort(new Error("Elide task terminated"));
-  }
-}
-
-const IN_FILE = /^In file:\s+(?:file:\/\/)?(\S+?)((?::\d+){0,2})\s*$/;
-/** How long the terminal stays open after the process exits, for the problem matcher to read the last lines. */
-const CLOSE_DELAY_MS = 500;
-
-/**
- * `line`, with the relative path of an `In file:` location resolved against the task's directory. The `$elide`
- * problem matcher finds relative paths by searching the workspace folder, which VS Code does not do for a task it
- * does not run as a process itself; an absolute path needs no search.
- */
-function withAbsoluteLocation(line: string, cwd: string): string {
-  const match = IN_FILE.exec(line);
-  if (!match || path.isAbsolute(match[1]!)) return line;
-  const file = path.resolve(cwd, match[1]!);
-  return existsSync(file) ? `In file: ${file}${match[2]}` : line;
 }
 
 /**

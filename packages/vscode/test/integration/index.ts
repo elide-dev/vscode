@@ -10,11 +10,15 @@ import path from "node:path";
 import { compareElideVersions, parseElideVersion, resolveElideDistribution } from "@elide/ide-core";
 import * as vscode from "vscode";
 import type { ElideExtensionApi as ElideApi } from "../../src/extension.js";
+import { runObservedElide } from "../../src/tasks.js";
 import { errorsOf, hoverAt, log, waitFor } from "./helpers.js";
 import { runAndroidScenario } from "./android.js";
 import { runComposeScenario } from "./compose.js";
+import { runComposeAgentScenario } from "./composeAgent.js";
+import { runComposeKomodoScenario } from "./composeKomodo.js";
 import { runKomodoScenario } from "./komodo.js";
 import { runKomodoDebugScenario } from "./komodoDebug.js";
+import { runKomodoAndroidDebugScenario } from "./komodoAndroidDebug.js";
 import { runWorkspaceScenario } from "./workspace.js";
 
 const sample = process.env.ELIDE_TEST_SAMPLE!;
@@ -22,9 +26,12 @@ const sample = process.env.ELIDE_TEST_SAMPLE!;
 export async function run(): Promise<void> {
   if (process.env.ELIDE_TEST_SCENARIO === "workspace") return await runWorkspaceScenario();
   if (process.env.ELIDE_TEST_SCENARIO === "compose") return await runComposeScenario();
+  if (process.env.ELIDE_TEST_SCENARIO === "compose-komodo") return await runComposeKomodoScenario();
+  if (process.env.ELIDE_TEST_SCENARIO === "compose-agent") return await runComposeAgentScenario();
   if (process.env.ELIDE_TEST_SCENARIO === "android") return await runAndroidScenario();
   if (process.env.ELIDE_TEST_SCENARIO === "komodo") return await runKomodoScenario();
   if (process.env.ELIDE_TEST_SCENARIO === "komodo-debug") return await runKomodoDebugScenario();
+  if (process.env.ELIDE_TEST_SCENARIO === "komodo-android-debug") return await runKomodoAndroidDebugScenario();
   const folder = vscode.workspace.workspaceFolders?.[0];
   assert.ok(folder, "sample workspace folder open");
   assert.equal(folder.uri.fsPath, sample);
@@ -224,23 +231,35 @@ export async function run(): Promise<void> {
   // 4d. Problem matcher: a kotlinc error from the `build` task becomes a diagnostic on the offending file and is
   //     cleared by the next clean build. The Kotlin LSP reports the same error itself, so only markers owned by the
   //     task matcher (`source: "elide"`) count here.
-  const brokenKt = path.join(sample, "src", "main", "sample", "Broken.kt");
+  const brokenKt = path.join(sample, "src", "main", "sample", "Broken Source.kt");
   const brokenUri = vscode.Uri.file(brokenKt);
   writeFileSync(brokenKt, "package sample\n\nfun broken() = undefinedSymbol\n");
-  assert.notEqual(await runBuild(), 0, "build fails while Broken.kt is present");
+  assert.notEqual(await runBuild(), 0, "build fails while Broken Source.kt is present");
   const brokenDiag = await waitFor(
-    "elide diagnostic on Broken.kt",
+    "elide diagnostic on Broken Source.kt",
     () =>
       vscode.languages
         .getDiagnostics(brokenUri)
         .find((d) => d.source === "elide" && d.severity === vscode.DiagnosticSeverity.Error && d.message.includes("undefinedSymbol")),
     120_000,
   );
-  // `[208ms] error: kotlinc: Unresolved reference 'undefinedSymbol'.` / `In file: src/main/sample/Broken.kt:3:16`
+  // `[208ms] error: kotlinc: Unresolved reference 'undefinedSymbol'.` / `In file: src/main/sample/Broken Source.kt:3:16`
   assert.equal(brokenDiag.range.start.line, 2, "diagnostic on the `fun broken()` line");
   log("problem matcher diagnostic:", JSON.stringify(brokenDiag.message), `${brokenDiag.range.start.line}:${brokenDiag.range.start.character}`);
+  // Preview builds run as observed processes, not tasks (which would save dirty editors): their diagnostics come
+  // from Elide's own records, at the workspace's spelling of a spaced path, and the next such build replaces them.
+  writeFileSync(brokenKt, "package sample\n\nfun broken() = anotherUndefinedSymbol\n");
+  const observedDiagnostics = vscode.languages.createDiagnosticCollection("elide-integration-observed");
+  const observedBuild = () => runObservedElide({ root: sample, manifestPath: path.join(sample, "elide.pkl"), folder }, "build", {},
+    { signal: new AbortController().signal, onCommand: () => undefined, diagnostics: observedDiagnostics });
+  assert.notEqual(await observedBuild(), 0, "observed build reports the compiler failure");
+  const observedDiag = observedDiagnostics.get(brokenUri)?.find((d) => d.source === "elide" && d.message.includes("anotherUndefinedSymbol"));
+  assert.equal(observedDiag?.range.start.line, 2, "observed build diagnostic on the spaced path's `fun broken()` line");
   rmSync(brokenKt);
-  assert.equal(await runBuild(), 0, "build passes once Broken.kt is gone");
+  assert.equal(await observedBuild(), 0, "observed build passes once Broken Source.kt is gone");
+  assert.equal(observedDiagnostics.get(brokenUri)?.length ?? 0, 0, "the next observed build replaces its diagnostics");
+  observedDiagnostics.dispose();
+  assert.equal(await runBuild(), 0, "build passes once Broken Source.kt is gone");
   await waitFor("elide diagnostics cleared", () => vscode.languages.getDiagnostics(brokenUri).every((d) => d.source !== "elide") || undefined, 60_000);
   log("problem matcher ok");
 

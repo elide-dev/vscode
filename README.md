@@ -6,6 +6,9 @@
 VS Code integration for the [Elide](https://elide.dev) build tool. The extension turns an `elide.pkl` project into a
 model the [Kotlin LSP by JetBrains](https://marketplace.visualstudio.com/items?itemName=JetBrains.kotlin-server) can
 import — resolved Maven dependencies, source roots, JDK — and adds Elide build/run/test tasks and JDWP debugging.
+Android projects get deployment, Logcat, database and Compose preview tooling. Komodo, the native Kotlin language
+server, debugger and live Compose preview engine shipped with Elide, is available as an experimental opt-in
+([details](packages/vscode/README.md#komodo-language-server-experimental)).
 
 ## Install
 
@@ -116,20 +119,23 @@ anything you set by hand stays.
 | `Elide: Sync Project(s)` | Re-run the sync. |
 | `Elide: Show Menu` | Quick pick with the Elide actions (what the status bar item opens). |
 | `Elide: Run Elide Command…` | Pick `build`, `test`, `install`, or `run <entrypoint>` and run it as a task. |
-| `Elide: Open generated Kotlin LSP workspace` | Open `workspace.json`. |
+| `Elide: Open Generated Kotlin LSP Workspace` | Open `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel (CLI output, sync log). |
 | `Elide: Show Activity` | Reveal the **Activity** view: each sync and preview build, its steps and their durations. |
 | `Elide: Open Activity Log` | Open the latest operation's output, with timestamps, in an editor. |
 | `Elide: Select Android Deployment Target…` | Choose and remember the project, APK and device shared by Run and Debug. |
 | `Elide: Check Android Environment` | Inspect local tools, SDK and devices, even before sync succeeds; select a finding for remediation. |
 | `Elide: Refresh Android Devices` | Refresh the sidebar device list without resyncing the project. |
+| `Elide: Pair Android Device over Wi-Fi…` | Pair with a QR or six-digit code, or connect an already-paired device by address. |
 | `Elide: Run Android App…` | Build an APK and install and launch it on a device or the emulator. |
 | `Elide: Debug Android App…` | Build an APK, install and launch it waiting for a debugger, and attach over JDWP. |
-| `Elide: Start Android Emulator`, `Elide: Stop Android Emulators`, `Elide: Create Android Virtual Device` | Drive the project's virtual device. |
+| `Elide: Run Android Instrumented Tests…` | Install a test APK on the deployment target and run its instrumented tests in the Test Explorer. |
+| `Elide: Start Android Emulator`, `Elide: Stop Android Emulator`, `Elide: Create Android Virtual Device` | Drive the project's virtual device. |
 | `Elide: Install Android SDK Components` | `elide build android-sdk --install-sdk`. |
 | `Elide: Create Android Signing Keystore` | `elide build android-keystore-<artifact>`. |
-| `Elide: Open Compose Preview` | Render Compose previews locally with Android layoutlib; refresh live while editing. No device or emulator. |
+| `Elide: Open Compose Preview` | Render Compose previews locally, without a device or emulator: layoutlib snapshots by default, live cards with the experimental Komodo engine; refresh live while editing. |
 | `Elide: Show Android Logcat` | Stream device logs with application, priority and text filters. |
+| `Elide: Explore Android Databases` | Browse and query a debuggable app's Room / SQLite databases on a connected device. |
 
 ## Tasks
 
@@ -166,7 +172,7 @@ Every task reports through the `$elide` problem matcher, so compiler errors and 
 the offending line. It matches the two-line kotlinc shape Elide prints — `[212ms] error: kotlinc: <message>` followed
 by `In file: <path>[:<line>[:<col>]]` — and resolves the path by searching the workspace folder (skipping `.dev`,
 `.git` and `node_modules`), so relative paths reported from a project root in a subdirectory still resolve. Paths
-containing spaces are supported in regular task terminals. `javac` diagnostics
+containing spaces are supported in both regular task terminals and Compose preview builds. `javac` diagnostics
 interleave `symbol:`/`location:` lines between the two and are shown in the terminal only.
 
 ## Run and debug code lenses
@@ -322,17 +328,20 @@ once before building the model; without it the language server would be handed j
 
 The SDK is located the way a build locates it: `android.sdk` in the manifest, then `$ANDROID_HOME`, then
 `$ANDROID_SDK_ROOT`, then the platform's own install location (`~/Library/Android/sdk`, `~/Android/Sdk`,
-`%LOCALAPPDATA%\Android\Sdk`). `elide.android.sdk` overrides it for extension-side device listing and logcat.
+`%LOCALAPPDATA%\Android\Sdk`). `elide.android.sdk` overrides it for extension-side device tooling, including wireless pairing and logcat.
 A build reports a missing SDK itself; `Elide: Install Android SDK Components`
 runs `elide build android-sdk --install-sdk`, which is how the component licenses are accepted.
 
-The sidebar's **Android** section lists the artifacts, the devices `adb devices` reports (serial, and whether it is
-an emulator or in a state that cannot take an install), and the project-wide device targets:
+Each project's sidebar **Android** section lists its artifacts. The devices `adb devices` reports (serial, and
+whether it is an emulator or in a state that cannot take an install) and the device tools — deployment target,
+pairing, environment check, logcat, databases, and the emulator and AVD of each application's `android.device` —
+appear once per workspace, in the top-level project's **Android devices & tools** section, however many Android
+members it has. Library-only members get no emulator rows. The artifacts' device targets:
 
 | Action | Invocation |
 | --- | --- |
 | Run an APK | `elide build android-run-<artifact>` with the selected `--device=<serial>`, or `android-run-emulator-<artifact>` for the explicitly selected project AVD. |
-| Debug an APK | `elide build android-debug-<artifact>`, which installs it, launches it waiting for a debugger and forwards its JDWP socket; the extension attaches to the port the target announces. The APK must carry `android:debuggable="true"` — nothing injects it, and the target reports an APK that does not. |
+| Debug an APK | `elide build android-debug-<artifact>`, which installs it, launches it waiting for a debugger and forwards its JDWP socket; the extension attaches to the port the target announces. The APK must be debuggable (`android:debuggable="true"`): newer Elide releases add it to a `release = false` build, and Debug is offered only for an APK Elide lists `android-debug-<artifact>` for. |
 | Build an APK, AAB or AAR | `elide build <artifact>` → `.dev/artifacts/<name>.apk` / `.aab` / `.aar` |
 | Build a dynamic-feature module | `elide build android-module-<feature>` → `.dev/android/<feature>/<feature>.zip`; build its owning AAB to publish the application. |
 | Open the R8 mapping | A `minify = true` artifact gets a mapping row beside it, which opens `.dev/artifacts/<name>-mapping.txt` — publishing it with `elide build android-mapping-<artifact>` when it is not there, since building the artifact alone does not — the only way to read a stack trace from a shrunk build. |
@@ -354,9 +363,11 @@ owning the active file takes precedence; focusing a library does not make that l
 Run and Debug save dirty file-backed documents first and stop if saving fails. Choosing the project emulator
 uses Elide's existing emulator targets. A selected emulator that has stopped is booted before Run or Debug,
 through `android-emulator` for the project's AVD or the SDK emulator for any other, and is found again by AVD
-identity; ambiguous instances are refused. `elide-android` launch configurations also validate their APK/device
-and accept `flags`, `options` and `env`, layered over workspace defaults. The selected device takes precedence
-over build options.
+identity; ambiguous instances are refused, and a serial reused by another AVD cannot redirect a remembered
+deployment. Cancelling startup prevents deployment even if an adb readiness reply arrives afterward.
+Late picker, device-discovery and startup replies cannot replace a newer deployment selection.
+`elide-android` launch configurations also validate their APK/device and accept `flags`, `options` and `env`,
+layered over workspace defaults. The selected device takes precedence over build options.
 
 **Check Android Environment** is available from the command palette, Elide menu and project context menu,
 including when sync has failed. It checks Elide, a usable JDK, SDK/platform-tools, devices and Kotlin extension
@@ -369,6 +380,40 @@ Use the offered **Open canonical folder in a new window** action for source debu
 
 The device tree refreshes after Elide tasks and through **Refresh Android Devices**; no background adb polling.
 
+Android commands, menu entries and context-menu actions appear only when a synced project declares an `android`
+block (the `elide.hasAndroidProjects` context key); **Check Android Environment** also appears while a project is not
+synced yet. Invoked anyway, they warn that no synced project declares an `android` block.
+
+### Wireless Android devices
+
+Open **Elide: Pair Android Device over Wi-Fi…** from the Command Palette or Elide menu, or **Pair device over
+Wi-Fi** in the sidebar's **Android devices & tools** section. Requires Android 11+, current SDK Platform-Tools, and the device
+and extension host on the same reachable network; no USB connection or Android Studio installation is needed.
+
+1. Enable **Developer options → Wireless debugging** on the device.
+2. Choose **Generate QR code** in the panel and **Pair device with QR code** on the device. Scan using the
+   Wireless debugging scanner. Alternatively, choose **Six-digit code**, open **Pair device with pairing code**
+   on the device, refresh discovery, and select its address (or enter it manually) and six-digit code.
+3. ADB normally connects automatically after pairing. If the device is missing, use the panel's **Connect an
+   already-paired device** section with the **IP address & port** from the main Wireless debugging screen.
+   This is a different port from the pairing dialog. Refresh Android Devices if auto-connection arrives later.
+4. Select the connected device with **Select Android Deployment Target…** for Run and Debug. Wireless devices
+   also appear in the existing Logcat and database device pickers; pairing does not replace a pinned target.
+
+Discovery uses mDNS; QR pairing waits for its exact generated service for two minutes. On networks that block
+mDNS, use manual pairing and connection addresses instead. Check VPNs, firewalls and guest-network isolation
+if connections fail. In Remote SSH or containers, the SDK and network are those of the extension host, not the
+local VS Code window. The extension does not enable legacy unencrypted `adb tcpip` debugging.
+
+Failures quote what adb reported. **Connect** first checks, for up to 5 seconds, that the address accepts a
+connection, so an unreachable or refused address fails promptly with the likely cause instead of waiting for adb.
+The pairing port is not probed that way, since a stray connection could count as a failed pairing attempt.
+
+Pairing codes are not saved or logged, are passed to ADB through stdin, and are masked wherever adb echoes them in
+an error. Closing the panel or cancelling stops its work and discards the QR code, but cannot undo pairing already
+accepted by the device. To revoke trust, select this workstation under the device's **Paired devices** and choose
+**Forget**.
+
 ### Compose component preview
 
 **Elide: Open Compose Preview** renders locally using Google's standalone Compose renderer and Android layoutlib.
@@ -376,24 +421,53 @@ It requires no device, emulator, Android Studio installation, signing keystore, 
 builds JVM classes and linked Android resources, not DEX or an installable application.
 
 Enable `kotlin.features.compose`, include Compose `ui-tooling`, sync, and open a Kotlin file containing
-`@Preview` / `@Composable` functions. The gallery renders the file's compiled previews, including annotation
-configuration, member functions, multi-preview annotations and `@PreviewParameter` providers. Kotlin/Java edits,
-including unsaved changes, use persistent incremental compilers and renderers. Resource/configuration saves
-rebuild the resource context, chosen automatically as the application packaging the file or its library.
+`@Preview` / `@Composable` functions; the editor-title button appears on such files of an Android application. The
+gallery renders the file's compiled previews, including annotation configuration, member functions, multi-preview
+annotations and `@PreviewParameter` providers. Kotlin/Java edits, including unsaved changes, use persistent
+incremental compilers and renderers. Resource/configuration saves rebuild the resource context, chosen automatically
+as the application packaging the file or its library; a rebuild that changes only resources or R classes keeps the
+warm compiler.
+
+Kapt processors such as Room can live in the preview-bearing module. The live worker uses that module's
+recorded Kotlin toolchain, compiles against private generated inputs, then verifies kapt stubs in the background.
+Body-only changes can confirm without reprocessing. Declaration changes rerun processors, but retain warm
+compiler state and the displayed images when generated sources, classes and resources are unchanged—for
+example, when adding a composable beside Room entities. Changed generated output is recompiled and repainted.
+Processor errors remain visible instead of confirming stale images, and only confirmed galleries are cached. This requires
+Elide's `kotlinc.toolchain.json`, `kapt.args`, and `kapt.generated.json` records; rebuild after upgrading Elide.
 
 The themed gallery retains its last good images through compilation errors and swaps decoded updates without
-blanking the canvas. Enable **Inspect** for measured layout outlines; select a component and open its source,
-including workspace-library call sites. Source navigation pauses while the displayed preview is out of date.
+blanking the canvas. Enable **Inspect** for measured layout outlines, selection and dimensions, and source navigation
+to each component's call site, including workspace-library call sites; navigation pauses while its preview is out of
+date.
+A failed preview build must succeed on a later refresh before the gallery is marked current; a Kotlin edit alone
+cannot bypass failed resource preparation. Closing a preview stops its build, including pending preparation.
+
+The experimental `komodo` engine (`elide.android.composePreview.engine` = `komodo`, with `elide.kotlinLsp.server` =
+`komodo`) renders every card live inside the workspace's Komodo language server, from its own analysis of unsaved
+Kotlin edits: clicks run handlers, compile errors land in Problems, and **Inspect** selects composable calls by their
+measured bounds and opens their call sites, also after live edits. Click or Tab to a live card to send keys only to that card: text
+input, modifiers, Backspace/Delete, arrows, Enter and Tab between Compose controls. Press **F6** or **Shift+F6** to
+leave; ordinary Escape still reaches Compose. Leaving the canvas, switching cards or enabling **Inspect** releases
+held keys. IME composition and clipboard paste are not supported. There is no fallback to `layoutlib`.
+
+Native previews are effectively disabled while Komodo is missing or incompatible, without changing your engine
+preference or installing anything automatically. Opening, prewarming and agent rendering check compatibility before
+building or preparing preview resources. Losing availability closes native panels, cancels in-flight work and retires
+agent sessions and warm native backends; layoutlib and source-only agent tools remain available. Install Komodo
+explicitly with **Elide: Install Komodo**, correct its settings or sync to recheck compatibility, then reopen the preview
+or start a new agent render. A rejected native session protocol stays disabled until that recheck, without build loops.
 
 The first preview downloads a pinned, SHA-256-verified renderer/runtime from Google Maven into extension storage.
 Subsequent previews reuse it offline. A matching-architecture JDK 17+ is required; supported extension hosts are
-macOS arm64/x64, Linux x64 and Windows x64. These are rendered snapshots, not interactive device mirroring or
-in-process Live Edit. See [the extension guide](packages/vscode/README.md#compose-component-preview) for setup
+macOS arm64/x64, Linux x64 and Windows x64. The default `layoutlib` engine produces snapshots; neither engine is
+interactive device mirroring or in-process Live Edit. See [the extension guide](packages/vscode/README.md#compose-component-preview) for setup
 and runtime limitations.
 
 ### Dagger and Hilt
 
-The experimental Elide `feat/android` branch supports kapt and Hilt Android entry-point transformation.
+Elide builds with Android support (currently the internal release's distribution; not yet in a public Elide
+release) support kapt and Hilt Android entry-point transformation.
 Declare processors in `dependencies.maven.processors`, use a managed/external Kotlin toolchain with kapt,
 and enable `android.hilt` for Hilt. Sync discovers the project's actual compile targets, generates processor
 sources and imports the Java/kapt output roots without importing kapt stubs. Workspace AARs retain generated
@@ -412,7 +486,7 @@ Features are buildable modules, not independently runnable APKs.
 Delivery is `on-demand` by default or `install-time`. Install-time features remain removable splits, preserving
 their identity when another feature depends on them. Elide packages base/shared classes once and gives each
 feature its own resources, assets and dex. Install an AAB through bundletool or Play; the APK Run/Debug commands
-do not perform Play delivery. These capabilities require the experimental `feat/android` Elide branch.
+do not perform Play delivery. These capabilities require an Elide build with Android support.
 
 ### Logcat
 
@@ -426,14 +500,58 @@ Records are aligned into time, PID-TID, tag, priority and message columns, with 
 messages indented under one header and priorities, tags, exceptions and application frames color-coded by the theme.
 Each project owns an output channel and adb stream. **Filter**, **Stop**, and **Restart Android Logcat** control
 the stream; **Clear Android Logcat Output** clears only the editor, not the device's shared log buffers.
-Restart and filter changes replay available device logs. Package filtering uses the installed UID, surviving
-process restarts and including secondary processes and any apps sharing that UID. It requires `logcat --uid`.
-Streams stop when their project is removed or the extension closes.
+**Filter Android Logcat** is one input holding the current filter, e.g. `package:com.example.app level:warn Exception`:
+`package:` names the application (leave it out for all), `level:` the minimum priority (`verbose`, `debug`, `info`,
+`warn`, `error`, `fatal` or `V`…`F`; Info when absent), and every other word is case-insensitive literal text;
+`"quote"` text with spaces or colons. A new, restarted or refiltered stream does not replay the device's whole
+buffer: filtered to a running application, it starts at that application's current process start; otherwise it
+starts now. Package filtering uses the installed UID, surviving process restarts and including secondary processes
+and any apps sharing that UID. On Android 12+ it uses `logcat --uid`; on Android 7–11 it follows only the app's running main process (`--pid`), so restart logcat after the app restarts.
+Streams and pending device/application discovery stop when their project is removed or the extension closes;
+cancelled discovery cannot open a late application picker.
+
+The startup header reports the requested device-clock timestamp, not reader readiness. Android 16 emulator
+qualification found records emitted immediately after starting a timestamp-filtered stream missing from live
+`adb logcat` output but present in a later dump; direct adb reproduces this without the extension. For startup
+diagnosis, retain `adb -s <serial> logcat -d -v threadtime` output as well. The extension does not treat a fixed delay as proof of readiness.
 
 Ctrl/Cmd-click a Kotlin or Java application stack frame to open its source line. Navigation indexes the synced
 source roots across workspace modules and uses both package and source filename, including nested classes and
 Kotlin file facades. Native/unknown frames, out-of-range lines and ambiguous same-package filenames remain
 unlinked. Obfuscated release traces still require the matching R8 mapping; this does not perform retracing.
+
+### Room / SQLite database explorer (experimental)
+
+Run **Elide: Explore Android Databases**, or choose **Explore databases** in the sidebar's Android devices & tools
+section or a device's context menu. Select an installed application on the connected device. Requires Android 8.0 /
+API 26 or newer, a debuggable app that permits `adb run-as`, and a trusted, synced Android project. The application
+picker asks `run-as` about every installed application first: debuggable ones are listed as openable, and the rest
+appear under **Cannot be opened** with the reason, e.g. a release build that is not debuggable.
+
+- Browse databases, tables, views, indexes and trigger definitions; inspect rows in 100-row pages.
+- Run one read-only SQL query, with exact 64-bit integers, NULLs and Base64 BLOBs. Use `ORDER BY` for predictable paging.
+- Refresh manually or every 2 / 5 seconds while the panel is visible. Refresh re-runs the last successful read,
+  not an edited SQL draft. A failed or cancelled query clears that read; Refresh then updates only the catalog
+  until another query succeeds, rather than showing older rows under the failed or cancelled SQL.
+- **Execute write…** confirms the app, database, device and SQL before committing a single statement with foreign
+  keys enabled. Reads never implicitly become writes. Cancellation during a write leaves its outcome unknown;
+  refresh before retrying.
+
+A bundled Android helper opens the app's actual SQLite files, including committed WAL data; no database copy,
+root access, device `sqlite3` executable or app dependency is required. One helper process runs per open panel and
+serves all of its requests over its pipes, so a query costs tens of milliseconds rather than a VM start; a helper
+that fails or is cancelled is stopped, on the device too, and the next request starts a fresh one. It is scoped to
+the foreground Android user recorded by the package picker, and refuses access if that user changes—even before
+the first query. Select the application again under the new profile. Closing the panel stops its requests and
+helper and removes its temporary DEX on a best-effort basis.
+
+This is not Android Studio's in-process inspector: external writes **do not notify Room observers**, and pages do
+not share a retained snapshot. It inspects on-disk SQLite files under the app's `databases/` directory, not
+in-memory, encrypted, device-protected or custom-location databases. `PRAGMA` statements, `ATTACH`,
+transaction-control/maintenance commands, multiple statements and compound `CREATE TRIGGER` bodies are not
+supported; read what a pragma reports through its table-valued function, e.g.
+`SELECT * FROM pragma_table_info('items')`. Results are bounded to 4 MiB, 256 columns and 256 KiB per cell; oversized
+values fail explicitly rather than being silently truncated. Select smaller values or fewer columns when needed.
 
 
 ## Settings
@@ -460,9 +578,7 @@ unlinked. Obfuscated release traces still require the matching R8 mapping; this 
 | `elide.android.emulatorWindow` | `true` | Boot the emulator with a window; off passes `--no-window`. |
 | `elide.android.composePreview.prewarm` | `true` | Start the Compose preview backend when a file with `@Preview` functions is focused. |
 | `elide.android.composePreview.keepAliveMinutes` | `10` | Minutes an unused Compose preview backend stays warm; `0` stops it with its panel. |
-| `elide.android.composePreview.engine` | `layoutlib` | `komodo` (opt-in, experimental) adds a `komodo-preview` daemon: cards it hosts are live, the rest keep their layoutlib snapshot. |
-| `elide.android.composePreview.komodo.path` | `""` | The `komodo-preview` daemon; empty resolves it beside the Elide binary, then on `PATH`. |
-| `elide.android.composePreview.komodo.fallback` | `true` | Cards Komodo cannot render keep their layoutlib snapshot; off shows the reason on the card. |
+| `elide.android.composePreview.engine` | `"layoutlib"` | `komodo` (experimental): live cards in the workspace's Komodo language server; requires `elide.kotlinLsp.server` = `komodo`. |
 
 ## Repository layout
 

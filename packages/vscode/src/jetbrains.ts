@@ -18,6 +18,7 @@ export const JETBRAINS_EXTENSION_ID = "JetBrains.kotlin-server";
 const RELOAD_COMMAND = "jetbrains.kotlin.reloadWorkspace";
 const RESTART_COMMAND = "jetbrains.kotlin.restartLsp";
 const DEBUGGER_TYPES = ["intellij_jvm", "intellij_debugger"];
+const ASYNC_JDI_PROPERTY = "-Ddebugger.async.jdi";
 const PLUGIN_PATH_PROPERTY = "-Dplugin.path";
 /** A wait shorter than this attaches without a progress notification flashing by. */
 const ANALYSIS_PROGRESS_DELAY_MS = 750;
@@ -29,6 +30,8 @@ const ANALYSIS_STAGES: Record<KotlinAnalysisStage, string> = {
 
 /** What this window adds to the Kotlin server's launch options. */
 export interface KotlinLspLaunchOptions {
+  /** The window holds an Android project: default to synchronous JDI metadata queries, unless set explicitly. */
+  androidDebugger: boolean;
   /** Elide's server plugin directory (`kotlinLspPlugin`), listed in `-Dplugin.path` while a Compose project is open. */
   plugin?: string;
 }
@@ -48,11 +51,14 @@ export class KotlinLspEnvironment {
   constructor(private readonly environment: NodeJS.ProcessEnv = process.env) {}
 
   /** Apply `options` over the inherited launcher options; `true` when they changed, which needs a new server. */
-  configure(options: KotlinLspLaunchOptions): boolean {
+  configure(options: KotlinLspLaunchOptions, args: readonly string[]): boolean {
     const current = this.environment.IJ_JAVA_OPTIONS;
     const ownsCurrent = this.applied !== undefined && current === this.applied;
     const inherited = ownsCurrent ? this.inherited : current;
+    const explicit = args.some((arg) => arg === ASYNC_JDI_PROPERTY || arg.startsWith(`${ASYNC_JDI_PROPERTY}=`))
+      || /(?:^|\s)['"]?-Ddebugger\.async\.jdi(?:=|['"]?(?:\s|$))/.test(inherited ?? "");
     const added = [
+      ...(options.androidDebugger && !explicit ? [`${ASYNC_JDI_PROPERTY}=false`] : []),
       ...(options.plugin ? [launcherQuote(`${PLUGIN_PATH_PROPERTY}=${options.plugin}`)] : []),
     ];
     const next = added.length > 0 ? [...(inherited ? [inherited] : []), ...added].join(" ") : inherited;
@@ -65,7 +71,7 @@ export class KotlinLspEnvironment {
   }
 
   dispose(): void {
-    this.configure({});
+    this.configure({ androidDebugger: false }, []);
   }
 }
 
@@ -270,7 +276,7 @@ export async function reloadKotlinLsp(relaunch = false, waitForDebugger = false)
     const deadline = Date.now() + 30_000;
     while (true) {
       if (discovery.some(publishesPort) && (await vscode.commands.getCommands(true)).includes("start_debug_server")) break;
-      if (Date.now() >= deadline) throw new Error("Kotlin LSP did not finish restarting with the debugger options.");
+      if (Date.now() >= deadline) throw new Error("Kotlin LSP did not finish restarting with the Android debugger options.");
       const { promise, resolve } = Promise.withResolvers<void>();
       setTimeout(resolve, 100);
       await promise;

@@ -1,6 +1,14 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 const MAX_FRAME = 64 * 1024 * 1024;
+/** Elide's worker writes nothing until it answers, so a request has a deadline rather than an inactivity limit. */
+const REQUEST_DEADLINE_MS = 120_000;
+const MAX_REQUEST_DEADLINE_MS = 8 * REQUEST_DEADLINE_MS;
+/**
+ * Deadlines raised by timeouts, per worker binary, tool and directory. A timed-out compile loses its worker and its
+ * incremental state, so the next attempt repeats the same cold compile: it gets twice as long instead of failing again.
+ */
+const deadlines = new Map<string, number>();
 
 function varint(value: number): Buffer {
   const bytes: number[] = [];
@@ -82,15 +90,19 @@ export function decodeWorkResponse(bytes: Buffer): WorkResponse {
 /** One serial request stream per tool. stdout is exclusively length-delimited protobuf. */
 export class ComposeWorker {
   private readonly process: ChildProcessWithoutNullStreams;
+  private readonly key: string;
   private buffer: Buffer = Buffer.alloc(0);
   private stderr = "";
   private nextRequest = 1;
   private failure: Error | undefined;
+  /** Answered a request: it supports persistent workers, so a later exit is a crash, not an incompatible distribution. */
+  private answered = false;
   private pending: { id: number; resolve: (response: WorkResponse) => void; reject: (error: Error) => void; timer: NodeJS.Timeout } | undefined;
   private readonly abort = () => this.close(new Error("Compose compilation cancelled."));
 
   constructor(bin: string, private readonly tool: "kotlinc" | "javac", cwd: string, private readonly signal: AbortSignal) {
     signal.throwIfAborted();
+    this.key = `${bin}\0${tool}\0${cwd}`;
     this.process = spawn(bin, [tool, "--persistent_worker"], {
       cwd, stdio: "pipe", windowsHide: true, detached: process.platform !== "win32",
     });
@@ -99,8 +111,10 @@ export class ComposeWorker {
     this.process.stderr.on("data", (text: string) => { this.stderr = (this.stderr + text).slice(-64 * 1024); });
     this.process.on("error", (error) => this.close(new Error(`Cannot start Elide ${tool} worker: ${error.message}`, { cause: error })));
     this.process.stdin.on("error", (error) => this.close(new Error(`Cannot write to Elide ${tool} worker: ${error.message}`, { cause: error })));
-    this.process.on("exit", (code, reason) => this.close(new Error(
-      `Elide ${tool} worker exited (${reason ?? code}). The selected Elide distribution must support persistent workers.\n${this.stderr}`,
+    // `exit` can precede the final stdout response and stderr diagnostics; drain both first.
+    this.process.on("close", (code, reason) => this.close(new Error(this.answered
+      ? `Elide ${tool} worker exited (${reason ?? code}).\n${this.stderr}`
+      : `Elide ${tool} worker exited (${reason ?? code}). The selected Elide distribution must support persistent workers.\n${this.stderr}`,
     )));
     signal.addEventListener("abort", this.abort, { once: true });
     if (signal.aborted) this.abort();
@@ -112,7 +126,13 @@ export class ComposeWorker {
     const id = this.nextRequest++;
     const frame = encodeWorkRequest(args, id);
     return await new Promise<WorkResponse>((resolve, reject) => {
-      const timer = setTimeout(() => this.close(new Error(`Elide ${this.tool} worker timed out.\n${this.stderr}`)), 120_000);
+      const deadline = deadlines.get(this.key) ?? REQUEST_DEADLINE_MS;
+      const timer = setTimeout(() => {
+        const next = Math.min(2 * deadline, MAX_REQUEST_DEADLINE_MS);
+        deadlines.set(this.key, next);
+        const retry = next > deadline ? `; the next attempt allows ${next / 1000} s` : "";
+        this.close(new Error(`Elide ${this.tool} worker timed out after ${deadline / 1000} s${retry}.\n${this.stderr}`));
+      }, deadline);
       timer.unref();
       this.pending = { id, resolve, reject, timer };
       this.process.stdin.write(frame);
@@ -136,6 +156,7 @@ export class ComposeWorker {
         const pending = this.pending;
         if (!pending || response.requestId !== pending.id) throw new Error(`Unexpected Elide worker response ${response.requestId}.`);
         this.pending = undefined;
+        this.answered = true;
         clearTimeout(pending.timer);
         if (response.wasCancelled) pending.reject(new Error("Elide cancelled Compose compilation."));
         else pending.resolve(response);

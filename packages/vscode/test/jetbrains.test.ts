@@ -62,7 +62,7 @@ test("Kotlin launch settings survive lazy activation and in-flight companion sta
   expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: "" });
 });
 
-test("Kotlin server plugin options are window-local, preserve quoting, and restore inherited options", () => {
+test("Kotlin server launch defaults are window-local, preserve quoted options, and yield to explicit overrides", () => {
   const source = new URL("../src/jetbrains.ts", import.meta.url).pathname;
   const result = spawnSync(process.execPath, ["--eval", `
     import assert from "node:assert/strict";
@@ -71,18 +71,57 @@ test("Kotlin server plugin options are window-local, preserve quoting, and resto
     // Load only after the child process has installed its VS Code module boundary.
     const { KotlinLspEnvironment } = await import(${JSON.stringify(source)});
     const original = "-Xmx3g '-Dlabel=a b'";
+    const environment = { IJ_JAVA_OPTIONS: original };
+    const managed = new KotlinLspEnvironment(environment);
+    const userArgs = ["-Dplugin.path=/machine/local/compose", "-Xmx4g"];
+    assert.equal(managed.configure({ androidDebugger: false }, userArgs), false);
+    assert.equal(managed.configure({ androidDebugger: true }, userArgs), true);
+    assert.equal(environment.IJ_JAVA_OPTIONS, original + " -Ddebugger.async.jdi=false");
+    assert.deepEqual(userArgs, ["-Dplugin.path=/machine/local/compose", "-Xmx4g"]);
+    assert.equal(managed.configure({ androidDebugger: true }, userArgs), false, "another folder sync must not append the default twice");
+    assert.equal(managed.configure({ androidDebugger: true }, [...userArgs, "-Ddebugger.async.jdi=true"]), true);
+    assert.equal(environment.IJ_JAVA_OPTIONS, original, "explicit JVM settings override the managed default");
+    assert.equal(managed.configure({ androidDebugger: true }, [...userArgs, "-Ddebugger.async.jdi=false"]), false);
+    assert.equal(managed.configure({ androidDebugger: true }, userArgs), true);
+    assert.equal(managed.configure({ androidDebugger: false }, userArgs), true, "removing the last Android project restores inherited options");
+    assert.equal(environment.IJ_JAVA_OPTIONS, original);
+    managed.configure({ androidDebugger: true }, userArgs);
+    managed.dispose();
+    assert.equal(environment.IJ_JAVA_OPTIONS, original);
+
+    for (const option of ["-Ddebugger.async.jdi=true", "'-Ddebugger.async.jdi=false'", '"-Ddebugger.async.jdi=true"']) {
+      const explicit = { IJ_JAVA_OPTIONS: "-Xmx2g " + option };
+      const inherited = explicit.IJ_JAVA_OPTIONS;
+      const options = new KotlinLspEnvironment(explicit);
+      assert.equal(options.configure({ androidDebugger: true }, []), false);
+      options.dispose();
+      assert.equal(explicit.IJ_JAVA_OPTIONS, inherited);
+    }
+    const otherWindow = {};
+    const other = new KotlinLspEnvironment(otherWindow);
+    assert.equal(other.configure({ androidDebugger: false }, []), false);
+    other.configure({ androidDebugger: true }, []);
+    other.dispose();
+    assert.equal("IJ_JAVA_OPTIONS" in otherWindow, false);
+    managed.configure({ androidDebugger: true }, []);
+    environment.IJ_JAVA_OPTIONS = "-Ddebugger.async.jdi=true -Xmx5g";
+    managed.dispose();
+    assert.equal(environment.IJ_JAVA_OPTIONS, "-Ddebugger.async.jdi=true -Xmx5g", "never overwrite a later environment owner");
+
     // Elide's Compose plugin rides along in the same window-local options, quoted as the companion quotes its own.
     const plugin = "/Users/u/Library/Application Support/Code/User/globalStorage/elide.elide/kotlin-lsp-plugin/abc/elide";
     const compose = { IJ_JAVA_OPTIONS: original };
     const withPlugin = new KotlinLspEnvironment(compose);
-    assert.equal(withPlugin.configure({ plugin }), true);
+    assert.equal(withPlugin.configure({ androidDebugger: false, plugin }, []), true);
     assert.equal(compose.IJ_JAVA_OPTIONS, original + ' "-Dplugin.path=' + plugin + '"');
-    assert.equal(withPlugin.configure({ plugin }), false);
-    assert.equal(withPlugin.configure({}), true, "closing the last Compose project drops the plugin");
+    assert.equal(withPlugin.configure({ androidDebugger: true, plugin }, []), true);
+    assert.equal(compose.IJ_JAVA_OPTIONS, original + ' -Ddebugger.async.jdi=false "-Dplugin.path=' + plugin + '"');
+    assert.equal(withPlugin.configure({ androidDebugger: true, plugin }, []), false);
+    assert.equal(withPlugin.configure({ androidDebugger: false }, []), true, "closing the last Compose project drops the plugin");
     assert.equal(compose.IJ_JAVA_OPTIONS, original);
     const plain = {};
     const unquoted = new KotlinLspEnvironment(plain);
-    unquoted.configure({ plugin: "/opt/elide/plugin" });
+    unquoted.configure({ androidDebugger: false, plugin: "/opt/elide/plugin" }, []);
     assert.equal(plain.IJ_JAVA_OPTIONS, "-Dplugin.path=/opt/elide/plugin");
     unquoted.dispose();
     assert.equal("IJ_JAVA_OPTIONS" in plain, false);
@@ -90,7 +129,7 @@ test("Kotlin server plugin options are window-local, preserve quoting, and resto
   expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: "" });
 });
 
-test("attach readiness waits for fresh daemon discovery and initialized debugger commands", () => {
+test("Android attach readiness waits for fresh daemon discovery and initialized debugger commands", () => {
   const source = new URL("../src/jetbrains.ts", import.meta.url).pathname;
   const result = spawnSync(process.execPath, ["--eval", `
     import assert from "node:assert/strict";

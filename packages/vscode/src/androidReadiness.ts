@@ -1,15 +1,17 @@
 import { execFile } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
   adbExecutable, androidPlatformApiLevel, decodeManifest, isSupportedElideVersion, MIN_ELIDE_VERSION,
-  parseAdbDevices, parseElideVersion, resolveElideDistribution, resolveJdk,
+  looksLikeJdk, parseAdbDevices, parseElideVersion, resolveElideDistribution, resolveJdk,
   type ElideDistribution,
 } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { androidSdkFor, toAndroidTarget } from "./android.js";
+import { androidApks } from "./androidDeploymentState.js";
 import { readConfig } from "./config.js";
+import { symlinkedFolderTarget } from "./debug.js";
 import { JETBRAINS_EXTENSION_ID, jetBrainsExtension } from "./jetbrains.js";
 import type { ElideUi } from "./output.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
@@ -100,11 +102,10 @@ export async function inspectAndroidReadiness(
         : "No synced model. Local tools can still be checked; project SDK declarations, Java target, compile SDK, AVD and artifact kinds are unknown until sync.", [manifest, sync, output]);
     await check("workspacePath", "Workspace source path", [output], async () => {
       const opened = path.resolve(project.folder.uri.fsPath);
-      const canonical = realpathSync(opened);
-      const same = process.platform === "win32" ? opened.toLowerCase() === canonical.toLowerCase() : opened === canonical;
-      add("workspacePath", same ? "ok" : "warning", "Workspace source path", same ? canonical :
-        `${opened} resolves to ${canonical}. The JetBrains debugger can report "Source file not found" for breakpoints opened through a symlink. Open the canonical folder for source debugging.`,
-        same ? [] : [{ label: "Open canonical folder in a new window", command: "vscode.openFolder", arguments: [vscode.Uri.file(canonical), true] }]);
+      const real = symlinkedFolderTarget(project.folder);
+      add("workspacePath", real ? "warning" : "ok", "Workspace source path", real ?
+        `${opened} resolves to ${real}. The JetBrains debugger cannot bind breakpoints in files opened through a symlink. Open the canonical folder for source debugging.`
+        : opened, real ? [{ label: "Open canonical folder in a new window", command: "vscode.openFolder", arguments: [vscode.Uri.file(real), true] }] : []);
     }, "warning");
     let distribution: ElideDistribution | undefined;
     await check("elide", "Elide CLI", [settings("elide.home"), output], async () => {
@@ -130,7 +131,8 @@ export async function inspectAndroidReadiness(
       const java = path.join(jdk.home, "bin", process.platform === "win32" ? "java.exe" : "java");
       const version = await probe(java, ["-version"], true);
       add("jdk", "ok", "JDK for Kotlin analysis", `${jdk.home}\n${version}\n${project.model ? "Uses configured or last-synced JDK, then the existing resolver." : "Environment candidate only; manifest Java home/target not checked until sync."}`, [settings("elide.jdk.home"), sync]);
-      if (config.jdkHome && path.resolve(jdk.home) !== path.resolve(config.jdkHome)) {
+      // The resolver returns homes with symlinks resolved: a usable override comes back under its real path.
+      if (config.jdkHome && !looksLikeJdk(config.jdkHome, (file) => isPath(file))) {
         add("jdkOverride", "warning", "Configured JDK was not usable", `${config.jdkHome}\nThe existing resolver selected ${jdk.home} instead.`, [settings("elide.jdk.home")]);
       }
     });
@@ -181,10 +183,13 @@ export async function inspectAndroidReadiness(
       !kotlin ? `${JETBRAINS_EXTENSION_ID} is not installed. Install/enable it for Kotlin analysis.`
         : `${JETBRAINS_EXTENSION_ID}: installed, ${kotlin.isActive ? "active" : "not active; open a Kotlin or Java file to activate it"}.`,
       [{ label: "Show JetBrains Kotlin Extension", command: "extension.open", arguments: [JETBRAINS_EXTENSION_ID] }, sync]);
-    const apks = android?.targets.filter((artifact) => artifact.kind === "apk") ?? [];
-    add("artifacts", !project.model ? "unknown" : apks.length ? "ok" : "info", "Runnable Android artifacts",
+    const apks = androidApks(project);
+    const offered = (artifact: (typeof apks)[number]) => [artifact.device?.runnable ? "Run" : "", artifact.device?.debuggable ? "Debug" : "",
+      artifact.device?.instrumented ? "instrumented tests" : ""].filter(Boolean).join(", ");
+    add("artifacts", !project.model ? "unknown" : apks.some((artifact) => offered(artifact)) ? "ok" : apks.length ? "warning" : "info", "Runnable Android artifacts",
       !project.model ? "Unknown until sync; the doctor does not evaluate elide.pkl."
-        : apks.length ? apks.map((artifact) => `${artifact.name}: APK → ${artifact.output}`).join("\n") + "\nDeclarations only; APK build/install readiness is not checked."
+        : apks.length ? apks.map((artifact) => `${artifact.name}: APK → ${artifact.output} · ${offered(artifact) || "Elide lists no run, debug or test target for it; check its `signing`"}`).join("\n")
+          + "\nTargets as Elide lists them; APK build/install readiness is not checked."
           : android?.targets.length ? `No runnable APK. Declared artifacts: ${android.targets.map((artifact) => `${artifact.name} (${artifact.kind})`).join(", ")}. Libraries, bundles and features are not standalone run targets.`
             : "No Android APK is declared in the last synced model.", [manifest, sync]);
     report.cancelled = signal.aborted;

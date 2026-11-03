@@ -3,8 +3,8 @@
  * sync installs every dependency and the build compiles, dexes and packages the APK from scratch.
  *
  * Drives what a user does: the startup sync, watched live through the Activity view the way the status bar shows
- * it; **Build** on the APK's row of the Android section; **Run** on the attached device, or — when none is — on a
- * pinned emulator that has stopped, which Run boots by itself. The app is running when `adb` finds its process.
+ * it; **Create Android Signing Keystore**, then **Build** on the APK's row of the Android section; **Run** on the
+ * attached device, or on a stopped pinned emulator. The app is running when `adb` finds its process.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -14,6 +14,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   ANDROID_EMULATOR_TASK,
   androidArtifactFile,
+  androidKeystoreTask,
   androidRunTask,
   androidSdkRoot,
   listAndroidDevices,
@@ -35,7 +36,7 @@ interface Row {
 }
 
 /** Breadth-first through the Elide sidebar until `match` finds a row. */
-async function findRow(explorer: ElideApi["explorer"], match: (row: Row) => boolean): Promise<Row | undefined> {
+export async function findRow(explorer: ElideApi["explorer"], match: (row: Row) => boolean): Promise<Row | undefined> {
   const queue: (Row | undefined)[] = [undefined];
   for (let depth = 0; queue.length > 0 && depth < 200; depth++) {
     const parent = queue.shift();
@@ -48,7 +49,7 @@ async function findRow(explorer: ElideApi["explorer"], match: (row: Row) => bool
 }
 
 /** The exit code of the next `elide` task process whose arguments include `arg`. */
-function taskExit(arg: string): Promise<number | undefined> {
+export function taskExit(arg: string): Promise<number | undefined> {
   const { promise, resolve } = Promise.withResolvers<number | undefined>();
   const subscription = vscode.tasks.onDidEndTaskProcess((event) => {
     const args: unknown = event.execution.task.definition.args;
@@ -99,9 +100,16 @@ export async function runAndroidScenario(): Promise<void> {
   log(`skipped tasks kept: ${skipped.length}, e.g. ${skipped.slice(0, 3).map((node) => `${node.label} (${node.detail}, ${Math.round(node.durationMs)} ms)`).join(" | ")}`);
   assert.ok(skipped.length > 0 && skipped.every((node) => node.detail), "skipped tasks stay in the Activity view with the reason");
 
-  // 2. Build the APK from its row in the Android section.
+  // 2. A clean copy excludes .dev, including its configured debug signing key. Create it through the same
+  //    extension command a user invokes, rather than borrowing a key or build output from the source checkout.
   const row = await waitFor("APK row", () => findRow(api.explorer, (r) => r.kind === "androidTarget" && r.artifact === ARTIFACT), 60_000);
   assert.equal(row.root, member);
+  const keyCreated = taskExit(androidKeystoreTask(ARTIFACT));
+  await vscode.commands.executeCommand("elide.androidCreateKeystore", row);
+  assert.equal(await waitFor("debug signing keystore", () => keyCreated, 120_000), 0, "debug signing key created");
+  log("created the fixture's debug signing keystore");
+
+  // Build the APK from its row in the Android section.
   const apk = androidArtifactFile(member, ARTIFACT, "apk", `${ARTIFACT}.apk`);
   const built = taskExit(ARTIFACT);
   let started = performance.now();

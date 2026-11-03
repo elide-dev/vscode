@@ -33,6 +33,8 @@ describe("Android stack frame parsing", () => {
     expect(frame("at app.HelpersKt.work(Helpers.kt:1)").fileName).toBe("Helpers.kt");
     expect(frame("at Main.main(Main.java:1)").packageName).toBe("");
     expect(frame("at app.module@1.0/app.Main.main(Main.java:1)").packageName).toBe("app");
+    expect(frame("\tat app.ComposableSingletons$MainKt$lambda-1$1.invoke(Main.kt:12)").className).toBe("app.ComposableSingletons$MainKt$lambda-1$1");
+    expect(frame("\tat app.ComposableSingletons$MainKt$lambda$-1868395445$1.invoke(Main.kt:12)").packageName).toBe("app");
   });
 
   test("rejects unknown/native frames, paths, invalid lines and non-frame prose", () => {

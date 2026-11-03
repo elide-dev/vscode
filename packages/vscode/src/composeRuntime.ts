@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -113,6 +113,8 @@ export async function ensureComposeRuntime(
 ): Promise<ComposeRuntime> {
   signal.throwIfAborted();
   const { platform, key, root, destination, marker, required, isReady } = runtimeInstallation(cacheRoot);
+  // Never fails; also after another host completed the install an exited one abandoned.
+  void sweepAbandonedInstalls(root);
   if (await isReady()) {
     signal.throwIfAborted();
     return runtimeAt(destination);
@@ -161,6 +163,26 @@ export async function ensureComposeRuntime(
   } finally {
     await rm(staging, { recursive: true, force: true });
   }
+}
+
+/** Staging directories untouched this long belong to a host that exited mid-install (a window reload, a crash). */
+const ABANDONED_INSTALL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Remove such staging directories in `root`: their owner cannot, and each can hold a partial runtime of up to
+ * hundreds of MB. An install in progress keeps writing into its own, so it is never this old.
+ */
+export async function sweepAbandonedInstalls(root: string, now = Date.now()): Promise<void> {
+  let entries;
+  try { entries = await readdir(root, { withFileTypes: true }); }
+  catch { return; }
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.isDirectory() || !/\.install-[A-Za-z0-9]{6}$/.test(entry.name)) return;
+    const directory = path.join(root, entry.name);
+    const files = [directory, ...(await readdir(directory)).map((name) => path.join(directory, name))];
+    const changed = Math.max(...await Promise.all(files.map((file) => stat(file).then((stats) => stats.mtimeMs, () => Infinity))));
+    if (now - changed >= ABANDONED_INSTALL_MS) await rm(directory, { recursive: true, force: true });
+  }).map((sweep) => sweep.catch(() => {})));
 }
 
 /** `onBytes` hears how much has arrived, at most every quarter second, against the advertised size if any. */

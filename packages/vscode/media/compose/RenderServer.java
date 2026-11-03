@@ -55,7 +55,6 @@ class RenderServer {
     private DefaultModuleClassLoader dependencies;
     private DefaultModuleClassLoader generationLoader;
     private List<String> reloadableClassPath;
-    private Map<String, Integer> previousOwners = Map.of();
     private final Field sharedLoaders;
     private final Field renderServiceField;
     private final Field baseConfigurationField;
@@ -65,9 +64,14 @@ class RenderServer {
     private final ImageWriteParam pngParameters = pngWriter.getDefaultWriteParam();
 
     record Inputs(List<String> classPath, List<String> projectClassPath, String namespace, String resourceApkPath) {}
+    /**
+     * `affinity`: the shard that last rendered each preview, the same for every shard; JVMs join the pool later.
+     * `methods`: the preview functions to render (an agent's selection), null for every preview of the file.
+     */
     record Request(long id, List<String> classPath, List<String> projectClassPath, String namespace,
                    String resourceApkPath, String sourceFile, String packageName, String outputFolder,
-                   int shardIndex, int shardCount, Map<String, Double> weights) {}
+                   int shardIndex, int shardCount, Map<String, Double> weights, Map<String, Integer> affinity,
+                   List<String> methods) {}
 
     record LayoutSource(String fileName, int packageHash, int lineNumber, int offset, int length) {}
     record LayoutNode(String id, String name, int x, int y, int width, int height, LayoutSource source) {}
@@ -302,7 +306,7 @@ class RenderServer {
         }
     }
 
-    private List<Screenshot> renderPreview(ComposeScreenshot screenshot, String outputFolder) throws Exception {
+    private List<Screenshot> renderPreview(ComposeScreenshot screenshot, String outputFolder, Runnable progress) throws Exception {
         var source = renderer.getModule();
         var element = screenshot.toPreviewElement(source);
         var layouts = element.resolveXmlLayouts().iterator();
@@ -374,41 +378,46 @@ class RenderServer {
                     else module.dispose();
                 }
             }
+            progress.run();
         }
         return results;
     }
 
-    private JsonObject render(Request request) throws Exception {
+    /** `progress` runs after each image, so the host can tell a long shard from a hung JVM. */
+    private JsonObject render(Request request, Runnable progress) throws Exception {
         if (request.shardCount() < 1 || request.shardCount() > 6
                 || request.shardIndex() < 0 || request.shardIndex() >= request.shardCount())
             throw new IllegalArgumentException("Invalid renderer shard.");
-        var previews = DiscoverPreviews.discover(new DiscoverPreviews.Settings(request.classPath(),
+        var discovered = DiscoverPreviews.discover(new DiscoverPreviews.Settings(request.classPath(),
                 request.projectClassPath(), request.sourceFile(), request.packageName()));
+        var previews = request.methods() == null ? discovered
+                : discovered.stream().filter((preview) -> request.methods().contains(preview.methodFQN())).toList();
         var results = new ArrayList<Screenshot>();
-        // Small files need only one layoutlib. Balance larger galleries by the previous images'
-        // provider expansion counts and pixel area; adding a preview never changes gallery order.
-        int shards = previews.size() < 6 ? 1 : request.shardCount();
+        // The host sizes the pool to the gallery; never more shards than previews. Balance by the previous
+        // images' provider expansion counts and pixel area; adding a preview never changes gallery order.
+        int shards = Math.max(1, Math.min(request.shardCount(), previews.size()));
+        Map<String, Integer> affinity = request.affinity() == null ? Map.of() : request.affinity();
         var weighted = new ArrayList<>(previews);
         weighted.sort(Comparator.comparingDouble((DiscoverPreviews.Preview preview) ->
                 request.weights().getOrDefault(preview.previewId(), 1.0)).reversed());
         var owners = new HashMap<String, Integer>();
         var loads = new double[shards];
         for (var preview : weighted) {
-            int owner = previousOwners.getOrDefault(preview.previewId(), 0);
+            int owner = affinity.getOrDefault(preview.previewId(), 0);
             if (owner >= shards) owner = 0;
             // Equal loads retain affinity, including provider/device initialization caches.
             for (int index = 0; index < shards; index++) if (loads[index] < loads[owner]) owner = index;
             owners.put(preview.previewId(), owner);
             loads[owner] += request.weights().getOrDefault(preview.previewId(), 1.0);
         }
-        previousOwners = owners;
         if (!previews.isEmpty() && request.shardIndex() < shards) {
             try {
                 prepare(new Inputs(request.classPath(), request.projectClassPath(), request.namespace(), request.resourceApkPath()));
+                progress.run();
                 for (var preview : previews) {
                     if (owners.get(preview.previewId()) != request.shardIndex()) continue;
                     results.addAll(renderPreview(new ComposeScreenshot(preview.methodFQN(), preview.methodParams(),
-                            preview.previewParams(), preview.previewId(), null), request.outputFolder()));
+                            preview.previewParams(), preview.previewId(), null), request.outputFolder(), progress));
                 }
             } finally {
                 // alpha16 dispose() is currently a no-op; dropping the cache's strong reference is
@@ -446,7 +455,9 @@ class RenderServer {
         while ((line = readLine(input)) != null) {
             Request request = JSON.fromJson(line, Request.class);
             try {
-                String response = JSON.toJson(server.render(request));
+                // A progress line carries only the request's id and `"progress": true`; the response follows it.
+                String progress = "{\"id\":" + request.id() + ",\"progress\":true}";
+                String response = JSON.toJson(server.render(request, () -> protocol.println(progress)));
                 if (response.length() > MAX_LINE) throw new IOException("Compose renderer response exceeds protocol limit.");
                 protocol.println(response);
             } catch (Throwable failure) {
@@ -459,7 +470,13 @@ class RenderServer {
                 return;
             }
         }
-        server.closeRenderer();
-        server.pngWriter.dispose();
+        // End of input: the host closed the pipe, possibly without killing us (its extension host exited).
+        // Layoutlib leaves non-daemon pool threads behind, so returning from main would keep the JVM alive.
+        try {
+            server.closeRenderer();
+            server.pngWriter.dispose();
+        } finally {
+            System.exit(0);
+        }
     }
 }

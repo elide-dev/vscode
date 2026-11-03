@@ -142,7 +142,13 @@ export class McpHttpServer {
     if (authorization === undefined || !sameToken(authorization, this.options.token)) {
       return reject(401, "Unauthorized", { "WWW-Authenticate": "Bearer" });
     }
-    if (new URL(request.url ?? "/", "http://127.0.0.1").pathname !== "/mcp") return reject(404, "Not found");
+    let pathname: string;
+    try {
+      pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    } catch {
+      return reject(400, "Invalid request target");
+    }
+    if (pathname !== "/mcp") return reject(404, "Not found");
     if (request.method !== "POST") return reject(405, "Method not allowed", { Allow: "POST" });
     const version = request.headers["mcp-protocol-version"];
     if (typeof version === "string" && !PROTOCOL_VERSIONS.includes(version)) return reject(400, `Unsupported MCP-Protocol-Version ${version}`);

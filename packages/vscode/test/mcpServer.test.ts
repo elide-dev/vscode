@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { request } from "node:http";
+import { connect } from "node:net";
 import { McpHttpServer, type McpCallContext, type McpTool } from "../src/mcpServer.js";
 
 const TOKEN = "test-token-0123456789";
@@ -214,6 +215,24 @@ describe("MCP server", () => {
     expect([local.status, JSON.parse(local.body)]).toEqual([200, { jsonrpc: "2.0", id: 1, result: {} }]);
     // Far past the limit, so the client is still writing when the 413 is sent; a reset must not replace it.
     expect((await raw(server, "POST", { Host: host, ...auth }, "x".repeat(64 * 1024 * 1024))).status).toBe(413);
+  });
+
+  test("rejects malformed request targets without taking down the server", async () => {
+    const server = await start();
+    for (const path of ["//", "http://["]) {
+      // Bun 1.3's node:http client normalizes the target through fetch before sending it.
+      const { promise, resolve, reject } = Promise.withResolvers<string>();
+      let data = "";
+      const socket = connect(server.port, "127.0.0.1", () => {
+        socket.write(`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nAuthorization: Bearer ${TOKEN}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+      });
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => { data += chunk; });
+      socket.on("end", () => resolve(data));
+      socket.on("error", reject);
+      expect(await promise).toStartWith("HTTP/1.1 400 ");
+    }
+    expect((await rpc(server, "ping")).result).toEqual({});
   });
 
   test("aborts a call on notifications/cancelled", async () => {

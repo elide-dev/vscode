@@ -36,7 +36,7 @@ import * as vscode from "vscode";
 import { importsWorkspaceJson, readConfig } from "./config.js";
 import { addGitExclude, gitExcludeCandidate } from "./gitExclude.js";
 import { KotlinLspEnvironment, KotlinSetupPendingError, awaitKotlinDebuggerAnalysis, jetBrainsComposeCompilerPlugin, jetBrainsServerDirectory, notifyKotlinSetupPending, reloadKotlinLsp } from "./jetbrains.js";
-import { KomodoLanguageServer, type KomodoDebugLaunch, type KomodoSettings } from "./komodoLsp.js";
+import { KomodoLanguageServer, type KomodoDebugLaunch, type KomodoPreviewSession, type KomodoPreviews, type KomodoSettings } from "./komodoLsp.js";
 import { probeSourceRoot } from "./kotlinAnalysis.js";
 import { kotlinLspPlugin, withoutKotlinLspPlugin } from "./kotlinLspPlugin.js";
 import { moduleReaders, projectModules } from "./manifestModules.js";
@@ -172,6 +172,34 @@ export class ElideWorkspace implements vscode.Disposable {
       (readConfig(folder).kotlinLspServer === "komodo" && this.komodoAvailable);
   }
 
+  /** `file`'s Compose previews from Komodo's language server (see {@link KomodoLanguageServer.previews}). */
+  komodoPreviews(file: string): Promise<KomodoPreviews> {
+    return this.komodoServer.previews(file);
+  }
+
+  /** A Compose preview session in Komodo's language server for `file` (see {@link KomodoLanguageServer.previewSession}). */
+  komodoPreviewSession(file: string): Promise<KomodoPreviewSession> {
+    return this.komodoServer.previewSession(file);
+  }
+
+  komodoPreviewSync(files: readonly string[]): Promise<void> {
+    return this.komodoServer.syncPreview(files);
+  }
+
+
+  private get hasAndroidProjects(): boolean {
+    return this.projects.some((project) => project.model?.android !== undefined);
+  }
+
+  /** Launch only after this window's Android transport default has reached a new Kotlin server. */
+  async prepareAndroidDebugger(): Promise<void> {
+    await this.kotlinLspReady;
+    if (this.configureKotlinLspEnvironment()) {
+      this.kotlinLspReady = reloadKotlinLsp(true, true);
+      await this.kotlinLspReady;
+    }
+  }
+
   /**
    * What Komodo's debug adapter runs with for `folder` (`elide.debug.adapter` `komodo`): the launcher, project manifest
    * and JDK of the Komodo language server its sync configured. Throws, saying why, when there is none yet.
@@ -208,13 +236,15 @@ export class ElideWorkspace implements vscode.Disposable {
   }
 
   /**
-   * Apply this window's Kotlin server launch options ({@link KotlinLspEnvironment}): Elide's plugin while a
-   * Compose project is open. `true` when they changed, which takes a new server.
+   * Apply this window's Kotlin server launch options ({@link KotlinLspEnvironment}): the Android debugger default
+   * while an Android project is open, Elide's plugin while a Compose project is. `true` when they changed, which
+   * takes a new server.
    */
   private configureKotlinLspEnvironment(): boolean {
     const compose = this.projects.some((project) => project.model?.kotlin.compose);
     const plugin = compose ? this.kotlinLspPluginPath : undefined;
-    return this.kotlinLspEnvironment.configure(plugin ? { plugin } : {});
+    return this.kotlinLspEnvironment.configure({ androidDebugger: this.hasAndroidProjects, ...(plugin ? { plugin } : {}) },
+      vscode.workspace.getConfiguration("intellij").get<string[]>("additionalJvmArgs") ?? []);
   }
 
   /**
@@ -442,7 +472,7 @@ export class ElideWorkspace implements vscode.Disposable {
     this.publishManifestError(folder, undefined);
     void this.komodoServer.remove(folder, komodoSettings());
     if (this.configureKotlinLspEnvironment()) {
-      this.kotlinLspReady = this.kotlinLspReady.catch(() => undefined).then(() => reloadKotlinLsp(true));
+      this.kotlinLspReady = this.kotlinLspReady.catch(() => undefined).then(() => reloadKotlinLsp(true, this.hasAndroidProjects));
       void this.kotlinLspReady.catch((error) => this.ui.log(`Kotlin LSP restart failed: ${String(error)}`));
     }
     this.notifyChanged();
@@ -790,7 +820,7 @@ export class ElideWorkspace implements vscode.Disposable {
       signal.throwIfAborted();
       const restart = this.configureKotlinLspEnvironment();
       // The JetBrains reload command may block for as long as the server's import runs; never let it hold the sync.
-      this.kotlinLspReady = this.kotlinLspReady.catch(() => undefined).then(() => reloadKotlinLsp(restart));
+      this.kotlinLspReady = this.kotlinLspReady.catch(() => undefined).then(() => reloadKotlinLsp(restart, this.hasAndroidProjects));
       void this.kotlinLspReady.then(
         (used) => this.ui.log(used ? `Kotlin LSP ${restart ? "restart" : "reload"} requested via ${used}` : "Kotlin LSP not running yet; it will import workspace.json on start"),
         (e) => {
