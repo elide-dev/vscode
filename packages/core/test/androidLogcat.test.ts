@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -196,8 +196,8 @@ async function waitForFile(file: string): Promise<string> {
     const contents = readFileSync(file, "utf8");
     if (contents) resolve(contents);
   };
-  const watcher = watch(path.dirname(file), check);
-  watcher.on("error", reject);
+  // Marker contents persist; directory events can be coalesced before the write completes.
+  watchFile(file, { interval: 10 }, check);
   const deadline = AbortSignal.timeout(3_000);
   const expired = () => reject(new Error(`Timed out waiting for ${file}`));
   deadline.addEventListener("abort", expired, { once: true });
@@ -205,7 +205,7 @@ async function waitForFile(file: string): Promise<string> {
     check();
     return await promise;
   } finally {
-    watcher.close();
+    unwatchFile(file, check);
     deadline.removeEventListener("abort", expired);
   }
 }

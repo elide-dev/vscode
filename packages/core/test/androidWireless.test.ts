@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -67,9 +67,8 @@ process.stdin.on("end", () => {
 async function waitForFile(file: string): Promise<void> {
   const { promise, resolve, reject } = Promise.withResolvers<void>();
   const check = () => { if (existsSync(file) && readFileSync(file, "utf8")) resolve(); };
-  const watcher = watch(path.dirname(file), check);
-  watcher.on("error", reject);
-  // Await the real subprocess event; this deadline only bounds a broken fixture, not its success path.
+  // Marker contents persist; directory events can be coalesced before the write completes.
+  watchFile(file, { interval: 10 }, check);
   const deadline = AbortSignal.timeout(3000);
   const expired = () => reject(new Error(`Timed out waiting for ${file}`));
   deadline.addEventListener("abort", expired, { once: true });
@@ -78,7 +77,7 @@ async function waitForFile(file: string): Promise<void> {
     await promise;
   } finally {
     deadline.removeEventListener("abort", expired);
-    watcher.close();
+    unwatchFile(file, check);
   }
 }
 
