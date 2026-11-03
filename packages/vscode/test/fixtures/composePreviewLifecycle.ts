@@ -186,6 +186,7 @@ const backend = {
       throw new Error(nativeReason);
     }
   },
+  preempt: () => {},
   compiler: { ready: true, seeded: false, processingRequired: processing, processingStats: { stubs: 0, apt: 0 },
     needsWarmup: scenario === "cold-initialization",
     supports: () => true, sources: async (documents: ReadonlyMap<string, string>) => ({ files: [documents] }) },

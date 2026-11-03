@@ -181,6 +181,10 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         item.contextValue = node.kind === "entrypoint" ? "entrypointRunOnly" : "buildTarget";
       }
     }
+    if (node.kind === "androidTarget" && node.offers?.debuggable) {
+      const project = this.workspace.projectAt(node.root);
+      if (project && !this.workspace.komodoDebugAvailable(project.folder)) item.contextValue = item.contextValue.replace(".debug", "");
+    }
     const id = nodeId(node);
     if (id) item.id = id;
     switch (node.kind) {

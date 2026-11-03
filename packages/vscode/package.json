@@ -554,6 +554,7 @@
         "command": "elide.androidDebug",
         "category": "Elide",
         "title": "Debug Android App…",
+        "enablement": "elide.androidDebugAvailable",
         "icon": "$(debug-alt)"
       },
       {
@@ -608,6 +609,7 @@
         "command": "elide.androidComposePreview",
         "category": "Elide",
         "title": "Open Compose Preview",
+        "enablement": "config.elide.android.composePreview.engine != komodo || elide.komodoPreviewAvailable",
         "icon": "$(preview)"
       },
       {
@@ -717,7 +719,7 @@
         },
         {
           "command": "elide.androidDebug",
-          "when": "elide.hasAndroidProjects"
+          "when": "elide.hasAndroidProjects && elide.androidDebugAvailable"
         },
         {
           "command": "elide.androidTest",
@@ -749,7 +751,7 @@
         },
         {
           "command": "elide.androidComposePreview",
-          "when": "elide.hasAndroidProjects"
+          "when": "elide.hasAndroidProjects && (config.elide.android.composePreview.engine != komodo || elide.komodoPreviewAvailable)"
         },
         {
           "command": "elide.composePreviewMcp.copyConfiguration",

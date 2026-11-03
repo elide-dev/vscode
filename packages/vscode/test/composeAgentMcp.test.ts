@@ -75,6 +75,9 @@ test("agent native gating preserves listing and layoutlib and retires pending/li
     }));
     mock.module(source + "config.js", () => ({ readConfig: () => ({ composePreviewEngine: engine, composePreviewKeepAlive: 1 }) }));
     mock.module(source + "composeRuntime.js", () => ({ ensureComposeRuntime: async () => { resources++; return {}; } }));
+    mock.module(source + "tasks.js", () => ({
+      runObservedElide: async () => { resources++; throw new Error("Native gating must prevent preview builds"); },
+    }));
     mock.module(source + "composePreview.js", () => ({
       backendKey: () => "app", buildErrors: () => [], javaFor: () => "java", ownedBy: () => true,
       previewApp: () => { applications++; throw new Error("no Android application"); },

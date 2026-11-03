@@ -124,6 +124,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const updateKomodoAvailability = () => {
     void vscode.commands.executeCommand("setContext", "elide.komodoAvailable", workspace.komodoAvailable);
     void vscode.commands.executeCommand("setContext", "elide.komodoPreviewAvailable", workspace.komodoPreviewAvailable);
+    void updateContextKeys(workspace);
     if (!workspace.komodoAvailable) {
       for (const session of komodoSessions) void vscode.debug.stopDebugging(session);
     }
@@ -288,7 +289,10 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
     lockfiles,
     workspace.onDidChangeModules(watchModules),
     { dispose: () => moduleWatchers.forEach((w) => w.dispose()) },
-    vscode.workspace.onDidChangeConfiguration((e) => workspace.settingsChanged(e)),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      workspace.settingsChanged(e);
+      if (e.affectsConfiguration("elide.debug.adapter") || e.affectsConfiguration("elide.kotlinLsp.server")) void updateContextKeys(workspace);
+    }),
     vscode.workspace.onDidChangeWorkspaceFolders((e) => {
       for (const removed of e.removed) {
         clearTimeout(timers.get(removed.uri.toString()));
@@ -403,6 +407,8 @@ async function updateContextKeys(workspace: ElideWorkspace): Promise<void> {
     vscode.commands.executeCommand("setContext", "elide.hasProjects", workspace.projects.length > 0),
     vscode.commands.executeCommand("setContext", "elide.hasAndroidProjects", hasAndroidProjects(workspace.projects)),
     vscode.commands.executeCommand("setContext", "elide.hasUnsyncedProjects", workspace.projects.some((project) => !project.model)),
+    vscode.commands.executeCommand("setContext", "elide.androidDebugAvailable",
+      workspace.projects.some((project) => project.model?.android && workspace.komodoDebugAvailable(project.folder))),
   ]);
 }
 
@@ -447,6 +453,7 @@ async function showMenu(workspace: ElideWorkspace): Promise<void> {
   const unsynced = workspace.projects.some((project) => !project.model);
   items.push(...MENU_ACTIONS.filter((a) => registered.has(a.command)
     && (!a.android || android || (a.command === "elide.androidDoctor" && unsynced))
+    && (a.command !== "elide.androidDebug" || workspace.projects.some((project) => project.model?.android && workspace.komodoDebugAvailable(project.folder)))
     && (a.command !== "elide.androidComposePreview" || readConfig().composePreviewEngine !== "komodo" || workspace.komodoPreviewAvailable)));
   const pick = await vscode.window.showQuickPick(items, { placeHolder: "Elide" });
   if (pick) await vscode.commands.executeCommand(pick.command);

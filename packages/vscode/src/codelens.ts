@@ -75,7 +75,8 @@ export class ElideCodeLensProvider implements vscode.CodeLensProvider, vscode.Di
     const project = manifest ? this.workspace.projectAt(path.dirname(fsPath)) : this.workspace.projectFor(fsPath);
     if (!project) return [];
     const lenses = manifest ? manifestLenses(document, project) : sourceLenses(document, project);
-    return this.workspace.komodoDebugAvailable(project.folder) ? lenses : lenses.filter((lens) => lens.command?.command !== "elide.debug");
+    return this.workspace.komodoDebugAvailable(project.folder) ? lenses
+      : lenses.filter((lens) => lens.command?.command !== "elide.debug" && lens.command?.command !== "elide.androidDebug");
   }
 }
 
