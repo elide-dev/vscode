@@ -109,35 +109,6 @@ describe("decodeManifest", () => {
     expect(m.jars).toEqual({ fat: { name: "app-all", sources: ["main", "extra"] } });
   });
 
-  test("Compose analysis follows released Maven runtime dependencies and compiler plugins", () => {
-    const dependency = (value: unknown) => ({
-      "@type": typeof value === "string" ? "elide.jvm.MavenPackageDependency.OfString" : "elide.jvm.MavenPackageDependency.OfMavenPackageSpec",
-      value,
-    });
-    for (const [bucket, value] of [
-      ["packages", "androidx.compose.runtime:runtime:1.8.0"],
-      ["compileOnly", { group: "org.jetbrains.compose.runtime", name: "runtime-desktop" }],
-      ["kotlinPlugins", "org.jetbrains.kotlin:kotlin-compose-compiler-plugin-embeddable:2.2.0"],
-      ["kotlinPlugins", { coordinate: "androidx.compose.compiler:compiler:1.5.15" }],
-    ] as const) {
-      const model = decodeManifest(JSON.stringify({ dependencies: { maven: { [bucket]: [dependency(value)] } } }));
-      expect(model.kotlin?.compose).toBe(true);
-    }
-  });
-
-  test("unsupported Android and Compose schema fields confer no capabilities", () => {
-    const model = decodeManifest(JSON.stringify({
-      android: { compileSdk: 36 },
-      kotlin: { features: { compose: true } },
-      artifacts: { app: { "@type": "elide.android.AndroidApk" } },
-      dependencies: { maven: { exclusions: [{ "@type": "elide.jvm.MavenPackageDependency.OfString", value: "androidx.compose.runtime:runtime:1.8.0" }] } },
-    }));
-    expect(model).not.toHaveProperty("android");
-    expect(model).not.toHaveProperty("androidTargets");
-    expect(model.kotlin?.compose).toBeUndefined();
-    expect(model.jars).toEqual({});
-  });
-
   test("rejects malformed JSON", () => {
     expect(() => decodeManifest("not json")).toThrow(ManifestParseError);
     expect(() => decodeManifest("[]")).toThrow(ManifestParseError);

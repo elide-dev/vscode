@@ -1,7 +1,7 @@
 {
   "name": "elide",
   "displayName": "Elide",
-  "description": "Elide for Kotlin and Java: project sync, build/run/debug, tests, Android SDK diagnostics and Logcat.",
+  "description": "Elide for Kotlin, Java and Android: project sync, build/run/debug, device-free Compose previews, deployment targets, Logcat and tests.",
   "version": "0.7.0",
   "preview": true,
   "publisher": "elide",
@@ -39,6 +39,7 @@
     "build tool",
     "kotlin lsp",
     "android",
+    "compose",
     "logcat",
     "pkl"
   ],
@@ -56,12 +57,11 @@
     "workspace"
   ],
   "main": "./dist/extension.js",
-  "extensionPack": [
-    "JetBrains.kotlin-server"
-  ],
   "activationEvents": [
     "workspaceContains:**/elide.pkl",
     "onDebugResolve:elide",
+    "onDebugResolve:elide-native",
+    "onDebugResolve:komodo-kotlin",
     "onTaskType:elide",
     "onView:elide.projects",
     "onView:elide.activity"
@@ -70,9 +70,13 @@
     "languages": [
       {
         "id": "elide-android-logcat",
-        "aliases": [
-          "Elide Android Logcat"
-        ]
+        "aliases": ["Elide Android Logcat"]
+      },
+      {
+        "id": "kotlin",
+        "aliases": ["Kotlin", "kotlin"],
+        "extensions": [".kt", ".kts"],
+        "configuration": "./language-configuration/kotlin.json"
       }
     ],
     "grammars": [
@@ -80,11 +84,50 @@
         "language": "elide-android-logcat",
         "scopeName": "source.elide-android-logcat",
         "path": "./syntaxes/elide-android-logcat.tmLanguage.json"
+      },
+      {
+        "language": "kotlin",
+        "scopeName": "source.kotlin",
+        "path": "./syntaxes/kotlin.tmLanguage.json"
+      }
+    ],
+    "semanticTokenModifiers": [
+      {
+        "id": "composable",
+        "description": "A `@Composable` function, or a call of one."
+      },
+      {
+        "id": "extension",
+        "description": "An extension function or property."
+      },
+      {
+        "id": "mutable",
+        "description": "A `var`: a variable or property that can be reassigned."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "kotlin",
+        "scopes": {
+          "function.composable": ["entity.name.function.composable.kotlin"],
+          "method.composable": ["entity.name.function.composable.kotlin"],
+          "function.extension": ["entity.name.function.extension.kotlin"],
+          "method.extension": ["entity.name.function.extension.kotlin"],
+          "property.extension": ["variable.other.property.extension.kotlin"],
+          "variable.mutable": ["variable.other.readwrite.kotlin"],
+          "property.mutable": ["variable.other.property.readwrite.kotlin"]
+        }
       }
     ],
     "configurationDefaults": {
       "[elide-android-logcat]": {
         "editor.guides.indentation": false
+      },
+      "editor.semanticTokenColorCustomizations": {
+        "rules": {
+          "function.composable:kotlin": "#4CAF50",
+          "method.composable:kotlin": "#4CAF50"
+        }
       }
     },
     "configuration": {
@@ -104,11 +147,13 @@
         },
         "elide.sync.onStartup": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
           "description": "Sync Elide projects when the workspace opens."
         },
         "elide.sync.onManifestChange": {
           "type": "string",
+          "scope": "resource",
           "enum": [
             "always",
             "prompt",
@@ -119,29 +164,71 @@
         },
         "elide.sync.showProgressNotification": {
           "type": "boolean",
+          "scope": "window",
           "default": true,
           "markdownDescription": "Show a notification with the step in progress, and a Cancel button, while a sync runs for more than a couple of seconds. The status bar and the **Elide › Activity** view show progress either way."
         },
         "elide.kotlinLsp.writeWorkspaceJson": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
-          "markdownDescription": "Write `workspace.json` at the workspace folder root so the Kotlin LSP imports the Elide project model."
+          "markdownDescription": "Write `workspace.json` at the workspace folder root so the JetBrains Kotlin LSP imports the Elide project model. Folders on Komodo's language server (`#elide.kotlinLsp.server#` = `komodo`) never get one."
+        },
+        "elide.kotlinLsp.server": {
+          "type": "string",
+          "scope": "resource",
+          "enum": ["jetbrains", "komodo"],
+          "enumDescriptions": [
+            "The JetBrains Kotlin LSP (`JetBrains.kotlin-server`, installed separately) imports the generated `workspace.json`.",
+            "Experimental: Komodo's native language server, installed on demand by Elide, analyzes Kotlin sources from the Elide project model. No workspace.json or JetBrains server is needed for the folder. One server serves every Komodo folder of the window."
+          ],
+          "default": "jetbrains",
+          "markdownDescription": "Kotlin language server for the folder's Elide projects. `komodo` requires an Elide release supporting on-demand Komodo resolution. If missing, choose **Install Komodo** explicitly; activation and sync never download it. With `komodo`, `#elide.debug.adapter#` defaults to Komodo's debugger."
+        },
+        "elide.kotlinLsp.komodo.path": {
+          "type": "string",
+          "scope": "machine-overridable",
+          "default": "",
+          "markdownDescription": "Absolute executable path to a developer-managed Komodo build. Leave empty to resolve through the selected Elide CLI's managed component store, not PATH or the Elide distribution. An invalid override is reported and never replaced. Applies to the whole window."
+        },
+        "elide.kotlinLsp.komodo.pluginDirectory": {
+          "type": "string",
+          "scope": "machine-overridable",
+          "default": "",
+          "markdownDescription": "Developer override for Kotlin compiler plugin jars built for Komodo's compiler. Empty uses Elide's resolved plugin directory for a managed component, or the explicit developer bundle's own plugins."
+        },
+        "elide.kotlinLsp.komodo.javaHome": {
+          "type": "string",
+          "scope": "machine-overridable",
+          "default": "",
+          "markdownDescription": "Developer override for the JDK home whose platform classes and modules Komodo resolves against (JAVA_HOME). Empty uses the JDK inputs returned by Elide's resolver. An explicit developer executable inherits JAVA_HOME instead."
+        },
+        "elide.kotlinLsp.komodo.maxHeap": {
+          "type": "string",
+          "scope": "machine-overridable",
+          "default": "",
+          "pattern": "^(\\d+[kKmMgG]?)?$",
+          "markdownDescription": "Maximum heap of the native Komodo server (`-Xmx`), such as `768m` or `1g`. Empty: the native image's default."
         },
         "elide.debug.adapter": {
           "type": "string",
+          "scope": "resource",
           "enum": [
             "intellij",
-            "java"
+            "java",
+            "komodo"
           ],
           "enumDescriptions": [
-            "Attach with the Kotlin LSP's JVM debugger (JetBrains.kotlin-server).",
-            "Attach with Debugger for Java (vscjava.vscode-java-debug)."
+            "Attach with the JetBrains Kotlin LSP's JVM debugger (`JetBrains.kotlin-server`).",
+            "Attach with Debugger for Java (vscjava.vscode-java-debug).",
+            "Attach with Komodo's Kotlin debugger (`komodo --dap`), which maps the target JVM's classes to the folder's sources."
           ],
           "default": "intellij",
-          "description": "Debug adapter used to attach to the JVM started by `elide run --debugger`."
+          "markdownDescription": "Debug adapter used to attach to the JVM started by `elide run --debugger`. Unset: `komodo` for a folder on Komodo's language server (`#elide.kotlinLsp.server#`), `intellij` otherwise. `komodo` is served by the same executable as Komodo's language server and needs the folder on that server."
         },
         "elide.debug.nativeMiMode": {
           "type": "string",
+          "scope": "resource",
           "enum": [
             "auto",
             "gdb",
@@ -163,6 +250,7 @@
         },
         "elide.install.classifiers": {
           "type": "array",
+          "scope": "resource",
           "items": {
             "type": "string",
             "enum": [
@@ -180,10 +268,49 @@
           "type": "string",
           "default": "",
           "scope": "machine-overridable",
-          "markdownDescription": "Android SDK root for standalone device diagnostics and Logcat. Empty resolves `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then the conventional SDK location on this platform."
+          "markdownDescription": "Android SDK root used to list attached devices. Empty resolves the SDK an Elide build would use: the manifest's `android.sdk`, then `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then the location the SDK installs itself in on this platform."
+        },
+        "elide.android.emulatorWindow": {
+          "type": "boolean",
+          "scope": "window",
+          "default": true,
+          "markdownDescription": "Boot the Android emulator with a window. Off passes `--no-window`, which runs it headless."
+        },
+        "elide.android.composePreview.prewarm": {
+          "type": "boolean",
+          "scope": "window",
+          "default": true,
+          "markdownDescription": "Start the Compose preview renderer and compiler in the background when a Kotlin file with `@Preview` functions is focused in a trusted Android project, so **Elide: Open Compose Preview** opens in about a second. Runs the file's previews from the last build's classes; never builds, and never downloads the renderer runtime. Requires `#elide.android.composePreview.keepAliveMinutes#` above 0."
+        },
+        "elide.android.composePreview.keepAliveMinutes": {
+          "type": "number",
+          "scope": "window",
+          "default": 10,
+          "minimum": 0,
+          "markdownDescription": "Minutes an unused Compose preview backend (render JVMs and compiler workers, several GB of memory) stays warm after its panel closes or after prewarming. `0` stops it with its panel and disables prewarming."
+        },
+        "elide.android.composePreview.engine": {
+          "type": "string",
+          "scope": "window",
+          "enum": ["layoutlib", "komodo"],
+          "enumDescriptions": ["Design-time snapshots rendered by layoutlib.", "Opt-in, experimental: live cards rendered by a Komodo preview daemon, with layoutlib snapshots for the cards it cannot render."],
+          "default": "layoutlib",
+          "markdownDescription": "Engine of the Compose preview. `komodo` runs `komodo-preview` beside layoutlib: cards it hosts are live (pushed frames, unsaved edits applied in place, compile errors in Problems); the others keep their layoutlib snapshot (see `#elide.android.composePreview.komodo.fallback#`). Takes effect when a preview panel opens."
+        },
+        "elide.android.composePreview.komodo.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "The `komodo-preview` daemon for the `komodo` engine. Empty resolves `komodo-preview` beside the Elide binary, then on `PATH`."
+        },
+        "elide.android.composePreview.komodo.fallback": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "With the `komodo` engine, a card Komodo cannot render keeps its layoutlib snapshot (the reason is in the Elide output). Off shows the reason on the card instead."
         },
         "elide.flags": {
           "type": "array",
+          "scope": "resource",
           "items": {
             "type": "string"
           },
@@ -192,6 +319,7 @@
         },
         "elide.build.options": {
           "type": "object",
+          "scope": "resource",
           "default": {},
           "additionalProperties": {
             "type": [
@@ -211,6 +339,7 @@
         },
         "elide.run.options": {
           "type": "object",
+          "scope": "resource",
           "default": {},
           "additionalProperties": {
             "type": [
@@ -230,6 +359,7 @@
         },
         "elide.test.options": {
           "type": "object",
+          "scope": "resource",
           "default": {},
           "additionalProperties": {
             "type": [
@@ -249,6 +379,7 @@
         },
         "elide.install.options": {
           "type": "object",
+          "scope": "resource",
           "default": {},
           "additionalProperties": {
             "type": [
@@ -264,16 +395,22 @@
               ]
             }
           },
-          "markdownDescription": "Default options for the `elide install` task, keyed by option name. Project sync installs dependencies itself, driven by `elide.install.classifiers`."
+          "markdownDescription": "Default options for `elide install`, keyed by option name. The `install` task fetches the classifiers `#elide.install.classifiers#` names, as project sync does; `slim` and `with` here override that."
         },
         "elide.codeLens.enabled": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
           "description": "Show Run/Debug code lenses above JVM main functions and on entrypoints, scripts and artifacts in elide.pkl."
         }
       }
     },
     "commands": [
+      {
+        "command": "elide.installKomodo",
+        "category": "Elide",
+        "title": "Install Komodo"
+      },
       {
         "command": "elide.sync",
         "category": "Elide",
@@ -318,7 +455,7 @@
       {
         "command": "elide.openWorkspaceJson",
         "category": "Elide",
-        "title": "Open generated Kotlin LSP workspace"
+        "title": "Open Generated Kotlin LSP Workspace"
       },
       {
         "command": "elide.runTask",
@@ -381,10 +518,76 @@
         "icon": "$(file-code)"
       },
       {
+        "command": "elide.androidSelectTarget",
+        "category": "Elide",
+        "title": "Select Android Deployment Target…",
+        "icon": "$(device-mobile)"
+      },
+      {
         "command": "elide.androidDoctor",
         "category": "Elide",
         "title": "Check Android Environment",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "elide.androidRefreshDevices",
+        "category": "Elide",
+        "title": "Refresh Android Devices",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "elide.androidRun",
+        "category": "Elide",
+        "title": "Run Android App…",
+        "icon": "$(play)"
+      },
+      {
+        "command": "elide.androidDebug",
+        "category": "Elide",
+        "title": "Debug Android App…",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "elide.androidStartEmulator",
+        "category": "Elide",
+        "title": "Start Android Emulator",
+        "icon": "$(vm-running)"
+      },
+      {
+        "command": "elide.androidStopEmulator",
+        "category": "Elide",
+        "title": "Stop Android Emulators",
+        "icon": "$(vm-outline)"
+      },
+      {
+        "command": "elide.androidCreateAvd",
+        "category": "Elide",
+        "title": "Create Android Virtual Device",
+        "icon": "$(vm-connect)"
+      },
+      {
+        "command": "elide.androidInstallSdk",
+        "category": "Elide",
+        "title": "Install Android SDK Components",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "elide.androidCreateKeystore",
+        "category": "Elide",
+        "title": "Create Android Signing Keystore",
+        "icon": "$(key)"
+      },
+      {
+        "command": "elide.androidOpenMapping",
+        "category": "Elide",
+        "title": "Open Android Obfuscation Mapping",
+        "icon": "$(references)"
+      },
+      {
+        "command": "elide.androidComposePreview",
+        "category": "Elide",
+        "title": "Open Compose Preview",
+        "icon": "$(preview)"
       },
       {
         "command": "elide.androidLogcat",
@@ -419,6 +622,13 @@
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "elide.androidComposePreview",
+          "when": "editorLangId == kotlin && elide.hasProjects",
+          "group": "navigation"
+        }
+      ],
       "commandPalette": [
         {
           "command": "elide.run",
@@ -446,6 +656,38 @@
         },
         {
           "command": "elide.revealLibrary",
+          "when": "false"
+        },
+        {
+          "command": "elide.androidRun",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidDebug",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidStartEmulator",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidStopEmulator",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidCreateAvd",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidInstallSdk",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidCreateKeystore",
+          "when": "elide.hasProjects"
+        },
+        {
+          "command": "elide.androidOpenMapping",
           "when": "false"
         },
         {
@@ -478,7 +720,7 @@
       "view/item/context": [
         {
           "command": "elide.run",
-          "when": "view == elide.projects && viewItem == entrypoint",
+          "when": "view == elide.projects && viewItem =~ /^entrypoint(RunOnly)?$/",
           "group": "inline@1"
         },
         {
@@ -525,6 +767,45 @@
           "command": "elide.executeTask",
           "when": "view == elide.projects && viewItem == buildTargetRunnable",
           "group": "inline@3"
+        },
+        {
+          "command": "elide.androidRun",
+          "when": "view == elide.projects && viewItem == androidApk",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.androidDebug",
+          "when": "view == elide.projects && viewItem == androidApk",
+          "group": "inline@2"
+        },
+        {
+          "command": "elide.build",
+          "when": "view == elide.projects && viewItem == androidApk",
+          "group": "inline@3"
+        },
+        {
+          "command": "elide.androidCreateKeystore",
+          "when": "view == elide.projects && viewItem == androidApk"
+        },
+        {
+          "command": "elide.build",
+          "when": "view == elide.projects && viewItem == androidAab",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.build",
+          "when": "view == elide.projects && viewItem =~ /^(androidAar|androidFeature)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "elide.androidLogcat",
+          "when": "view == elide.projects && viewItem =~ /^(androidDevice|androidApk|android)$/",
+          "group": "android@3"
+        },
+        {
+          "command": "elide.androidRun",
+          "when": "view == elide.projects && viewItem == androidDevice",
+          "group": "inline@1"
         },
         {
           "command": "elide.sync",
@@ -595,7 +876,7 @@
       },
       {
         "view": "elide.activity",
-        "contents": "Nothing has run yet. Syncs and observed commands appear here while they run, step by step, with the time each step took and its output.\n[Sync Project(s)](command:elide.sync)"
+        "contents": "Nothing has run yet. Syncs and Compose preview builds appear here while they run, step by step, with the time each step took and its output.\n[Sync Project(s)](command:elide.sync)"
       }
     ],
     "problemMatchers": [
@@ -624,7 +905,7 @@
             "message": 2
           },
           {
-            "regexp": "^In file:\\s+(?:file://)?(\\S+?)(?::(\\d+))?(?::(\\d+))?\\s*$",
+            "regexp": "^In file:\\s+(?:file://)?(.+?)(?::(\\d+))?(?::(\\d+))?\\s*$",
             "file": 1,
             "line": 2,
             "column": 3
@@ -917,13 +1198,180 @@
             }
           }
         ]
+      },
+      {
+        "type": "elide-android",
+        "label": "Elide Android",
+        "languages": [
+          "kotlin",
+          "java"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "artifact": {
+                "type": "string",
+                "markdownDescription": "Android application package to build, install and debug: the key of its entry in the `artifacts` block of `elide.pkl`."
+              },
+              "device": {
+                "type": "string",
+                "markdownDescription": "Device serial to pin the debug launch to (`--device=<serial>`). Empty uses the remembered deployment target or offers a device selection; a disconnected selection never silently deploys elsewhere."
+              },
+              "flags": {
+                "type": "array",
+                "items": { "type": "string" },
+                "markdownDescription": "Build flags (`-f NAME[=VALUE]`) layered over `elide.flags`."
+              },
+              "options": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": ["string", "number", "boolean", "array"],
+                  "items": { "type": ["string", "number"] }
+                },
+                "markdownDescription": "CLI build options layered over `elide.build.options`. Use `device`, not an option, to select the deployment device."
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": { "type": "string" },
+                "description": "Extra environment variables for the Elide build process."
+              },
+              "port": {
+                "type": "number",
+                "markdownDescription": "Local port of a JDWP socket already forwarded off a device: attach to it, building and installing nothing."
+              },
+              "project": {
+                "type": "string",
+                "description": "Project root relative to the workspace folder; in an Elide workspace, the member's directory."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "elide-android",
+            "request": "launch",
+            "name": "Elide: Debug Android App",
+            "artifact": ""
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Elide: Android app (debug)",
+            "description": "Build an APK, install and launch it waiting for a debugger, and attach over JDWP.",
+            "body": {
+              "type": "elide-android",
+              "request": "launch",
+              "name": "Elide: Debug Android App",
+              "artifact": "${1:artifact}"
+            }
+          }
+        ]
+      },
+      {
+        "type": "komodo-kotlin",
+        "label": "Komodo Kotlin Debugger",
+        "languages": [
+          "kotlin",
+          "java"
+        ],
+        "configurationAttributes": {
+          "attach": {
+            "required": [
+              "port"
+            ],
+            "properties": {
+              "hostName": {
+                "type": "string",
+                "default": "127.0.0.1",
+                "description": "Host of the JDWP agent to attach to."
+              },
+              "port": {
+                "type": "number",
+                "description": "Port of the JDWP agent to attach to."
+              },
+              "timeout": {
+                "type": "number",
+                "default": 30000,
+                "description": "Milliseconds to keep retrying the connection."
+              },
+              "sourceRoots": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "markdownDescription": "Further source directories to resolve the JVM's source paths (`pkg/File.kt`) against, besides the module source roots of the Komodo project manifest."
+              }
+            }
+          },
+          "launch": {
+            "required": [
+              "mainClass",
+              "classPaths"
+            ],
+            "properties": {
+              "mainClass": {
+                "type": "string",
+                "description": "Fully qualified main class (for a top-level Kotlin `main`, `pkg.FileKt`)."
+              },
+              "classPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Class path entries of the program."
+              },
+              "vmArgs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "JVM options of the program."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Arguments passed to the program."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory of the program."
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Extra environment variables for the program."
+              },
+              "javaHome": {
+                "type": "string",
+                "description": "JDK to run the program on; defaults to the one the debugger runs on."
+              }
+            }
+          }
+        },
+        "configurationSnippets": [
+          {
+            "label": "Komodo Kotlin: Attach",
+            "description": "Attach Komodo's Kotlin debugger to a JVM listening for JDWP.",
+            "body": {
+              "type": "komodo-kotlin",
+              "request": "attach",
+              "name": "Komodo Kotlin: Attach",
+              "hostName": "127.0.0.1",
+              "port": "^${1:5005}"
+            }
+          }
+        ]
       }
     ],
     "walkthroughs": [
       {
         "id": "elide.gettingStarted",
         "title": "Get started with Elide",
-        "description": "Build, run, test and debug Kotlin/JVM projects with the Elide build tool.",
+        "description": "Build, run, test and debug Kotlin/JVM and Android projects with the Elide build tool.",
         "steps": [
           {
             "id": "install",
@@ -960,8 +1408,8 @@
           },
           {
             "id": "sync",
-            "title": "Sync with the Kotlin LSP",
-            "description": "Syncing writes `workspace.json` so the Kotlin LSP resolves your sources and dependencies.\n[Sync now](command:elide.sync)",
+            "title": "Sync with the Kotlin language server",
+            "description": "Syncing hands the project model to the Kotlin language server so it resolves your sources and dependencies.\n[Sync now](command:elide.sync)",
             "media": {
               "markdown": "media/walkthrough/sync.md"
             },
@@ -971,13 +1419,13 @@
           },
           {
             "id": "android",
-            "title": "Inspect Android devices",
-            "description": "Use an independently installed Android SDK for device diagnostics and Logcat. These tools do not build or deploy Android applications.\n[Check Android Environment](command:elide.androidDoctor)\n[Show Android Logcat](command:elide.androidLogcat)",
+            "title": "Prepare Android development",
+            "description": "Check your SDK and devices even before sync succeeds. Then choose a persistent APK and device for Run and Debug.\n[Check Android Environment](command:elide.androidDoctor)\n[Select Deployment Target…](command:elide.androidSelectTarget)\n[Open Compose Preview](command:elide.androidComposePreview)",
             "media": {
               "markdown": "media/walkthrough/run.md"
             },
             "completionEvents": [
-              "onCommand:elide.androidDoctor"
+              "onCommand:elide.androidSelectTarget"
             ]
           },
           {
@@ -1008,6 +1456,7 @@
   },
   "dependencies": {
     "@elide/ide-core": "workspace:*",
+    "vscode-languageclient": "^9.0.1",
     "yauzl": "^3.2.0"
   },
   "devDependencies": {

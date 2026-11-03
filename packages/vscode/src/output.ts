@@ -21,6 +21,8 @@ export class ElideUi implements vscode.Disposable {
   /** The sync that finished last, whose breakdown the tooltip shows. */
   private lastSync: TimelineNode | undefined;
   private readonly subscription: vscode.Disposable;
+  /** Set by {@link dispose}: a sync it cancels still logs and reports its end afterwards, into a closed channel. */
+  private disposed = false;
 
   constructor() {
     this.output = vscode.window.createOutputChannel("Elide");
@@ -39,7 +41,7 @@ export class ElideUi implements vscode.Disposable {
   }
 
   log(line: string): void {
-    this.output.appendLine(line);
+    if (!this.disposed) this.output.appendLine(line);
   }
 
   /** Show the progress of `sync` in the status bar until it ends. */
@@ -62,6 +64,7 @@ export class ElideUi implements vscode.Disposable {
   }
 
   private render(): void {
+    if (this.disposed) return;
     const suffix = this.projectLabel ? ` ${this.projectLabel}` : "";
     const sync = [...this.syncs].find((operation) => operation.running);
     this.status.command = sync ? "elide.showActivity" : "elide.showMenu";
@@ -120,6 +123,7 @@ export class ElideUi implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.subscription.dispose();
     this.activity.dispose();
     this.status.dispose();

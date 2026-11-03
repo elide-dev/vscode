@@ -211,10 +211,27 @@ export function jvmTestNamePattern(targets: readonly { binaryName: string; metho
     .join("|");
 }
 
-/** Split a TAP label (`Outer > Inner > works()`) into its container chain and the test's own name. */
-export function parseTapLabel(label: string): { containers: string[]; name: string } {
+/** A method's display name ends with its parameter list: `works()`, `param(int)`, `` `parses (nested) input`() ``. */
+const PARAMETER_LIST = /\([^()]*\)$/;
+
+/**
+ * Split a TAP label (`Outer > Inner > works()`) into its container chain and the test's own name.
+ *
+ * A test template — a parameterized, repeated or factory method — is a container under its class, and each of its
+ * invocations a test under it (`MyTest > param(int) > [1] 1`): `name` is then the method's, and `invocation` the rest
+ * of the label.
+ */
+export function parseTapLabel(label: string): { containers: string[]; name: string; invocation?: string } {
   const segments = label.split(" > ");
-  const name = (segments.pop() ?? "").replace(/\(.*\)$/, "");
-  if (segments.length > 0 && ENGINE_CONTAINERS[segments[0] ?? ""]) segments.shift();
+  if (segments.length > 1 && ENGINE_CONTAINERS[segments[0] ?? ""]) segments.shift();
+  const template = segments.findIndex((segment, i) => i > 0 && i < segments.length - 1 && PARAMETER_LIST.test(segment));
+  if (template > 0) {
+    return {
+      containers: segments.slice(0, template),
+      name: (segments[template] ?? "").replace(PARAMETER_LIST, ""),
+      invocation: segments.slice(template + 1).join(" > "),
+    };
+  }
+  const name = (segments.pop() ?? "").replace(PARAMETER_LIST, "");
   return { containers: segments, name };
 }

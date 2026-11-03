@@ -5,14 +5,15 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseElideRecord, renderElideRecord, type ElideRecord } from "./buildOutput.js";
 import { parseBuildInspect, type BuildTaskInfo } from "./buildTasks.js";
 import { ElideCommandFailedError, ElideNotFoundError, InvalidElideHomeError, ManifestParseError } from "./errors.js";
 import { decodeInitTemplates, initArgs, type InitTemplate } from "./init.js";
-import { elideFlagArgs } from "./invocation.js";
-import { decodeManifest, type Manifest } from "./manifest.js";
+import { elideFlagArgs, elideInvocationArgs, installClassifierOptions } from "./invocation.js";
+import { decodeManifest, type Manifest, type SourceSet } from "./manifest.js";
 import { pklModuleReferences } from "./pkl.js";
-import { isPathUnder, normalizePath } from "./sourceRoots.js";
-import { compareElideVersions, parseElideVersion, supportsBatchedClasspath, type ElideVersion } from "./version.js";
+import { decodeWorkspaceSources, isPathUnder, normalizePath } from "./sourceRoots.js";
+import { compareElideVersions, parseElideVersion, supportsProgressRecords, type ElideVersion } from "./version.js";
 
 /** First release where `elide manifest` became `elide project export`; both print the same document. */
 const PROJECT_EXPORT_VERSION: ElideVersion = { major: 1, minor: 6, patch: 0 };
@@ -138,7 +139,8 @@ export type ClasspathQuery = `${string}:${ClasspathUsage}`;
 
 export interface RunOptions {
   /**
-   * Receives every stdout and stderr line (without trailing newline) as it arrives.
+   * Receives every output line (without trailing newline) as it arrives. Progress records on stderr arrive as the
+   * text the CLI prints without a terminal, and not at all when they have none: see {@link renderElideRecord}.
    */
   onLine?: (line: string, stderr: boolean) => void;
   signal?: AbortSignal;
@@ -154,9 +156,12 @@ export interface RunOptions {
 export interface CommandObserver {
   /**
    * An output line meant for a person. The stdout of a command whose stdout is its result — the exported project,
-   * a classpath, a task listing — is data, and is not passed here.
+   * a classpath, a task listing — is data, and is not passed here. A progress record arrives as its text, after
+   * {@link record} saw it.
    */
   line?(line: string, stderr: boolean): void;
+  /** A progress record on stderr, which the CLI writes when it supports `ELIDE_PROGRESS=json`. */
+  record?(record: ElideRecord): void;
   /** The process is gone: `exitCode` is `null` when it was killed by a signal or never started. */
   end(outcome: { exitCode: number | null; durationMs: number; aborted: boolean }): void;
 }
@@ -167,6 +172,8 @@ export interface RunResult {
 }
 
 const STDERR_CAPTURE_LIMIT = 64 * 1024;
+/** `elide --version` answers by binary identity; see {@link ElideCli.version}. */
+const reportedVersions = new Map<string, Promise<string>>();
 const TERMINATION_GRACE_MS = 5_000;
 
 /** Splits a stream into lines, forwarding complete lines and keeping the remainder. */
@@ -210,6 +217,10 @@ export function killProcessTree(pid: number, signal: NodeJS.Signals): void {
  *
  * `flags` are the `-f NAME[=VALUE]` build flags every subcommand this class drives is given: the manifest sees them
  * as `build.flags`, so a project model resolved without the flags a build uses would describe a different build.
+ *
+ * Every process is started with `ELIDE_PROGRESS=json`, unless `env` says otherwise: a CLI that knows the variable
+ * reports build events as records, which observers receive as such and everyone else as the text it stands for; an
+ * older CLI ignores it.
  */
 export class ElideCli {
   constructor(
@@ -229,7 +240,7 @@ export class ElideCli {
     const { promise, resolve, reject } = Promise.withResolvers<RunResult>();
     const child = spawn(this.dist.bin, argv, {
       cwd: this.projectRoot,
-      env: { ...process.env, ...opts.env, NO_COLOR: "1" },
+      env: { ...process.env, ELIDE_PROGRESS: "json", ...opts.env, NO_COLOR: "1" },
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
@@ -249,10 +260,16 @@ export class ElideCli {
       opts.onLine?.(line, false);
       if (!payload) observer?.line?.(line, false);
     });
-    const err = new LineSplitter((line) => {
+    const errText = (line: string) => {
       if (stderr.length < STDERR_CAPTURE_LIMIT) stderr += `${line}\n`;
       opts.onLine?.(line, true);
       observer?.line?.(line, true);
+    };
+    const err = new LineSplitter((line) => {
+      const record = parseElideRecord(line);
+      if (!record) return errText(line);
+      observer?.record?.(record);
+      for (const text of renderElideRecord(record)) errText(text);
     });
     child.stdout.setEncoding("utf8").on("data", (c: string) => out.push(c));
     child.stderr.setEncoding("utf8").on("data", (c: string) => err.push(c));
@@ -263,8 +280,10 @@ export class ElideCli {
       aborted = true;
       if (child.pid === undefined) return;
       killProcessTree(child.pid, "SIGTERM");
+      // Until `close`, which clears this timer, something of the tree still holds the output pipes: the CLI itself, or
+      // a forked JVM that outlived it. On POSIX the group is killed either way; on Windows only the CLI can be.
       killTimer = setTimeout(() => {
-        if (child.exitCode === null && child.pid !== undefined) killProcessTree(child.pid, "SIGKILL");
+        if (child.pid !== undefined && (child.exitCode === null || process.platform !== "win32")) killProcessTree(child.pid, "SIGKILL");
       }, TERMINATION_GRACE_MS);
     };
     if (opts.signal) {
@@ -288,7 +307,7 @@ export class ElideCli {
         return;
       }
       if (code !== 0) {
-        reject(new ElideCommandFailedError(argv, sig ? null : code, stderr.trim()));
+        reject(new ElideCommandFailedError(argv, sig ? null : code, stderr.trim(), this.projectRoot));
         return;
       }
       resolve({ stdout, exitCode: 0 });
@@ -296,13 +315,35 @@ export class ElideCli {
     return promise;
   }
 
-  /** `elide --version` → first line, e.g. `1.5.1+db2bc827b`; asked once per instance, since it cannot change. */
+  /**
+   * `elide --version` → first line, e.g. `1.5.1+db2bc827b`. Asked once per binary for the life of the process: the
+   * answer is kept under the binary's path and file identity (size, modification time, inode), so every project of
+   * a workspace, and every later sync, reuses it until the binary is replaced. A failed or aborted query is not kept.
+   */
   async version(opts: RunOptions = {}): Promise<string> {
-    this.reportedVersion ??= this.spawn(["--version"], opts, true).then(({ stdout }) => stdout.trim().split("\n")[0]?.trim() ?? "");
-    return this.reportedVersion;
+    let key: string;
+    try {
+      const stat = statSync(this.dist.bin);
+      key = `${this.dist.bin}\0${stat.size}\0${stat.mtimeMs}\0${stat.ino}`;
+    } catch {
+      // No binary: the spawn reports it.
+      return this.queryVersion(opts);
+    }
+    let answer = reportedVersions.get(key);
+    if (!answer) {
+      // Shared with every later caller, so the first one's cancellation does not end it; it takes a moment anyway.
+      const { signal: _, ...shared } = opts;
+      answer = this.queryVersion(shared);
+      reportedVersions.set(key, answer);
+      answer.catch(() => reportedVersions.delete(key));
+    }
+    return answer;
   }
 
-  private reportedVersion?: Promise<string>;
+  private async queryVersion(opts: RunOptions): Promise<string> {
+    const { stdout } = await this.spawn(["--version"], opts, true);
+    return stdout.trim().split("\n")[0]?.trim() ?? "";
+  }
 
   /**
    * The project manifest, decoded: `elide project export`, or `elide manifest` on a release that still carries it.
@@ -322,48 +363,42 @@ export class ElideCli {
         ? [MANIFEST_COMMAND, PROJECT_EXPORT_COMMAND]
         : [PROJECT_EXPORT_COMMAND, MANIFEST_COMMAND];
 
-    // Each attempt's stderr is held back until it is known to describe the outcome: a refusal answered by the other
-    // command (Elide 1.5's usage error for `project export`) leaves nothing behind.
-    const replay = (held: readonly string[]) => {
-      for (const line of held) opts.onLine?.(line, true);
-    };
     let refusal: unknown;
-    let refusalStderr: string[] = [];
     for (const command of candidates) {
       let json = "";
-      const held: string[] = [];
       try {
         await this.spawn([...command, ...elideFlagArgs(this.flags)], {
           ...opts,
           onLine: (line, stderr) => {
-            if (stderr) held.push(line);
-            else {
-              json += `${line}\n`;
-              opts.onLine?.(line, false);
-            }
+            if (!stderr) json += `${line}\n`;
+            opts.onLine?.(line, stderr);
           },
         }, true);
       } catch (e) {
         // The command the version pointed at is the one whose failure describes the project, so it is the error
         // reported when neither answers.
-        if (refusal === undefined) {
-          refusal = e;
-          refusalStderr = held;
-        }
+        refusal ??= e;
         continue;
       }
-      replay(held);
       const trimmed = json.trim();
       if (!trimmed) throw new ManifestParseError("empty output");
       this.manifestCommand = command;
       return decodeManifest(trimmed);
     }
-    replay(refusalStderr);
     throw refusal;
   }
 
   /** The command that answered for this project, once one has. */
   private manifestCommand?: readonly string[];
+
+  /** Modern CLI source conventions are resolved upstream; one export covers the whole workspace. */
+  async workspaceSources(opts: RunOptions = {}): Promise<Map<string, Record<string, SourceSet>> | undefined> {
+    const version = parseElideVersion(await this.version(opts));
+    if (this.manifestCommand === MANIFEST_COMMAND ||
+        (!this.manifestCommand && version !== undefined && compareElideVersions(version, PROJECT_EXPORT_VERSION) < 0)) return undefined;
+    const { stdout } = await this.spawn(["project", "export", "--format=intellij", ...elideFlagArgs(this.flags)], opts, true);
+    return decodeWorkspaceSources(stdout);
+  }
 
   /** `elide classpath <sourceSet>:<usage>` → absolute jar/dir entries (stdout split on the platform path delimiter). */
   async classpath(sourceSet: string, usage: ClasspathUsage, opts: RunOptions = {}): Promise<string[]> {
@@ -382,20 +417,23 @@ export class ElideCli {
    * Several classpaths of this project → entries keyed by query. One query that cannot be resolved fails the call.
    *
    * Elide 1.6.1 answers them all from one `elide classpath --json <query…>`, which resolves the project once; an
-   * older release rejects `--json` and is asked one query per process. A version that cannot be read is tried with
-   * `--json` first, and whichever form answered is kept for the rest of this instance's life.
+   * older release rejects `--json` and is asked one query per process. Development distributions can report
+   * the new version before gaining the option: an explicit CLI option rejection overrides the version hint.
    */
   async classpaths(queries: readonly ClasspathQuery[], opts: RunOptions = {}): Promise<Map<ClasspathQuery, string[]>> {
     const answers = new Map<ClasspathQuery, string[]>();
     if (queries.length === 0) return answers;
-    this.batchedClasspath ??= supportsBatchedClasspath(await this.version(opts));
+    this.batchedClasspath ??= supportsProgressRecords(await this.version(opts));
     if (this.batchedClasspath !== false) {
       try {
         const batched = await this.classpathJson(queries, opts);
         this.batchedClasspath = true;
         return batched;
       } catch (e) {
-        if (this.batchedClasspath) throw e;
+        const unsupported = e instanceof ElideCommandFailedError && e.exitCode === 2
+          && /(?:unexpected argument|Unknown option:)\s+'--json'/.test(e.stderr);
+        if (this.batchedClasspath && !unsupported) throw e;
+        this.batchedClasspath = false;
       }
     }
     for (const query of queries) {
@@ -437,18 +475,20 @@ export class ElideCli {
 
   /**
    * `elide install`. Omitting `with` keeps the CLI default, which downloads sources *and* javadoc for every declared
-   * Maven package. A `with` array pins the set exactly — `--slim` turns the default classifiers off and each entry is
-   * requested back with `--with` — so `[]` installs classes only and `["sources"]` skips the javadoc download.
-   * Elide's own toolchain jars (kotlin-stdlib, kotlin-test, JUnit) are published without classifiers either way.
+   * Maven package; a `with` array pins the set exactly ({@link installClassifierOptions}), so `[]` installs classes
+   * only and `["sources"]` skips the javadoc download. Elide's own toolchain jars (kotlin-stdlib, kotlin-test, JUnit)
+   * are published without classifiers either way.
    */
   async install(opts: RunOptions & { with?: readonly string[] } = {}): Promise<void> {
-    const flags = opts.with ? ["--slim", ...opts.with.flatMap((classifier) => ["--with", classifier])] : [];
-    await this.run(["install", ...elideFlagArgs(this.flags), ...flags], opts);
+    await this.run(elideInvocationArgs("install", { flags: this.flags, ...(opts.with ? { options: installClassifierOptions(opts.with) } : {}) }), opts);
   }
 
   /**
    * `elide build <target…>`: run build targets by name, with the build flags this instance carries.
-   * User-requested builds can also run as editor tasks so their output reaches the terminal.
+   *
+   * Used for what the project model needs on disk and nothing else produces — a published `.aar` has to be unpacked
+   * before its classes are on a classpath the editor can read. A build the user asked for runs as a task instead,
+   * so its output reaches the terminal.
    */
   async build(targets: readonly string[], opts: RunOptions = {}): Promise<void> {
     await this.run(["build", ...targets, ...elideFlagArgs(this.flags)], opts);
@@ -487,11 +527,6 @@ export class ElideCli {
   async init(templateId: string, answers: Readonly<Record<string, string>>, opts: RunOptions = {}): Promise<void> {
     await this.run(initArgs(templateId, answers), opts);
   }
-}
-
-/** Whether `e` is the CLI's usage error for a subcommand it does not have (exit 2, `unrecognized subcommand`). */
-export function isUnknownSubcommand(e: unknown): boolean {
-  return e instanceof ElideCommandFailedError && e.exitCode === 2 && e.stderr.includes("unrecognized subcommand");
 }
 
 /** Split a platform-native classpath string; relative entries are resolved against `root`. */
@@ -611,7 +646,8 @@ export async function isLockfileCurrent(
 /**
  * The local Pkl modules the files in `modules` read, directly or through each other, without `modules` themselves.
  * A URI with a scheme other than `file:` (`elide:`, `pkl:`, `package:`, `https:`) names no local file; a module that
- * cannot be read contributes none of its own.
+ * cannot be read contributes none of its own, and neither does a URI that names no file (a malformed escape, a
+ * `file:` URI with a remote host), which is the CLI's to report.
  */
 export async function importedModules(modules: readonly string[]): Promise<string[]> {
   const seen = new Set(modules.map((module) => path.resolve(module)));
@@ -625,9 +661,14 @@ export async function importedModules(modules: readonly string[]): Promise<strin
       continue;
     }
     for (const uri of pklModuleReferences(text)) {
-      const file = uri.startsWith("file:")
-        ? fileURLToPath(uri)
-        : /^[A-Za-z][A-Za-z0-9+.-]*:/.test(uri) ? undefined : path.resolve(path.dirname(module), decodeURI(uri));
+      let file: string | undefined;
+      try {
+        file = uri.startsWith("file:")
+          ? fileURLToPath(uri)
+          : /^[A-Za-z][A-Za-z0-9+.-]*:/.test(uri) ? undefined : path.resolve(path.dirname(module), decodeURI(uri));
+      } catch {
+        continue;
+      }
       if (file === undefined || seen.has(file)) continue;
       seen.add(file);
       found.push(file);

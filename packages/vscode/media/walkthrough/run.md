@@ -8,11 +8,14 @@ A Native Image artifact carries the same **Run** and **Debug** pair: both build 
 
 The Elide view in the activity bar lists the same entrypoints, the `build`/`test`/`install` tasks, the build targets of `elide build --inspect`, the source sets and the resolved dependencies.
 
-### Android SDK tools
+### Android
 
-**Check Android Environment** inspects an independently installed SDK, platform-tools and connected devices.
-It works without a successful sync and never installs components, accepts licenses, builds or deploys an app.
+Start with **Elide: Check Android Environment** to inspect local tools and devices, even before sync succeeds.
+Select a finding for its settings or repair action; inspection does not install SDK components or accept licenses.
 
-**Show Android Logcat** streams connected-device logs. Use **Filter Android Logcat** to enter an application ID,
-read one from an existing APK, or set priority/text filters. Ctrl/Cmd-click a resolvable application stack frame
-to open its Kotlin/Java source line.
+After syncing, use **Elide: Select Android Deployment Target…** to choose an APK and device. The status bar shows
+the remembered selection used by **Run Android App…** and **Debug Android App…**. A disconnected selection
+stops deployment instead of silently switching devices. Debugging requires `android:debuggable="true"` in the APK.
+
+**Open Compose Preview** renders locally without a device. **Show Android Logcat** streams application logs;
+Ctrl/Cmd-click a resolvable application stack frame to open its source line.

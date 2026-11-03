@@ -54,7 +54,7 @@ ENCODED_ID=$(url_encode "$EXTENSION_ID")
 ENCODED_VERSION=$(url_encode "$VERSION")
 
 echo "Getting presigned upload URL..."
-UPLOAD_URL=$(curl --fail -s \
+UPLOAD_URL=$(curl --fail -sS \
   -H "x-api-key: ${ELIDE_PLUGINS_KEY}" \
   "${PLUGINS_URL}/vscode/files/presign?id=${ENCODED_ID}&version=${ENCODED_VERSION}")
 
@@ -86,7 +86,7 @@ METADATA_JSON="$(jq -n \
   (if $repositoryUrl != "" then {repositoryUrl: $repositoryUrl} else {} end)'
 )"
 
-curl --fail -s \
+curl --fail -sS \
   -H "x-api-key: ${ELIDE_PLUGINS_KEY}" \
   -H "Content-Type: application/json" \
   "${PLUGINS_URL}/vscode/extensions?id=${ENCODED_ID}" \

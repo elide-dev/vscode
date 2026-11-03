@@ -3,13 +3,28 @@ import path from "node:path";
 import { MANIFEST_NAME, WORKSPACE_JSON, isLockfileName, nativeImageBinary, type ElideCommand } from "@elide/ide-core";
 import * as vscode from "vscode";
 import { ACTIVITY_VIEW_ID, type ElideActivityApi } from "./activity.js";
+import {
+  createAndroidAvd,
+  createAndroidKeystore,
+  debugAndroid,
+  installAndroidSdk,
+  openAndroidMapping,
+  runAndroid,
+  startAndroidEmulator,
+  stopAndroidEmulator,
+} from "./android.js";
+import { ELIDE_ANDROID_DEBUG_TYPE, ElideAndroidDebugConfigurationProvider } from "./androidDebug.js";
+import { AndroidDeploymentController } from "./androidDeployment.js";
 import { registerAndroidLogcat } from "./androidLogcat.js";
 import { registerAndroidReadiness } from "./androidReadiness.js";
 import { ElideCodeLensProvider } from "./codelens.js";
-import { readConfig } from "./config.js";
-import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider } from "./debug.js";
+import { registerComposePreview, type ElideComposePreviewApi } from "./composePreview.js";
+import { readConfig, type KotlinLspServer } from "./config.js";
+import { ELIDE_DEBUG_TYPE, ElideDebugConfigurationProvider, KOMODO_DEBUG_TYPE } from "./debug.js";
 import { ElideProjectsView, PROJECTS_VIEW_ID, type ElideExplorerApi } from "./explorer.js";
-import { jetBrainsExtension } from "./jetbrains.js";
+import { JETBRAINS_EXTENSION_ID, jetBrainsExtension } from "./jetbrains.js";
+import { KomodoDebugAdapterFactory } from "./komodoDebug.js";
+import { installKomodo, resolveKomodo } from "./komodoDistribution.js";
 import { ELIDE_NATIVE_DEBUG_TYPE, ElideNativeDebugConfigurationProvider } from "./nativeDebug.js";
 import { addWorkspaceMember, newProject } from "./newProject.js";
 import { ElideUi } from "./output.js";
@@ -21,6 +36,7 @@ import { ElideTestController, type ElideTestApi } from "./testing.js";
 export interface ElideExtensionApi {
   tests: ElideTestApi;
   explorer: ElideExplorerApi;
+  composePreview: ElideComposePreviewApi;
   activity: ElideActivityApi;
 }
 
@@ -30,20 +46,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const ui = new ElideUi();
   const workspace = new ElideWorkspace(ui, context.globalState, context.asAbsolutePath("media/kotlin-lsp"), context.globalStorageUri.fsPath);
   context.subscriptions.push(ui, workspace);
+  const composePreview = registerComposePreview(workspace, ui, context);
+  const deployments = new AndroidDeploymentController(workspace, context.workspaceState);
   context.subscriptions.push(
-    registerAndroidLogcat(workspace),
-    registerAndroidReadiness(ui),
+    composePreview.disposable,
+    registerAndroidLogcat(workspace, () => deployments.target),
+    registerAndroidReadiness(workspace, ui),
+    deployments,
   );
 
   const debugConfigurations = new ElideDebugConfigurationProvider(workspace, ui, context.subscriptions);
   const nativeDebugConfigurations = new ElideNativeDebugConfigurationProvider(workspace, ui);
+  const androidDebugConfigurations = new ElideAndroidDebugConfigurationProvider(workspace, ui, debugConfigurations.sessions, deployments);
   const tests = new ElideTestController(workspace, ui, debugConfigurations.sessions);
   const codeLenses = new ElideCodeLensProvider(workspace);
   const explorer = new ElideProjectsView(workspace, ui);
   context.subscriptions.push(
     codeLenses,
     vscode.languages.registerCodeLensProvider(ElideCodeLensProvider.selector, codeLenses),
-    vscode.commands.registerCommand("elide.sync", () => syncCommand(workspace)),
+    vscode.commands.registerCommand("elide.sync", (target: unknown) => syncCommand(workspace, target)),
+    vscode.commands.registerCommand("elide.installKomodo", () => installKomodoCommand(workspace, ui)),
     vscode.commands.registerCommand("elide.showOutput", () => ui.output.show(true)),
     vscode.commands.registerCommand("elide.showMenu", () => showMenu(workspace)),
     vscode.commands.registerCommand("elide.openWorkspaceJson", () => openWorkspaceJson(workspace)),
@@ -57,10 +79,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.debugArtifact", (target: unknown) => debugArtifact(workspace, target)),
     vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, target)),
     vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
+    vscode.commands.registerCommand("elide.androidSelectTarget", (target: unknown) => deployments.select(target)),
+    vscode.commands.registerCommand("elide.androidRun", (target: unknown) => runAndroid(workspace, deployments, target)),
+    vscode.commands.registerCommand("elide.androidDebug", (target: unknown) => debugAndroid(workspace, deployments, target)),
+    vscode.commands.registerCommand("elide.androidStartEmulator", (target: unknown) => startAndroidEmulator(workspace, target)),
+    vscode.commands.registerCommand("elide.androidStopEmulator", (target: unknown) => stopAndroidEmulator(workspace, target)),
+    vscode.commands.registerCommand("elide.androidCreateAvd", (target: unknown) => createAndroidAvd(workspace, target)),
+    vscode.commands.registerCommand("elide.androidInstallSdk", (target: unknown) => installAndroidSdk(workspace, target)),
+    vscode.commands.registerCommand("elide.androidCreateKeystore", (target: unknown) => createAndroidKeystore(workspace, ui, target)),
+    vscode.commands.registerCommand("elide.androidOpenMapping", (target: unknown) => openAndroidMapping(workspace, target)),
     vscode.commands.registerCommand("elide.revealLibrary", (target: unknown) => revealLibrary(target)),
     vscode.tasks.registerTaskProvider(ELIDE_TASK_TYPE, new ElideTaskProvider(workspace)),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_DEBUG_TYPE, debugConfigurations),
     vscode.debug.registerDebugConfigurationProvider(ELIDE_NATIVE_DEBUG_TYPE, nativeDebugConfigurations),
+    vscode.debug.registerDebugConfigurationProvider(ELIDE_ANDROID_DEBUG_TYPE, androidDebugConfigurations),
+    vscode.debug.registerDebugAdapterDescriptorFactory(KOMODO_DEBUG_TYPE, new KomodoDebugAdapterFactory(workspace, (message) => ui.log(message))),
     vscode.window.registerTreeDataProvider(PROJECTS_VIEW_ID, explorer),
     vscode.window.registerTreeDataProvider(ACTIVITY_VIEW_ID, ui.activity),
     explorer,
@@ -68,20 +101,49 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   );
 
   registerWatchers(context, workspace, ui);
+  const komodoSessions = new Set<vscode.DebugSession>();
+  const updateKomodoAvailability = () => {
+    void vscode.commands.executeCommand("setContext", "elide.komodoAvailable", workspace.komodoAvailable);
+    void vscode.commands.executeCommand("setContext", "elide.komodoPreviewAvailable", workspace.komodoPreviewAvailable);
+    if (!workspace.komodoAvailable) {
+      for (const session of komodoSessions) void vscode.debug.stopDebugging(session);
+    }
+  };
+  updateKomodoAvailability();
   context.subscriptions.push(
     workspace.onDidChange(() => void vscode.commands.executeCommand("setContext", "elide.hasProjects", workspace.projects.length > 0)),
+    workspace.onDidChangeKomodoAvailability(updateKomodoAvailability),
+    vscode.debug.onDidStartDebugSession((session) => {
+      if (session.type !== KOMODO_DEBUG_TYPE) return;
+      komodoSessions.add(session);
+      if (!workspace.komodoAvailable) void vscode.debug.stopDebugging(session);
+    }),
+    vscode.debug.onDidTerminateDebugSession((session) => komodoSessions.delete(session)),
   );
 
   // Kotlin's own activation events do not cover Java-only Elide projects. Start the companion
-  // when an Elide source document needs it, without making CLI features wait for its server.
+  // when an Elide source document of a JetBrains folder needs it, without making CLI features wait for its server.
+  // A Komodo folder never starts it; when the JetBrains extension starts itself (it activates on any Kotlin file),
+  // both servers analyze the folder, so say so once.
   let kotlinRequested = false;
+  let duplicateWarned = false;
   const startKotlinForDocuments = () => {
-    if (kotlinRequested || !vscode.workspace.textDocuments.some((document) =>
+    const elideDocuments = vscode.workspace.textDocuments.filter((document) =>
       document.uri.scheme === "file" && (document.languageId === "kotlin" || document.languageId === "java")
-      && workspace.projectFor(document.uri.fsPath) !== undefined,
-    )) return;
+      && workspace.projectFor(document.uri.fsPath) !== undefined);
+    const komodo = (document: vscode.TextDocument) => vscode.workspace.getConfiguration("elide", document.uri).get<KotlinLspServer>("kotlinLsp.server") === "komodo";
     const extension = jetBrainsExtension();
     if (!extension) return;
+    if (!duplicateWarned && workspace.komodoAvailable && elideDocuments.some((document) => document.languageId === "kotlin" && komodo(document))) {
+      duplicateWarned = true;
+      void vscode.window.showWarningMessage(
+        `Elide: ${JETBRAINS_EXTENSION_ID} is enabled, and it analyzes Kotlin files beside Komodo's language server (duplicate diagnostics and completions). Disable it for this workspace to use Komodo alone.`,
+        "Show Extension",
+      ).then((pick) => {
+        if (pick) void vscode.commands.executeCommand("extension.open", JETBRAINS_EXTENSION_ID);
+      });
+    }
+    if (kotlinRequested || !elideDocuments.some((document) => !komodo(document))) return;
     kotlinRequested = true;
     void extension.activate().then(undefined, (error: unknown) => {
       ui.log(`Kotlin extension activation failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -91,18 +153,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument(startKotlinForDocuments),
     workspace.onDidChange(startKotlinForDocuments),
+    workspace.onDidChangeKomodoAvailability(startKotlinForDocuments),
   );
 
   for (const folder of vscode.workspace.workspaceFolders ?? []) await workspace.discover(folder);
   await vscode.commands.executeCommand("setContext", "elide.hasProjects", workspace.projects.length > 0);
   // No project is not a dead end: commands, the welcome view and project creation stay available.
   if (workspace.projects.length === 0) ui.log("No elide.pkl found in the workspace.");
-  else {
-    ui.setStatus("idle");
-    if (readConfig().syncOnStartup) void workspace.syncAll("startup");
-    else workspace.markStaleAll(false);
-  }
-  return { tests, explorer, activity: ui.activity };
+  else void workspace.syncAll("startup", (folder) => readConfig(folder).syncOnStartup);
+  return { tests, explorer, composePreview: composePreview.api, activity: ui.activity };
 }
 
 export function deactivate(): void {}
@@ -139,26 +198,22 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
   };
 
   const manifests = vscode.workspace.createFileSystemWatcher(`**/${MANIFEST_NAME}`);
-  // A sync never writes a manifest: an edit made while one runs, or right after, still makes the folder stale.
-  manifests.onDidChange((uri) => {
-    const project = ownerOf(uri, path.dirname);
-    if (project) onStale(project.folder, MANIFEST_NAME, uri.fsPath);
+  // A sync never writes a manifest: an edit made while one runs, or right after, still makes the folder stale. Add
+  // Workspace Member does, and syncs itself.
+  manifests.onDidChange(async (uri) => {
+    const project = workspace.manifestOwner(uri);
+    if (project && !(await workspace.isOwnManifestWrite(uri))) onStale(project.folder, MANIFEST_NAME, uri.fsPath);
   });
-  manifests.onDidCreate((uri) => {
+  manifests.onDidCreate(async (uri) => {
     const project = workspace.addProject(uri);
     if (!project) {
       // A manifest nested in an Elide workspace can be a member its root declares — or the one whose absence failed
       // the last sync — and only a sync of the root can tell: the member list is whatever `elide project export` says.
-      const located = workspace.locate(uri);
-      const owner = located ? workspace.projectFor(path.dirname(located.fsPath)) : undefined;
-      const inWorkspace = owner !== undefined && (owner.workspaceRoot !== undefined || (owner.model?.members.length ?? 0) > 0);
-      if (owner && (inWorkspace || workspace.lastError(owner.folder))) {
-        onStale(owner.folder, MANIFEST_NAME, uri.fsPath);
-      }
+      const owner = workspace.manifestOwner(uri, true);
+      if (owner && !(await workspace.isOwnManifestWrite(uri))) onStale(owner.folder, MANIFEST_NAME, uri.fsPath);
       return;
     }
     ui.log(`project added: ${project.root}`);
-    ui.setStatus("stale");
     debounce(project.folder.uri.toString(), () => void workspace.syncFolder(project.folder, "project-added"));
   });
   manifests.onDidDelete(async (uri) => {
@@ -168,7 +223,6 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
     // Manifests that were nested inside the deleted project become projects of their own.
     await workspace.discover(project.folder);
     if (workspace.projectsIn(project.folder).length > 0) void workspace.syncFolder(project.folder, "project-removed");
-    else ui.setStatus("none");
   });
 
   const lockfiles = vscode.workspace.createFileSystemWatcher("**/.dev/elide.lock*");
@@ -215,18 +269,14 @@ function registerWatchers(context: vscode.ExtensionContext, workspace: ElideWork
     lockfiles,
     workspace.onDidChangeModules(watchModules),
     { dispose: () => moduleWatchers.forEach((w) => w.dispose()) },
-    vscode.workspace.onDidChangeConfiguration((e) => {
-      // Build flags reach the manifest as `build.flags`, so a model resolved without them describes another build.
-      if (!e.affectsConfiguration("elide.flags")) return;
-      ui.log("elide.flags changed: sync to re-resolve the project model");
-      workspace.markStaleAll();
-    }),
-    vscode.workspace.onDidChangeWorkspaceFolders(async (e) => {
-      for (const removed of e.removed) workspace.removeFolder(removed);
-      for (const added of e.added) {
-        const projects = await workspace.discover(added);
-        if (projects.length > 0) void workspace.syncFolder(added, "startup");
+    vscode.workspace.onDidChangeConfiguration((e) => workspace.settingsChanged(e)),
+    vscode.workspace.onDidChangeWorkspaceFolders((e) => {
+      for (const removed of e.removed) {
+        clearTimeout(timers.get(removed.uri.toString()));
+        timers.delete(removed.uri.toString());
+        workspace.removeFolder(removed);
       }
+      for (const added of e.added) void workspace.addFolder(added);
     }),
     { dispose: () => timers.forEach((t) => clearTimeout(t)) },
   );
@@ -246,7 +296,47 @@ async function promptReload(folder: vscode.WorkspaceFolder, workspace: ElideWork
   }
 }
 
-async function syncCommand(workspace: ElideWorkspace): Promise<void> {
+/** Installation is an explicit command, never a side effect of activation or sync. */
+async function installKomodoCommand(workspace: ElideWorkspace, ui: ElideUi): Promise<void> {
+  const config = readConfig();
+  if (config.komodoLspPath) {
+    void vscode.window.showErrorMessage("Komodo uses elide.kotlinLsp.komodo.path. Fix or clear that developer override before installing a managed component.");
+    return;
+  }
+  try {
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Elide: installing Komodo", cancellable: true },
+      async (progress, token) => {
+        const abort = new AbortController();
+        const cancellation = token.onCancellationRequested(() => abort.abort(new Error("Komodo installation cancelled.")));
+        try {
+          if (token.isCancellationRequested) abort.abort(new Error("Komodo installation cancelled."));
+          await installKomodo(config.home, {
+            signal: abort.signal,
+            onLine: (message) => { progress.report({ message }); ui.log(`Komodo: ${message}`); },
+          });
+          await resolveKomodo(undefined, config.home, { signal: abort.signal });
+        } finally {
+          cancellation.dispose();
+        }
+      },
+    );
+    await workspace.syncAll("manual", (folder) => readConfig(folder).kotlinLspServer === "komodo");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ui.log(`Komodo: ${message}`);
+    void vscode.window.showErrorMessage(`Komodo: ${message}`);
+  }
+}
+
+/** Sync the folder of the project row the command was invoked on, or the only folder with projects, or the one picked. */
+async function syncCommand(workspace: ElideWorkspace, value: unknown): Promise<void> {
+  const root = toTarget(value)?.root;
+  const project = root ? workspace.projectAt(root) : undefined;
+  if (project) {
+    await workspace.syncFolder(project.folder, "manual");
+    return;
+  }
   const folders = (vscode.workspace.workspaceFolders ?? []).filter((f) => workspace.projectsIn(f).length > 0);
   if (folders.length === 0) {
     for (const folder of vscode.workspace.workspaceFolders ?? []) await workspace.discover(folder);
@@ -288,12 +378,17 @@ async function openWorkspaceJson(workspace: ElideWorkspace): Promise<void> {
 /** Actions offered by the status-bar menu, in order; entries whose command is not registered are skipped. */
 const MENU_ACTIONS: { label: string; description: string; command: string }[] = [
   { label: "$(sync) Sync Project(s)", description: "Re-resolve the project model and refresh the Kotlin LSP", command: "elide.sync" },
+  { label: "$(cloud-download) Install Komodo", description: "Explicitly install the managed native Kotlin component", command: "elide.installKomodo" },
   { label: "$(play) Run Elide Command…", description: "Build, test, install, or run an entrypoint", command: "elide.runTask" },
+  { label: "$(device-mobile) Select Android Deployment Target…", description: "Choose the application and device for Run and Debug", command: "elide.androidSelectTarget" },
+  { label: "$(play) Run Android App…", description: "Build, install and launch on the selected device", command: "elide.androidRun" },
+  { label: "$(debug-alt) Debug Android App…", description: "Build, install and attach the debugger", command: "elide.androidDebug" },
   { label: "$(checklist) Check Android Environment", description: "Diagnose SDK, tools and connected devices", command: "elide.androidDoctor" },
+  { label: "$(preview) Open Compose Preview", description: "Render composables locally, without a device", command: "elide.androidComposePreview" },
   { label: "$(output) Show Android Logcat", description: "Application logs and stack traces", command: "elide.androidLogcat" },
   { label: "$(beaker) Run All Tests", description: "Run every test in the Testing view", command: "testing.runAll" },
   { label: "$(file-code) Open elide.pkl", description: "Project manifest", command: "elide.openManifest" },
-  { label: "$(json) Open generated Kotlin LSP workspace", description: WORKSPACE_JSON, command: "elide.openWorkspaceJson" },
+  { label: "$(json) Open Generated Kotlin LSP Workspace", description: WORKSPACE_JSON, command: "elide.openWorkspaceJson" },
   { label: "$(pulse) Show Activity", description: "What syncs and preview builds did, step by step, and where their time went", command: "elide.showActivity" },
   { label: "$(output) Show Output", description: "Elide output channel", command: "elide.showOutput" },
   { label: "$(new-folder) New Project…", description: "Create a project from an Elide template", command: "elide.newProject" },
@@ -313,7 +408,8 @@ async function showMenu(workspace: ElideWorkspace): Promise<void> {
     });
     break;
   }
-  items.push(...MENU_ACTIONS.filter((a) => registered.has(a.command)));
+  items.push(...MENU_ACTIONS.filter((a) => registered.has(a.command) &&
+    (a.command !== "elide.androidComposePreview" || readConfig().composePreviewEngine !== "komodo" || workspace.komodoPreviewAvailable)));
   const pick = await vscode.window.showQuickPick(items, { placeHolder: "Elide" });
   if (pick) await vscode.commands.executeCommand(pick.command);
 }

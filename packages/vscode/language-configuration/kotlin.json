@@ -1,0 +1,65 @@
+{
+  "comments": {
+    "lineComment": "//",
+    "blockComment": ["/*", "*/"]
+  },
+  "brackets": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"]
+  ],
+  "autoClosingPairs": [
+    { "open": "{", "close": "}" },
+    { "open": "[", "close": "]" },
+    { "open": "(", "close": ")" },
+    { "open": "\"\"\"", "close": "\"\"\"", "notIn": ["comment"] },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] },
+    { "open": "'", "close": "'", "notIn": ["string", "comment"] },
+    { "open": "`", "close": "`", "notIn": ["string", "comment"] },
+    { "open": "/**", "close": " */", "notIn": ["string"] }
+  ],
+  "surroundingPairs": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+    ["\"", "\""],
+    ["'", "'"],
+    ["`", "`"],
+    ["<", ">"]
+  ],
+  "wordPattern": "(`[^`\\r\\n]+`)|(-?\\d*\\.\\d\\w*)|([^\\`\\~\\!\\@\\#\\$\\%\\^\\&\\*\\(\\)\\-\\=\\+\\[\\{\\]\\}\\\\\\|\\;\\:\\'\\\"\\,\\.\\<\\>\\/\\?\\s]+)",
+  "indentationRules": {
+    "increaseIndentPattern": "^((?!//).)*(\\{([^}\"'`/]*|(\\t|[ ])*//.*)|\\([^)\"'`/]*|\\[[^\\]\"'`/]*)$",
+    "decreaseIndentPattern": "^((?!.*?/\\*).*\\*/)?\\s*[\\}\\]\\)].*$"
+  },
+  "onEnterRules": [
+    {
+      "beforeText": { "pattern": "^\\s*/\\*\\*(?!/)([^\\*]|\\*(?!/))*$" },
+      "afterText": { "pattern": "^\\s*\\*/$" },
+      "action": { "indent": "indentOutdent", "appendText": " * " }
+    },
+    {
+      "beforeText": { "pattern": "^\\s*/\\*\\*(?!/)([^\\*]|\\*(?!/))*$" },
+      "action": { "indent": "none", "appendText": " * " }
+    },
+    {
+      "beforeText": { "pattern": "^(\\t|[ ])*[ ]\\*([ ]([^\\*]|\\*(?!/))*)?$" },
+      "previousLineText": { "pattern": "(?=^(\\s*(/\\*\\*|\\*)).*)(?=(?!(\\s*\\*/)))" },
+      "action": { "indent": "none", "appendText": "* " }
+    },
+    {
+      "beforeText": { "pattern": "^(\\t|[ ])*[ ]\\*/\\s*$" },
+      "action": { "indent": "none", "removeText": 1 }
+    },
+    {
+      "beforeText": { "pattern": "^(\\t|[ ])*[ ]\\*[^/]*\\*/\\s*$" },
+      "action": { "indent": "none", "removeText": 1 }
+    }
+  ],
+  "folding": {
+    "markers": {
+      "start": "^\\s*//\\s*(?:#?region\\b|<editor-fold\\b)",
+      "end": "^\\s*//\\s*(?:#?endregion\\b|</editor-fold>)"
+    }
+  }
+}

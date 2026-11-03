@@ -20,6 +20,8 @@ export class ElideCommandFailedError extends Error {
     readonly args: readonly string[],
     readonly exitCode: number | null,
     readonly stderr: string,
+    /** Directory the command ran in: the project whose manifest it evaluated. */
+    readonly cwd?: string,
   ) {
     super(`elide ${args.join(" ")} failed (exit ${exitCode ?? "signal"})${stderr ? `:\n${stderr}` : ""}`);
     this.name = "ElideCommandFailedError";

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { AndroidLogcatFormatter, AndroidLogcatSession, androidLogcatArgs, parseAndroidLogcatLine, parseAndroidPackageUid, type AndroidLogcatOptions } from "../src/androidLogcat.js";
 
 const defaults: AndroidLogcatOptions = { adb: "/sdk with spaces/platform-tools/adb", device: "emulator-5554", priority: "I", text: "" };

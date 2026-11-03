@@ -58,16 +58,21 @@ export async function kotlinLspPlugin(serverDirectory: string, helperDirectory: 
 }
 
 /**
- * `args` (`intellij.additionalJvmArgs`) with `plugin` listed in `-Dplugin.path`, keeping the user's own entries and
- * dropping builds of Elide's plugin under `cacheRoot` other than `plugin`; `undefined` when nothing changes.
+ * `args` (`intellij.additionalJvmArgs`) without the builds of Elide's plugin that earlier releases listed there in
+ * `-Dplugin.path`, from any VS Code profile (each has its own `<globalStorage>/<extension id>`, whose last segment
+ * `cacheRoot` shares); `undefined` when there are none. The user's own entries are kept, and a `-Dplugin.path` left
+ * with none is dropped.
  */
-export function withKotlinLspPlugin(args: readonly string[], plugin: string, cacheRoot: string): string[] | undefined {
-  const owned = path.join(cacheRoot, "kotlin-lsp-plugin") + path.sep;
-  const others = args.filter((arg) => !arg.startsWith(PLUGIN_PATH));
-  const entries = args
-    .filter((arg) => arg.startsWith(PLUGIN_PATH))
-    .flatMap((arg) => arg.slice(PLUGIN_PATH.length).split(path.delimiter))
-    .filter((entry) => entry.length > 0 && !entry.startsWith(owned));
-  const next = [...others, PLUGIN_PATH + [...entries, plugin].join(path.delimiter)];
-  return next.length === args.length && next.every((arg, i) => arg === args[i]) ? undefined : next;
+export function withoutKotlinLspPlugin(args: readonly string[], cacheRoot: string): string[] | undefined {
+  const owned = `${path.sep}${path.basename(cacheRoot)}${path.sep}kotlin-lsp-plugin${path.sep}`;
+  let changed = false;
+  const next = args.flatMap((arg) => {
+    if (!arg.startsWith(PLUGIN_PATH)) return [arg];
+    const entries = arg.slice(PLUGIN_PATH.length).split(path.delimiter).filter((entry) => entry.length > 0);
+    const kept = entries.filter((entry) => !entry.includes(owned));
+    if (kept.length === entries.length) return [arg];
+    changed = true;
+    return kept.length > 0 ? [PLUGIN_PATH + kept.join(path.delimiter)] : [];
+  });
+  return changed ? next : undefined;
 }

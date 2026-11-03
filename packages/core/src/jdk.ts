@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { ElideDistribution } from "./elide.js";
@@ -21,6 +21,8 @@ export interface ResolveJdkOptions {
   readText?: (p: string) => string | undefined;
   /** Runs `<home>/bin/java -version`; returns combined output. Default spawns the process. */
   javaVersionOutput?: (home: string) => Promise<string | undefined>;
+  /** Resolves symlinks in a JDK home; the default keeps a path that cannot be resolved as it is. */
+  realpath?: (p: string) => string;
 }
 
 /**
@@ -54,6 +56,14 @@ function defaultReadText(p: string): string | undefined {
     return readFileSync(p, "utf8");
   } catch {
     return undefined;
+  }
+}
+
+function defaultRealpath(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return p;
   }
 }
 
@@ -118,6 +128,10 @@ async function versionOf(home: string, manifest: Manifest, opts: Required<Pick<R
  *
  * Order: explicit override → `jvm.javaHome` → the Elide distribution (only if it carries a `release` file, see
  * {@link looksLikeJdk}) → `$JAVA_HOME` → installed JDKs (exact match on the requested major, else the highest).
+ *
+ * The home is returned with its symlinks resolved. SDKMAN's `$JAVA_HOME` is `candidates/java/current`, a link that
+ * moves when the default changes, and the JetBrains server rejects a launcher under it: it resolves `bin/java` and
+ * finds it outside the configured home ("does not resolve to a valid JDK home").
  */
 export async function resolveJdk(manifest: Manifest, dist: ElideDistribution, opts: ResolveJdkOptions = {}): Promise<Jdk | undefined> {
   const env = opts.env ?? process.env;
@@ -128,11 +142,12 @@ export async function resolveJdk(manifest: Manifest, dist: ElideDistribution, op
   const javaVersionOutput = opts.javaVersionOutput ?? ((home: string) => javaOutput(home, ["-version"]));
   const versionOpts = { readText, javaVersionOutput };
 
+  const realpath = opts.realpath ?? defaultRealpath;
   const direct = [opts.override, manifest.jvm?.javaHome, dist.home, env.JAVA_HOME].filter(
     (h): h is string => typeof h === "string" && h.length > 0,
   );
   for (const home of direct) {
-    if (looksLikeJdk(home, exists)) return { home, version: await versionOf(home, manifest, versionOpts) };
+    if (looksLikeJdk(home, exists)) return { home: realpath(home), version: await versionOf(home, manifest, versionOpts) };
   }
 
   const found: Jdk[] = [];
@@ -144,7 +159,7 @@ export async function resolveJdk(manifest: Manifest, dist: ElideDistribution, op
       if (!looksLikeJdk(candidate, exists)) continue;
       const release = readText(path.join(candidate, "release"));
       const version = (release ? /JAVA_VERSION="([^"]+)"/.exec(release)?.[1] : undefined) ?? entry;
-      found.push({ home: candidate, version });
+      found.push({ home: realpath(candidate), version });
     }
   }
   if (found.length === 0) return undefined;

@@ -113,6 +113,15 @@ export function mergeElideInvocationOptions(...layers: readonly (ElideInvocation
   };
 }
 
+/**
+ * Options that make `elide install` fetch exactly `classifiers` (`elide.install.classifiers`) besides the classes:
+ * `--slim` turns off the CLI default, which downloads sources *and* javadoc for every declared Maven package, and
+ * each entry is requested back with `--with`. `[]` installs classes only.
+ */
+export function installClassifierOptions(classifiers: readonly string[]): Record<string, ElideOptionValue> {
+  return { slim: true, with: [...classifiers] };
+}
+
 /** Strings of an unknown JSON array; anything else yields an empty list. */
 export function elideStringArrayFrom(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];

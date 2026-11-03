@@ -5,5 +5,10 @@
 !CHANGELOG.md
 !LICENSE
 !icon.png
-!media/**
+!media/elide.svg
+!media/walkthrough/**
+!media/compose/**
+!media/kotlin-lsp/**
+!media/database/inspector.dex
+!language-configuration/**
 !syntaxes/**

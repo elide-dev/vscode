@@ -1,6 +1,9 @@
 import path from "node:path";
 import {
   MANIFEST_NAME,
+  isAndroidApk,
+  isAndroidFeature,
+  androidFeatureTask,
   isNativeImageBinary,
   isPathUnder,
   normalizePath,
@@ -44,8 +47,9 @@ export class ElideCodeLensProvider implements vscode.CodeLensProvider, vscode.Di
     this.subscriptions = [
       // A new model can add source roots or change `jvm.main`, both of which decide the lenses below.
       workspace.onDidChange(() => this.changed.fire()),
+      workspace.onDidChangeKomodoAvailability(() => this.changed.fire()),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration("elide.codeLens")) this.changed.fire();
+        if (e.affectsConfiguration("elide.codeLens") || e.affectsConfiguration("elide.debug.adapter")) this.changed.fire();
       }),
     ];
   }
@@ -58,13 +62,11 @@ export class ElideCodeLensProvider implements vscode.CodeLensProvider, vscode.Di
   provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
     if (!readConfig(document.uri).codeLens) return [];
     const fsPath = document.uri.fsPath;
-    if (path.basename(fsPath) === MANIFEST_NAME) {
-      const root = path.dirname(fsPath);
-      // Only the manifest of a tracked project: a nested manifest belongs to a build this one does not include.
-      return this.workspace.projectAt(root) ? manifestLenses(document, root) : [];
-    }
-    const project = this.workspace.projectFor(fsPath);
-    return project ? sourceLenses(document, project) : [];
+    const manifest = path.basename(fsPath) === MANIFEST_NAME;
+    const project = manifest ? this.workspace.projectAt(path.dirname(fsPath)) : this.workspace.projectFor(fsPath);
+    if (!project) return [];
+    const lenses = manifest ? manifestLenses(document, project.root) : sourceLenses(document, project);
+    return this.workspace.komodoDebugAvailable(project.folder) ? lenses : lenses.filter((lens) => lens.command?.command !== "elide.debug");
   }
 }
 
@@ -81,16 +83,31 @@ function runLenses(line: number, length: number, root: string, args: string[], q
 }
 
 /**
- * Lenses of one `artifacts` entry: a Native Image binary is also runnable and debuggable; the rest only build.
- * Run and Debug include the build they need first.
+ * Lenses of one `artifacts` entry: a Native Image binary is also runnable and debuggable, an Android application
+ * package is runnable on a device, and the rest only build. Run and Debug are named as they are on an entrypoint —
+ * the build they need first is part of doing either, not a separate decision.
  */
 function artifactLenses(line: number, length: number, root: string, artifact: ManifestArtifact): vscode.CodeLens[] {
   const range = new vscode.Range(line, 0, line, length);
   const build = new vscode.CodeLens(range, {
     title: "$(package) Build",
     command: "elide.build",
-    arguments: [{ root, args: [artifact.name] }],
+    arguments: [{ root, args: [isAndroidFeature(artifact) ? androidFeatureTask(artifact.name) : artifact.name] }],
   });
+  if (isAndroidApk(artifact)) {
+    // An APK is installed and launched by a build target of its own, and debugged on the device it was installed on.
+    const run = new vscode.CodeLens(range, {
+      title: "$(play) Run",
+      command: "elide.androidRun",
+      arguments: [{ root, artifact: artifact.name }],
+    });
+    const debug = new vscode.CodeLens(range, {
+      title: "$(debug-alt) Debug",
+      command: "elide.androidDebug",
+      arguments: [{ root, artifact: artifact.name }],
+    });
+    return [run, debug, build];
+  }
   if (!isNativeImageBinary(artifact)) return [build];
   const run = new vscode.CodeLens(range, {
     title: "$(play) Run",

@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   ElideCli,
-  ElideCommandFailedError,
   ElideNotFoundError,
   InvalidElideHomeError,
   distributionAt,
@@ -174,6 +173,12 @@ describe("isLockfileCurrent", () => {
     const found = await importedModules(manifests);
     expect(found.sort()).toEqual(["deps/compose.pkl", "gone.pkl", "versions.pkl"].map((name) => path.join(root, name)));
   });
+
+  test("importedModules skips a reference that names no file instead of failing", async () => {
+    const { root, manifests } = installed();
+    writeFileSync(manifests[0]!, `amends "elide:project.pkl"\nimport "bad%zz.pkl"\nimport "file://host/x.pkl"\nimport "gone.pkl"\n`);
+    expect(await importedModules(manifests)).toContain(path.join(root, "gone.pkl"));
+  });
 });
 
 describe("ElideCli.manifest", () => {
@@ -221,11 +226,34 @@ esac
     expect(older.argv()).toEqual(["--version", "manifest"]);
   });
 
-  test("the version is asked once, however often the CLI is driven", async () => {
+  test("legacy manifests keep their schema roots without requesting an unsupported IDE export", async () => {
+    const { cli, argv } = cliReporting("1.5.4+abc1234", "manifest");
+    await cli.manifest();
+    expect(await cli.workspaceSources()).toBeUndefined();
+    expect(argv()).toEqual(["--version", "manifest"]);
+  });
+
+  test("a modern source export with the wrong shape fails instead of silently importing legacy defaults", async () => {
+    const { cli, argv } = cliReporting("1.6.1+abc1234");
+    await cli.manifest();
+    await expect(cli.workspaceSources()).rejects.toThrow(/resolved source sets/);
+    expect(argv()).toEqual(["--version", "project export", "project export --format=intellij"]);
+  });
+
+  test("the version is asked once per binary, across instances, until the binary is replaced", async () => {
     const { cli, argv } = cliReporting("1.6.1+abc1234");
     await cli.manifest();
     await cli.manifest();
-    expect(argv()).toEqual(["--version", "project export", "project export"]);
+    // Every member of a workspace, and every later sync, gets a CLI of its own on the same distribution.
+    const member = new ElideCli(cli.dist, cli.projectRoot);
+    expect(await member.version()).toBe("1.6.1+abc1234");
+    await member.manifest();
+    expect(argv()).toEqual(["--version", "project export", "project export", "project export"]);
+
+    const script = readFileSync(cli.dist.bin, "utf8");
+    rmSync(cli.dist.bin);
+    writeFileSync(cli.dist.bin, script.replace("1.6.1+abc1234", "1.6.2+def5678"), { mode: 0o755 });
+    expect(await new ElideCli(cli.dist, cli.projectRoot).version()).toBe("1.6.2+def5678");
   });
 
   test("a version that does not match the binary is answered by the other command, once", async () => {
@@ -268,6 +296,7 @@ describe("ElideCli command observers", () => {
         seen.push(entry);
         return {
           line: (line: string, stderr: boolean) => entry.lines.push(`${stderr ? "err" : "out"} ${line}`),
+          record: (record: { type: string }) => entry.lines.push(`record ${record.type}`),
           end: ({ exitCode }: { exitCode: number | null }) => { entry.exitCode = exitCode; },
         };
       },
@@ -287,29 +316,42 @@ describe("ElideCli command observers", () => {
     expect(observer.seen).toEqual([{ argv: ["build", "app"], lines: ["out compiled", "err ✗ Build failed in (1.0s)"], exitCode: 3 }]);
   });
 
-  test("stderr diagnostics and tool output reach observers, callbacks and failure reports unchanged", async () => {
+  test("progress records reach the observer as records, and everyone else as the text they stand for", async () => {
     const observer = observe();
     const lines: string[] = [];
-    const text = [
-      "error: kotlinc: Unresolved reference 'x'.",
-      "In file: src/Main.kt:3:5",
-      "",
-      "→3 │ fun broken() = x",
-      "✗ Build failed in (3.0s)",
-      `{"tool":"compiler","message":"failed"}`,
+    const records = [
+      `{"type":"task-started","task":"app:compile-kotlin-main","project":"app","message":"Compiling Kotlin sources","time":1}`,
+      `{"type":"message","level":"error","text":"error: kotlinc: Unresolved reference 'x'.\\nIn file: src/Main.kt:3:5","file":"/p/src/Main.kt","line":3,"column":5,"time":2}`,
+      `{"type":"build-finished","outcome":"failure","exitCode":1,"durationMs":3000,"message":"Build failed","time":3}`,
     ];
-    const failure = cli(`cat >&2 <<'EOF'\n${text.join("\n")}\nEOF\nexit 1`)
+    const failure = cli(`cat >&2 <<'EOF'\n${records.join("\n")}\n{"not":"a record"}\nEOF\nexit 1`)
       .build(["app"], { onCommand: observer.onCommand, onLine: (line) => lines.push(line) });
     const error = await failure.then(() => undefined, (e: unknown) => e as Error);
+    const text = ["error: kotlinc: Unresolved reference 'x'.", "In file: /p/src/Main.kt:3:5", "✗ Build failed in 3.0s", `{"not":"a record"}`];
     expect(lines).toEqual(text);
-    expect(observer.seen[0]!.lines).toEqual(text.map((line) => `err ${line}`));
+    expect(observer.seen[0]!.lines).toEqual([
+      "record task-started",
+      "record message", ...text.slice(0, 2).map((line) => `err ${line}`),
+      "record build-finished", `err ${text[2]}`,
+      `err ${text[3]}`,
+    ]);
     expect(error?.message).toEndWith(text.join("\n"));
   });
 
-  test("caller environment is preserved and color is disabled for piped output", async () => {
-    const elide = cli(`printf '%s\\n' "$ELIDE_TEST_VALUE" "$NO_COLOR"`);
-    expect((await elide.run(["build"], { env: { ELIDE_TEST_VALUE: "custom", NO_COLOR: "0" } })).stdout).toBe("custom\n1\n");
+  test("every process asks for progress records unless the caller picks another mode", async () => {
+    const elide = cli(`echo "$ELIDE_PROGRESS"`);
+    expect((await elide.run(["build"])).stdout).toBe("json\n");
+    expect((await elide.run(["build"], { env: { ELIDE_PROGRESS: "plain" } })).stdout).toBe("plain\n");
   });
+
+  // Real processes and the real termination grace period: the point is how the OS process group is torn down.
+  test("a cancelled command settles once its grace period is over, even when a forked process ignores SIGTERM", async () => {
+    const elide = cli(`trap "exit 143" TERM\n(trap "" TERM; sleep 60) &\necho ready\nwhile true; do sleep 0.1; done`);
+    const abort = new AbortController();
+    const started = performance.now();
+    await expect(elide.run(["build"], { signal: abort.signal, onLine: () => abort.abort(new Error("cancelled")) })).rejects.toThrow("cancelled");
+    expect(performance.now() - started).toBeLessThan(15_000);
+  }, 20_000);
 });
 
 describe("ElideCli.classpaths", () => {
@@ -350,6 +392,13 @@ esac
     ["main:runtime", ["/m2/a.jar", "/m2/r.jar"]],
   ]);
 
+  test("an option rejection overrides a development distribution's new version hint", async () => {
+    const { cli, root, argv } = cliReporting("1.6.1+extensions", false);
+    expect(await cli.classpaths(["main:compile", "main:runtime"])).toEqual(answers(root));
+    expect(await cli.classpaths(["main:compile"])).toEqual(new Map([["main:compile", answers(root).get("main:compile")]]));
+    expect(argv().filter((line) => line.startsWith("classpath --json"))).toEqual(["classpath --json main:compile main:runtime"]);
+  });
+
   test("1.6.1 answers every query from one process; an older release is asked one query at a time", async () => {
     const recent = cliReporting("1.6.1+abc1234", true);
     expect(await recent.cli.classpaths(["main:compile", "main:runtime"])).toEqual(answers(recent.root));
@@ -375,72 +424,5 @@ esac
     const { cli, argv } = cliReporting("1.6.1+abc1234", true);
     await expect(cli.classpaths(["main:compile", "broken:provided"])).rejects.toThrow(/no such source set/);
     expect(argv()).toEqual(["--version", "classpath --json main:compile broken:provided"]);
-  });
-});
-
-
-/**
- * Stand-ins for the CLI, with the exit codes and usage errors of the real ones: 1.6 removed `manifest` in favour of
- * `project export`, which 1.5 does not have. Each prints its argv to stderr after the manifest.
- */
-const MANIFEST_JSON = '{"name":"demo"}';
-const ELIDE_1_6 = `#!/bin/sh
-case "$1 $2" in
-  "project export") echo '${MANIFEST_JSON}'; echo "argv: $*" >&2 ;;
-  manifest*) echo 'elide manifest: removed; use \`elide project export\` instead' >&2; exit 2 ;;
-esac
-`;
-const ELIDE_1_5 = `#!/bin/sh
-case "$1 $2" in
-  "project export") printf "error: unrecognized subcommand 'export'\\n\\nUsage: elide project [-p --project <PATH>] [SUBCOMMAND]\\n" >&2; exit 2 ;;
-  manifest*) echo '${MANIFEST_JSON}'; echo "argv: $*" >&2 ;;
-esac
-`;
-const ELIDE_BROKEN_PROJECT = `#!/bin/sh
-# --version answers without loading the project, as the real CLI does.
-[ "$1" = "--version" ] && { echo "1.6.1+test"; exit 0; }
-echo "Pkl Error: Cannot find module 'elide:nope.pkl'" >&2
-exit 1
-`;
-
-describe("ElideCli.manifest against Elide 1.5 and 1.6 stand-ins", () => {
-  const dirs: string[] = [];
-  afterAll(() => {
-    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
-  });
-  const cliFor = (script: string, flags: string[] = []): ElideCli => {
-    const home = mkdtempSync(path.join(tmpdir(), "elide-home-"));
-    dirs.push(home);
-    mkdirSync(path.join(home, "bin"));
-    writeFileSync(path.join(home, "bin", "elide"), script);
-    chmodSync(path.join(home, "bin", "elide"), 0o755);
-    return new ElideCli(distributionAt(home), home, flags);
-  };
-  const manifestOf = async (cli: ElideCli) => {
-    const stderr: string[] = [];
-    const manifest = await cli.manifest({ onLine: (line, isStderr) => isStderr && stderr.push(line) });
-    return { manifest, stderr };
-  };
-
-  test("reads `elide project export` on Elide 1.6", async () => {
-    const { manifest, stderr } = await manifestOf(cliFor(ELIDE_1_6, ["release"]));
-    expect(manifest.name).toBe("demo");
-    expect(stderr).toEqual(["argv: project export -f release"]);
-  });
-
-  test("falls back to `elide manifest` on a CLI without `project export`, hiding the usage error", async () => {
-    const { manifest, stderr } = await manifestOf(cliFor(ELIDE_1_5, ["release"]));
-    expect(manifest.name).toBe("demo");
-    expect(stderr).toEqual(["argv: manifest -f release"]);
-  });
-
-  test("any other failure of `project export` is reported as is", async () => {
-    const stderr: string[] = [];
-    const failure = await cliFor(ELIDE_BROKEN_PROJECT)
-      .manifest({ onLine: (line, isStderr) => isStderr && stderr.push(line) })
-      .catch((e: unknown) => e);
-    expect(failure).toBeInstanceOf(ElideCommandFailedError);
-    expect((failure as ElideCommandFailedError).args).toEqual(["project", "export"]);
-    expect(stderr).toEqual(["Pkl Error: Cannot find module 'elide:nope.pkl'"]);
   });
 });

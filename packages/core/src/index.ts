@@ -11,7 +11,6 @@ export {
   isLockfileCurrent,
   isLockfileName,
   isNestedUnder,
-  isUnknownSubcommand,
   killProcessTree,
   lockfileDigest,
   lockfilesIn,
@@ -30,6 +29,7 @@ export {
 export * from "./android.js";
 export * from "./androidBinaryXml.js";
 export * from "./androidLogcat.js";
+export * from "./composeInputs.js";
 export * from "./artifacts.js";
 export * from "./buildTasks.js";
 export * from "./coverage.js";
@@ -39,11 +39,13 @@ export * from "./jvmTests.js";
 export * from "./tap.js";
 export * from "./version.js";
 export * from "./manifest.js";
+export * from "./manifestErrors.js";
 export * from "./sourceRoots.js";
 export * from "./libraries.js";
 export * from "./jdk.js";
 export * from "./model.js";
 export * from "./kotlinLsp.js";
+export * from "./komodoLsp.js";
 export * from "./kotlinSetup.js";
 export * from "./workspace.js";
 export * from "./timeline.js";

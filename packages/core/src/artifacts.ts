@@ -28,6 +28,29 @@ const ENTRY = /^\s*\["([^"]+)"\]\s*=\s*(?:new\s+(?:\w+\s*\.\s*)*(\w+))?/;
 const OUTPUT_NAME = /^\s*name\s*=\s*"([^"]*)"/;
 /** `type = "library"` in an entry's body. */
 const IMAGE_TYPE = /^\s*type\s*=\s*"([^"]*)"/;
+/** The same settings among the members of a one-line body: `{ name = "app" type = "library" }`. */
+const INLINE_OUTPUT_NAME = /(?:^|[\s;])name\s*=\s*"([^"]*)"/;
+const INLINE_IMAGE_TYPE = /(?:^|[\s;])type\s*=\s*"([^"]*)"/;
+
+/** What an entry line holds directly inside its own braces, nested blocks blanked out; empty while it stays open. */
+function inlineBody(rest: string): string {
+  let depth = 0;
+  let quoted = false;
+  let body = "";
+  for (let i = 0; i < rest.length; i++) {
+    const c = rest[i]!;
+    if (quoted && c === "\\") {
+      if (depth === 1) body += rest.slice(i, i + 2);
+      i++;
+      continue;
+    }
+    if (c === '"') quoted = !quoted;
+    else if (!quoted && c === "{") { depth++; if (depth === 1) continue; }
+    else if (!quoted && c === "}") { depth--; if (depth === 0) return body; }
+    body += depth === 1 ? c : " ";
+  }
+  return "";
+}
 
 /**
  * Artifacts declared in the text of an `elide.pkl`, in source order.
@@ -54,6 +77,11 @@ export function parseManifestArtifacts(text: string): ManifestArtifact[] {
         current = { name: entry[1], type: entry[2] ?? "", line: i };
         currentDepth = depth;
         artifacts.push(current);
+        const body = inlineBody(line.slice(entry[0].length));
+        const outputName = INLINE_OUTPUT_NAME.exec(body);
+        if (outputName) current.outputName = outputName[1];
+        const imageType = INLINE_IMAGE_TYPE.exec(body);
+        if (imageType) current.imageType = imageType[1];
       }
     } else if (current && depth === currentDepth + 1) {
       // Only the entry's own settings: nested blocks (`options`, `classInit`, …) carry keys of the same names.
@@ -73,6 +101,36 @@ export function parseManifestArtifacts(text: string): ManifestArtifact[] {
 /** Whether `elide build` produces a runnable binary for this artifact. A `library` image is a shared object. */
 export function isNativeImageBinary(artifact: ManifestArtifact): boolean {
   return artifact.type === NATIVE_IMAGE_TYPE && (artifact.imageType ?? "binary") === "binary";
+}
+
+/** Pkl classes of the Android artifacts, as `new Android.AndroidApk { … }` instantiates them. */
+const ANDROID_APK_TYPE = "AndroidApk";
+const ANDROID_AAB_TYPE = "AndroidAab";
+const ANDROID_AAR_TYPE = "AndroidAar";
+
+/** Whether `elide build` publishes an APK for this artifact, which the `android-run-*` targets install and launch. */
+export function isAndroidApk(artifact: ManifestArtifact): boolean {
+  return artifact.type === ANDROID_APK_TYPE;
+}
+
+/** Whether `elide build` publishes an AAR for this artifact: a library archive, which nothing runs. */
+export function isAndroidAar(artifact: ManifestArtifact): boolean {
+  return artifact.type === ANDROID_AAR_TYPE;
+}
+
+/** Whether `elide build` publishes an app bundle for this artifact: Play's upload format, which no device runs. */
+export function isAndroidAab(artifact: ManifestArtifact): boolean {
+  return artifact.type === ANDROID_AAB_TYPE;
+}
+
+/** Dynamic bundle module; it builds through `android-module-<name>` rather than publishing an APK. */
+export function isAndroidFeature(artifact: ManifestArtifact): boolean {
+  return artifact.type === "AndroidFeature";
+}
+
+/** Whether the artifact is built by the Android pipeline at all, whichever archive it publishes. */
+export function isAndroidArtifact(artifact: ManifestArtifact): boolean {
+  return isAndroidApk(artifact) || isAndroidAab(artifact) || isAndroidAar(artifact) || isAndroidFeature(artifact);
 }
 
 /** Where `elide build` writes a Native Image artifact to, and what its parts are named. */

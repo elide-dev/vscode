@@ -74,7 +74,11 @@ export class ElideNativeDebugConfigurationProvider implements vscode.DebugConfig
     }
     // The build runs in its own task terminal and can take minutes, so it must not hold up this resolve; the
     // `cppdbg` session starts from the detached continuation once the image is on disk.
-    void this.build(project, targetFolder, launch);
+    void this.build(project, targetFolder, launch).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.ui.log(`native debug: ${message}`);
+      void vscode.window.showErrorMessage(`Elide: ${message}`);
+    });
     return undefined;
   }
 
@@ -166,7 +170,11 @@ function cppdbgConfig(
  */
 function miDriver(settings: ElideConfig): { MIMode: string; miDebuggerPath?: string } {
   const gdb = settings.miDebuggerPath ?? whichExecutable("gdb");
-  const mode = settings.nativeMiMode === "auto" ? (gdb ? "gdb" : process.platform === "darwin" ? "lldb" : "gdb") : settings.nativeMiMode;
+  // An explicit `lldb-mi` is driven as LLDB: in `gdb` mode `cppdbg` would speak GDB's commands to it.
+  const explicitLldb = settings.miDebuggerPath !== undefined && /lldb/i.test(path.basename(settings.miDebuggerPath));
+  const mode = settings.nativeMiMode === "auto"
+    ? (explicitLldb ? "lldb" : gdb ? "gdb" : process.platform === "darwin" ? "lldb" : "gdb")
+    : settings.nativeMiMode;
   const debuggerPath = settings.miDebuggerPath ?? (mode === "gdb" ? gdb : undefined);
   return { MIMode: mode, ...(debuggerPath ? { miDebuggerPath: debuggerPath } : {}) };
 }

@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   ArtifactIndex,
   ElideCli,
+  artifactProjectRoot,
   buildProjectModels,
   decodeManifest,
   distributionAt,
@@ -13,7 +14,7 @@ import {
   parseWorkspaceMembers,
   referencedSourceSets,
   sourceSetsForArtifactOutput,
-  withWorkspaceMember,
+  workspaceMemberSplice,
   type Manifest,
   type ProjectModel,
 } from "../src/index.js";
@@ -21,6 +22,9 @@ import {
 const fixture = (project: string) => readFileSync(path.join(import.meta.dir, "fixtures", "workspace", `${project}.json`), "utf8");
 
 const manifestWith = (json: object): Manifest => decodeManifest(JSON.stringify(json));
+
+// Whether the host has a JDK or an Android SDK is not under test: tests run without `JAVA_HOME` or `ANDROID_HOME`.
+const projectWarnings = (model: ProjectModel) => model.warnings.filter((w) => !/^No (JDK|Android SDK) found/.test(w));
 
 describe("ArtifactIndex", () => {
   const index = new ArtifactIndex(
@@ -51,6 +55,16 @@ describe("ArtifactIndex", () => {
     expect(index.resolve("/elsewhere/model/.dev/artifacts/jar/model/model.jar")).toBeUndefined();
   });
 
+  test("an Android library reaches a sibling as the classes.jar it stages, keyed by the artifact's own name", () => {
+    expect(index.resolve("/ws/app/../model/.dev/android/ui/classes.jar")).toEqual({ project: "model", name: "ui", staged: true });
+    expect(index.resolve("/private/ws/model/.dev/android/ui/classes.jar")).toEqual({ project: "model", name: "ui", staged: true });
+  });
+
+  test("a published .aar exploded into the same directory is a dependency, not an artifact the project builds", () => {
+    expect(index.resolve("/ws/model/.dev/android/libraries/androidx/core/core/1.13.0/classes.jar")).toBeUndefined();
+    expect(artifactProjectRoot("/ws/model/.dev/android/libraries/androidx/core/core/1.13.0/classes.jar")).toBeUndefined();
+    expect(artifactProjectRoot("/ws/model/.dev/android/ui/classes.jar")).toBe("/ws/model");
+  });
 });
 
 describe("source sets behind an artifact", () => {
@@ -81,6 +95,23 @@ describe("source sets behind an artifact", () => {
     expect(sourceSetsForArtifactOutput(model, { project: "model" })).toEqual(["main"]);
   });
 
+  const androidLib = manifestWith({
+    sources: { main: { paths: ["src/main/kotlin/**"] }, test: { paths: ["src/test/kotlin/**"] } },
+    android: { compileSdk: 36 },
+    artifacts: { ui: { "@type": "elide.android.AndroidAar" }, app: { "@type": "elide.android.AndroidApk" } },
+  });
+
+  test("an AAR is consumable through a project reference; the APK beside it is not", () => {
+    expect(referencedSourceSets(androidLib, "ui")).toEqual(["main"]);
+    expect(referencedSourceSets(androidLib, "app")).toEqual([]);
+    // One consumable artifact, so a reference naming none resolves against it even though two are declared.
+    expect(referencedSourceSets(androidLib, undefined)).toEqual(["main"]);
+  });
+
+  test("a staged Android entry resolves by the artifact's key, not by a published output name", () => {
+    expect(sourceSetsForArtifactOutput(androidLib, { project: "lib", name: "ui", staged: true })).toEqual(["main"]);
+    expect(sourceSetsForArtifactOutput(androidLib, { project: "lib", name: "ui" })).toEqual([]);
+  });
 });
 
 /** A root manifest as the workspace sample writes it: the members listed one per line, with a comment among them. */
@@ -113,22 +144,33 @@ describe("workspace members declared in manifest text", () => {
     expect(parseWorkspaceMembers(`name = "app"\nsources { ["main"] = new Sources.SourceSetSpec { paths { "src/**" } } }\n`)).toEqual([]);
     expect(parseWorkspaceMembers(`workspace {\n  strict = true\n}\n`)).toEqual([]);
     expect(parseWorkspaceMembers(`workspace {\n  members = new Listing {\n    "a"\n  }\n}\n`)).toEqual(["a"]);
+    expect(parseWorkspaceMembers(`/*\nworkspace {\n  members { "old" }\n}\n*/\nname = "app"\n`)).toEqual([]);
+    expect(parseWorkspaceMembers(`workspace {\n  /* members { "x" } */\n  members {\n    "a" /* "b" */\n  }\n}\n`)).toEqual(["a"]);
   });
 
-  test("a new member joins the block, indented like the ones already there", () => {
-    const updated = withWorkspaceMember(ROOT_MANIFEST, "parser");
+  /** The manifest with `member` declared, by the splice that declares it. */
+  const withMember = (text: string, member: string) => {
+    const splice = workspaceMemberSplice(text, member);
+    return splice ? `${text.slice(0, splice.start)}${splice.text}${text.slice(splice.end)}` : text;
+  };
+
+  test("a new member joins the block, indented like the ones already there, touching nothing else", () => {
+    const splice = workspaceMemberSplice(ROOT_MANIFEST, "parser")!;
+    expect(ROOT_MANIFEST.slice(0, splice.start)).toEndWith(`    "cli"\n`);
+    expect(splice).toMatchObject({ end: splice.start, text: `    "parser"\n` });
+    const updated = withMember(ROOT_MANIFEST, "parser");
     expect(parseWorkspaceMembers(updated)).toEqual(["model", "cli", "parser"]);
-    expect(updated).toContain(`    "cli"\n    "parser"\n  }`);
-    expect(withWorkspaceMember(updated, "parser")).toBe(updated);
+    expect(workspaceMemberSplice(updated, "parser")).toBeUndefined();
   });
 
   test("a manifest declaring no workspace gets one; a one-line block keeps its shape", () => {
     const standalone = `amends "elide:project.pkl"\n\nname = "app"\n`;
-    const rooted = withWorkspaceMember(standalone, "core");
+    const rooted = withMember(standalone, "core");
     expect(rooted).toBe(`${standalone}\nworkspace {\n  members {\n    "core"\n  }\n}\n`);
     expect(parseWorkspaceMembers(rooted)).toEqual(["core"]);
-    expect(withWorkspaceMember(`workspace { members { "a" } }\n`, "b")).toBe(`workspace { members { "a" "b" } }\n`);
-    expect(withWorkspaceMember(`workspace {\n  strict = true\n}\n`, "core")).toBe(`workspace {\n  members {\n    "core"\n  }\n  strict = true\n}\n`);
+    expect(withMember(`workspace { members { "a" } }\n`, "b")).toBe(`workspace { members { "a" "b" } }\n`);
+    expect(withMember(`workspace {\n  strict = true\n}\n`, "core")).toBe(`workspace {\n  members {\n    "core"\n  }\n  strict = true\n}\n`);
+    expect(withMember(`workspace { strict = true }\n`, "core")).toBe(`workspace {\n  members {\n    "core"\n  }\n  strict = true }\n`);
   });
 });
 
@@ -151,18 +193,30 @@ describe("findEnclosingWorkspace", () => {
 });
 
 /**
- * A stand-in for the CLI: answers `project export` and `classpath` from files in the directory it is invoked in,
- * and records every `install` at the workspace root. Any build during sync is an error.
+ * A stand-in for the CLI: answers `project export` and `classpath` from files in the directory it is invoked in, the
+ * way the real one answers for the project it is focused on, and records every `install` in the workspace root and
+ * every `build` with the targets it was given.
+ *
+ * A classpath is read from the file named after the source set and the usage, falling back to the set alone, so a
+ * fixture declares a `provided` classpath only when the usage matters to it. A `fail-<set>-<usage>` file makes that
+ * query fail, which fails a whole `classpath --json` batch the way the real CLI does; a `fail-build-<target>` file
+ * fails every build given that target, after it is recorded. A `build-<target>` directory holds what building the
+ * target records: its files replace those of `.fake` once it is built.
  */
 const FAKE_ELIDE = `#!/bin/sh
 entries() {
+  [ ! -f ".fake/fail-\${1%%:*}-\${1##*:}" ] || { echo "cannot resolve $1" >&2; exit 1; }
   f=".fake/classpath-\${1%%:*}-\${1##*:}.txt"
   [ -f "$f" ] || f=".fake/classpath-\${1%%:*}.txt"
   [ ! -f "$f" ] || cat "$f"
 }
 case "$1" in
   --version) echo "1.6.1+test" ;;
-  project|manifest) cat .fake/manifest.json ;;
+  project|manifest)
+    if [ "$3" = "--format=intellij" ]; then
+      echo "$PWD" >> .fake/source-exports.log
+      cat .fake/workspace.json
+    else cat .fake/manifest.json; fi ;;
   classpath)
     if [ "$2" != "--json" ]; then entries "$2"; exit; fi
     shift 2
@@ -174,9 +228,36 @@ case "$1" in
     done
     echo "}" ;;
   install) echo "$PWD" >> "$FAKE_INSTALL_LOG" ;;
-  build) echo "sync must not build targets" >&2; exit 1 ;;
+  build)
+    if [ "$2" = "--inspect" ]; then
+      [ ! -f .fake/build-inspect.txt ] || cat .fake/build-inspect.txt
+    else
+      shift
+      echo "$PWD $*" >> "$FAKE_BUILD_LOG"
+      for t in "$@"; do [ ! -f ".fake/fail-build-$t" ] || { echo "cannot build $t" >&2; exit 1; }; done
+      for t in "$@"; do [ ! -d ".fake/build-$t" ] || cp .fake/build-$t/* .fake/; done
+    fi ;;
 esac
 `;
+
+/** Existing classpath fixtures explicitly pin their source model; no filesystem inference is simulated. */
+function recordSourceExport(root: string, members: string[] = []): void {
+  const projects = ["", ...members].map((relative) => {
+    const manifest = decodeManifest(readFileSync(path.join(root, relative, ".fake/manifest.json"), "utf8"));
+    return { name: manifest.name!, path: relative, manifest };
+  });
+  writeFileSync(path.join(root, ".fake/workspace.json"), JSON.stringify({
+    format: "elide.intellij.workspace", version: 1, root,
+    projects: projects.map(({ name, path }) => ({ name, path })),
+    modules: projects.flatMap((project) => Object.entries(project.manifest.sources).map(([sourceSet, set]) => ({
+      name: `${project.name}.${sourceSet}`, project: project.name, sourceSet,
+      type: sourceSet === "test" ? "test" : set.type,
+      sourceRoots: set.paths.map((source) => ({ path: path.posix.join(project.path, source) })),
+      resourceRoots: Object.values(set.resources).map((resource) => ({ path: path.posix.join(project.path, resource) })),
+      moduleDependencies: set.dependsOn.map((source) => ({ module: `${project.name}.${source}` })),
+    }))),
+  }));
+}
 
 describe("buildProjectModels", () => {
   const dirs: string[] = [];
@@ -216,6 +297,8 @@ describe("buildProjectModels", () => {
     const cli = JSON.parse(fixture("cli"));
     cli.dependencies.maven.packages = [{ "@type": "elide.jvm.MavenPackageDependency.OfProjectArtifact", value: { project: "model" } }];
     project(path.join(ws, "cli"), cli, { main: [modelJar, `${ws}/cli/../.dev/dependencies/m2/org/jetbrains/kotlin/kotlin-stdlib/2.4.20/kotlin-stdlib-2.4.20.jar`], test: [modelJar, junit] });
+    for (const member of ["model", "cli"]) recordSourceExport(path.join(ws, member));
+    recordSourceExport(ws, ["model", "cli"]);
 
     const installs = path.join(ws, "installs.log");
     process.env.FAKE_INSTALL_LOG = installs;
@@ -232,6 +315,56 @@ describe("buildProjectModels", () => {
 
   const build = async (cli: ElideCli): Promise<ProjectModel[]> =>
     buildProjectModels(cli, await cli.manifest(), { jdk: { override: "/nonexistent" }, exists: () => false });
+
+  test("one resolved workspace export replaces legacy roots for every member and keeps explicit selectors", async () => {
+    const { ws, cliAtRoot } = workspace();
+    const exported = {
+      format: "elide.intellij.workspace", version: 1, root: ws,
+      projects: [
+        { name: "workspace", path: "" }, { name: "model", path: "model" }, { name: "cli", path: "cli" },
+      ],
+      modules: [
+        {
+          name: "model.main", project: "model", sourceSet: "main", type: "source",
+          sourceRoots: [{ path: "model/src/main/kotlin" }], resourceRoots: [], moduleDependencies: [],
+        },
+        {
+          name: "cli.main", project: "cli", sourceSet: "main", type: "source",
+          sourceRoots: [{ path: "cli/src/main/kotlin" }], resourceRoots: [], moduleDependencies: [{ module: "model.main" }],
+        },
+        {
+          name: "cli.extra", project: "cli", sourceSet: "extra", type: "source",
+          sourceRoots: [{ path: "cli/custom/**/*.kt" }], resourceRoots: [], moduleDependencies: [{ module: "cli.main" }],
+        },
+      ],
+    };
+    writeFileSync(path.join(ws, ".fake/workspace.json"), JSON.stringify(exported));
+    const [root, model, app] = await build(cliAtRoot);
+    expect(root!.modules).toEqual([]);
+    expect(projectWarnings(root!)).toEqual([]);
+    expect(model!.modules.map((module) => module.sourceSet)).toEqual(["main"]);
+    expect(model!.modules[0]!.contentRoots.flatMap((content) => content.sourceRoots)).toEqual([
+      { path: `${ws}/model/src/main/kotlin`, kind: "source" },
+    ]);
+    expect(app!.modules[0]!.sourcePaths).toEqual(["src/main/kotlin"]);
+    expect(app!.modules[1]!.sourcePaths).toEqual(["custom/**/*.kt"]);
+    expect(app!.modules[1]!.moduleDeps.map((dependency) => dependency.module)).toContain("cli.main");
+    expect(readFileSync(path.join(ws, ".fake/source-exports.log"), "utf8").trim().split("\n")).toEqual([ws]);
+  });
+
+  test("canonical exported projects match a real symlinked workspace without changing editor paths", async () => {
+    const { ws, cliAtRoot } = workspace();
+    const aliases = mkdtempSync(path.join(tmpdir(), "elide-alias-"));
+    dirs.push(aliases);
+    const linked = path.join(aliases, "workspace");
+    symlinkSync(ws, linked, "dir");
+    const models = await build(new ElideCli(cliAtRoot.dist, linked));
+    expect(models.map((model) => model.root)).toEqual([linked, `${linked}/model`, `${linked}/cli`]);
+    expect(models[0]!.members).toEqual([`${linked}/model`, `${linked}/cli`]);
+    const sources = models[1]!.modules[0]!.contentRoots.flatMap((content) => content.sourceRoots);
+    expect(sources.length).toBeGreaterThan(0);
+    expect(sources.every((source) => source.path.startsWith(`${linked}/model/`))).toBe(true);
+  });
 
   test("the root first, then its members, each resolved in its own directory", async () => {
     const { ws, cliAtRoot } = workspace();
@@ -287,25 +420,30 @@ describe("buildProjectModels", () => {
     expect(model!.modules.flatMap((m) => m.moduleDeps).every((d) => d.project === `${ws}/model`)).toBe(true);
   });
 
-  test("sync only queries released compile classpaths and never inspects or builds targets", async () => {
-    const { ws, cliAtRoot } = workspace();
+  test("preview runtime artifacts become source modules without admitting provided-only workspace artifacts", async () => {
+    const { ws, cliAtRoot, stdlib } = workspace();
     const manifest = JSON.parse(readFileSync(path.join(ws, ".fake", "manifest.json"), "utf8"));
     manifest.android = { compileSdk: 36 };
-    manifest.artifacts = { ...manifest.artifacts, app: { "@type": "elide.android.AndroidApk" } };
-    manifest.dependencies.maven.processors = [{ "@type": "elide.jvm.MavenPackageDependency.OfString", value: "example:processor:1" }];
+    manifest.artifacts = { ...manifest.artifacts, app: { "@type": "elide.android.AndroidApk", sources: ["main"] } };
     writeFileSync(path.join(ws, ".fake", "manifest.json"), JSON.stringify(manifest));
-    const commands: string[][] = [];
-    await buildProjectModels(cliAtRoot, await cliAtRoot.manifest(), {
-      jdk: { override: "/nonexistent" },
-      skipInstall: true,
-      onCommand: (argv) => { commands.push([...argv]); },
-    });
-    expect(commands.some((argv) => argv[0] === "build")).toBe(false);
-    expect(commands.filter((argv) => argv[0] === "classpath")).toEqual([
-      ["classpath", "--json", "main:compile", "test:compile"],
-      ["classpath", "--json", "main:compile", "test:compile"],
-      ["classpath", "--json", "main:compile", "test:compile"],
-    ]);
+    writeFileSync(path.join(ws, ".fake", "classpath-main-runtime.txt"), [
+      `${ws}/model/.dev/artifacts/jar/model/model.jar`, stdlib,
+    ].join(path.delimiter));
+    writeFileSync(path.join(ws, ".fake", "classpath-main-provided.txt"), `${ws}/cli/.dev/artifacts/jar/cli/cli.jar`);
+    writeFileSync(path.join(ws, ".fake", "build-inspect.txt"), `3 tasks across 3 projects:
+logstat
+  logstat:compile-kotlin-main  Compile root
+model
+  model:compile-kotlin-main  Compile model
+cli
+  cli:compile-kotlin-main  Compile cli
+`);
+    const models = await build(cliAtRoot);
+    const root = models[0]!.modules.find((module) => module.sourceSet === "main")!;
+    expect(root.runtimeClassPath).toEqual([stdlib]);
+    expect(root.runtimeModuleDeps).toEqual([{ project: `${ws}/model`, module: "model.main", scope: "compile", exported: true }]);
+    expect(root.compilationTargets).toEqual(["logstat:compile-kotlin-main"]);
+    expect(models[1]!.modules[0]!.compilationTargets).toEqual(["model:compile-kotlin-main"]);
   });
 
   test("the workspace names every library once, whichever member resolved it", async () => {
@@ -345,5 +483,209 @@ describe("buildProjectModels", () => {
     );
   });
 
+  test("only a project compiling Kotlin is warned that its classpath holds no kotlin-stdlib", async () => {
+    const { ws, cliAtRoot } = workspace();
+    const missing = "Compile classpath contains no kotlin-stdlib jar; Kotlin symbol resolution may be incomplete.";
+    // `model` resolves no kotlin-stdlib; its `test` set selects every file below `test/`, its `main` set `.kt` only.
+    for (const set of ["main", "test"]) writeFileSync(path.join(ws, "model", ".fake", `classpath-${set}.txt`), "");
+    const source = (relative: string) => {
+      mkdirSync(path.dirname(path.join(ws, "model", relative)), { recursive: true });
+      writeFileSync(path.join(ws, "model", relative), "");
+    };
+    source("test/demo/HelloTest.java");
+    source("src/main/kotlin/demo/Hello.java");
+    source("scripts/release.kts");
+    expect((await build(cliAtRoot))[1]!.warnings).not.toContain(missing);
+
+    source("test/demo/SpecTest.kt");
+    expect((await build(cliAtRoot))[1]!.warnings).toContain(missing);
+  });
+
+  /** The workspace with `model` and `cli` as Android libraries whose `R` was never generated. */
+  const androidWorkspace = () => {
+    const fixture = workspace();
+    const { ws } = fixture;
+    for (const member of ["model", "cli"]) {
+      const file = path.join(ws, member, ".fake", "manifest.json");
+      const manifest = JSON.parse(readFileSync(file, "utf8"));
+      manifest.android = { compileSdk: 36 };
+      manifest.artifacts = { ...manifest.artifacts, [member]: { "@type": "elide.android.AndroidApk", sources: ["main"] } };
+      writeFileSync(file, JSON.stringify(manifest));
+    }
+    writeFileSync(path.join(ws, ".fake", "build-inspect.txt"), `2 tasks across 3 projects:
+model
+  model:android-r-model  Compile generated resource identifiers for 'model'
+cli
+  cli:android-r-cli  Compile generated resource identifiers for 'cli'
+`);
+    const builds = path.join(ws, "builds.log");
+    process.env.FAKE_BUILD_LOG = builds;
+    return { ...fixture, built: () => readFileSync(builds, "utf8").trim().split("\n") };
+  };
+  const rWarnings = (model: ProjectModel) => model.warnings.filter((w) => w.startsWith("Could not generate"));
+
+  test("what the members need built is built by one build at the root", async () => {
+    const { ws, cliAtRoot, built } = androidWorkspace();
+    const models = await build(cliAtRoot);
+    expect(built()).toEqual([`${ws} model:android-r-model cli:android-r-cli`]);
+    expect(models.flatMap(rWarnings)).toEqual([]);
+  });
+
+  test("a target that fails the root build is built again in its project, and only that project reports it", async () => {
+    const { ws, cliAtRoot, built } = androidWorkspace();
+    writeFileSync(path.join(ws, ".fake", "fail-build-cli:android-r-cli"), "");
+    writeFileSync(path.join(ws, "cli", ".fake", "fail-build-android-r-cli"), "");
+    const [, model, cli] = await build(cliAtRoot);
+    expect(built()).toEqual([`${ws} model:android-r-model cli:android-r-cli`, `${ws}/model android-r-model`, `${ws}/cli android-r-cli`]);
+    expect(rWarnings(model!)).toEqual([]);
+    expect(rWarnings(cli!)).toEqual([expect.stringContaining("(elide build android-r-cli): elide build android-r-cli failed (exit 1):\ncannot build android-r-cli")]);
+  });
+
+  test("listing the build's tasks is a step of its own, also when there is nothing to install", async () => {
+    const { cliAtRoot } = androidWorkspace();
+    let step = "";
+    const commands: string[] = [];
+    await buildProjectModels(cliAtRoot, await cliAtRoot.manifest(), {
+      jdk: { override: "/nonexistent" },
+      exists: () => false,
+      skipInstall: true,
+      onProgress: (label) => (step = label),
+      onCommand: (argv) => void commands.push(`${step}: ${argv.join(" ")}`),
+    });
+    expect(commands.filter((command) => command.includes("--inspect"))).toEqual(["Listing build tasks: build --inspect"]);
+  });
 });
 
+describe("buildProjectModels: published Android libraries", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * An Android project whose compile classpath names a published `.aar`, as the build substitutes it: exploded.
+   * Its `provided` classpath names what only an Android build contributes — the platform jar and the compiled `R`.
+   */
+  const androidProject = () => {
+    const home = realpathSync(mkdtempSync(path.join(tmpdir(), "elide-home-")));
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "elide-android-")));
+    dirs.push(home, root);
+    mkdirSync(path.join(home, "bin"));
+    writeFileSync(path.join(home, "bin", "elide"), FAKE_ELIDE);
+    chmodSync(path.join(home, "bin", "elide"), 0o755);
+
+    mkdirSync(path.join(root, ".fake"));
+    writeFileSync(path.join(root, "elide.pkl"), "");
+    writeFileSync(
+      path.join(root, ".fake", "manifest.json"),
+      JSON.stringify({
+        name: "app",
+        sources: { main: { "@type": "elide.sources.SourceSetSpec", paths: ["src/main/kotlin/**/*.kt"] } },
+        android: { compileSdk: 36 },
+        artifacts: { app: { "@type": "elide.android.AndroidApk" } },
+      }),
+    );
+    recordSourceExport(root);
+    const stdlib = `${root}/.dev/dependencies/m2/org/jetbrains/kotlin/kotlin-stdlib/2.4.20/kotlin-stdlib-2.4.20.jar`;
+    const exploded = `${root}/.dev/android/libraries/androidx/core/core/1.13.0/classes.jar`;
+    const sources = `${root}/.dev/dependencies/m2/androidx/core/core/1.13.0/core-1.13.0-sources.jar`;
+    const platform = "/opt/android-sdk/platforms/android-36/android.jar";
+    const rClasses = `${root}/.dev/android/app/r-classes`;
+    writeFileSync(path.join(root, ".fake", "classpath-main.txt"), [stdlib, exploded].join(path.delimiter));
+    writeFileSync(path.join(root, ".fake", "classpath-main-provided.txt"), [platform, rClasses].join(path.delimiter));
+    writeFileSync(path.join(root, ".fake", "build-inspect.txt"), `2 tasks available:
+  android-r-app  Generate R
+  compile-kotlin-main  Compile Kotlin
+`);
+
+    const builds = path.join(root, "builds.log");
+    process.env.FAKE_BUILD_LOG = builds;
+    const cli = new ElideCli(distributionAt(home), root);
+    const built = (): string[] => {
+      try {
+        return readFileSync(builds, "utf8").trim().split("\n").filter(Boolean);
+      } catch {
+        return [];
+      }
+    };
+    const model = (exists: (p: string) => boolean) =>
+      buildProjectModels(cli, decodeManifest(readFileSync(path.join(root, ".fake", "manifest.json"), "utf8")), {
+        jdk: { override: "/nonexistent" },
+        skipInstall: true,
+        exists,
+      });
+    return { root, exploded, sources, platform, rClasses, built, model };
+  };
+
+  test("a published .aar is one library, named by the coordinate its exploded path spells out", async () => {
+    const { exploded, sources, model } = androidProject();
+    const [app] = await model((p) => p === exploded || p === sources);
+    expect(app!.libraries.find((l) => l.classes === exploded)).toEqual({
+      name: "Elide: androidx.core:core:1.13.0",
+      classes: exploded,
+      coordinate: "androidx.core:core:1.13.0",
+      sources,
+    });
+    // It is a dependency of the module, never an artifact of the project whose build directory holds it.
+    expect(app!.modules[0]!.libraries.map((l) => l.name)).toContain("Elide: androidx.core:core:1.13.0");
+    expect(app!.modules[0]!.moduleDeps).toEqual([]);
+    expect(app!.warnings.some((w) => w.includes("not part of this project's workspace"))).toBe(false);
+  });
+
+  test("the framework and the compiled R reach the model as libraries of the module", async () => {
+    const { platform, rClasses, model } = androidProject();
+    const [app] = await model((p) => p === rClasses);
+    expect(app!.libraries.find((l) => l.classes === platform)).toEqual({ name: "Elide: Android API 36 platform", classes: platform });
+    expect(app!.libraries.find((l) => l.classes === rClasses)).toEqual({ name: "Elide: Android resources of app", classes: rClasses });
+    expect(app!.modules[0]!.libraries.map((l) => l.name)).toEqual(
+      expect.arrayContaining(["Elide: Android API 36 platform", "Elide: Android resources of app"]),
+    );
+  });
+
+  test("preview metadata retains runtime rather than provided inputs and only inspected compiles", async () => {
+    const { root, exploded, platform, rClasses, model } = androidProject();
+    const runtimeOnly = path.join(root, ".dev/dependencies/m2/example/runtime/1/runtime-1.jar");
+    writeFileSync(path.join(root, ".fake", "classpath-main-runtime.txt"), [exploded, runtimeOnly].join(path.delimiter));
+    const [app] = await model(() => true);
+    expect(app!.android!.targets[0]!.sourceSets).toEqual(["main"]);
+    expect(app!.modules[0]!.compilationTargets).toEqual(["compile-kotlin-main"]);
+    expect(app!.modules[0]!.runtimeClassPath).toEqual([exploded, runtimeOnly]);
+    expect(app!.modules[0]!.runtimeClassPath).not.toContain(platform);
+    expect(app!.modules[0]!.runtimeClassPath).not.toContain(rClasses);
+  });
+
+  test("a source set whose platform cannot be resolved is a warning, and the other sets still resolve theirs", async () => {
+    const { root, model } = androidProject();
+    const manifestPath = path.join(root, ".fake", "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.sources.test = { "@type": "elide.sources.SourceSetSpec", paths: ["src/test/kotlin/**/*.kt"] };
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    recordSourceExport(root);
+    writeFileSync(path.join(root, ".fake", "fail-test-provided"), "");
+    const [app] = await model(() => true);
+    expect(app!.warnings.filter((w) => w.startsWith("Could not resolve the Android platform classpath"))).toEqual([
+      expect.stringContaining("of test (elide classpath test:provided): elide classpath test:provided failed (exit 1):\ncannot resolve test:provided"),
+    ]);
+    expect(app!.modules.find((m) => m.sourceSet === "main")!.libraries.map((l) => l.name)).toContain("Elide: Android API 36 platform");
+  });
+
+  test("the archive is unpacked and R is generated when either is missing, and neither runs when both are there", async () => {
+    const { root, exploded, rClasses, built, model } = androidProject();
+    await model(() => false);
+    expect(built()).toEqual([`${root} android-libraries`, `${root} android-r-app`]);
+
+    await model((p) => p === exploded || p === rClasses);
+    expect(built()).toEqual([`${root} android-libraries`, `${root} android-r-app`]);
+  });
+
+  test("R on disk that the build no longer records is generated again, then resolves", async () => {
+    const { root, exploded, platform, rClasses, built, model } = androidProject();
+    writeFileSync(path.join(root, ".fake", "classpath-main-provided.txt"), platform);
+    mkdirSync(path.join(root, ".fake", "build-android-r-app"));
+    writeFileSync(path.join(root, ".fake", "build-android-r-app", "classpath-main-provided.txt"), [platform, rClasses].join(path.delimiter));
+    const [app] = await model((p) => p === exploded || p === rClasses);
+    expect(built()).toEqual([`${root} android-r-app`]);
+    expect(app!.modules[0]!.libraries.map((l) => l.name)).toContain("Elide: Android resources of app");
+    expect(projectWarnings(app!)).toEqual([]);
+  });
+});

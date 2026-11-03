@@ -3,6 +3,7 @@ import {
   elideFlagArgs,
   elideInvocationArgs,
   elideInvocationOptionsFrom,
+  installClassifierOptions,
   mergeElideInvocationOptions,
   type ElideInvocationOptions,
 } from "../src/index.js";
@@ -119,5 +120,14 @@ describe("elideInvocationOptionsFrom", () => {
   test("treats a non-object as no options at all", () => {
     expect(elideInvocationOptionsFrom(undefined)).toEqual({});
     expect(elideInvocationOptionsFrom("build")).toEqual({});
+  });
+});
+
+describe("installClassifierOptions", () => {
+  test("pins the classifier set the way sync installs it, and yields to explicit install options", () => {
+    expect(elideInvocationArgs("install", { flags: ["x"], options: installClassifierOptions(["sources"]) })).toEqual(["install", "-f", "x", "--slim", "--with=sources"]);
+    expect(elideInvocationArgs("install", { options: installClassifierOptions([]) })).toEqual(["install", "--slim"]);
+    const merged = mergeElideInvocationOptions({ options: installClassifierOptions(["sources", "docs"]) }, { options: { slim: false, with: [] } });
+    expect(elideInvocationArgs("install", merged)).toEqual(["install"]);
   });
 });
