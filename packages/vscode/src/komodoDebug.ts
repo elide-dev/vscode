@@ -24,7 +24,10 @@ export async function requireKomodoDebugProtocol(launch: KomodoDebugLaunch, sign
   child.once("close", () => exited.resolve());
   let buffered = Buffer.alloc(0);
   let stderr = "";
-  const fail = (reason: string) => initialized.reject(new Error(`Komodo's DAP handshake failed: ${reason}. Fix elide.kotlinLsp.komodo.path or install a compatible Komodo, then sync again.`));
+  const fail = (reason: string) => {
+    child.stdout.pause();
+    initialized.reject(new Error(`Komodo's DAP handshake failed: ${reason}. Fix elide.kotlinLsp.komodo.path or install a compatible Komodo, then sync again.`));
+  };
   const aborted = () => initialized.reject(signal?.reason ?? new Error("Komodo DAP handshake cancelled."));
   const timer = setTimeout(() => fail("no compatible initialize response within 10 seconds"), 10_000);
   child.once("error", (error) => fail(error.message));
@@ -32,8 +35,8 @@ export async function requireKomodoDebugProtocol(launch: KomodoDebugLaunch, sign
   child.stdin.on("error", (error) => fail(error.message));
   child.stderr.on("data", (chunk: Buffer) => { if (stderr.length < 4_096) stderr += chunk.toString().slice(0, 4_096 - stderr.length); });
   child.stdout.on("data", (chunk: Buffer) => {
+    if (buffered.length + chunk.length > 1_048_576) { fail("invalid initialize response"); return; }
     buffered = Buffer.concat([buffered, chunk]);
-    if (buffered.length > 1_048_576) { fail("invalid initialize response"); return; }
     for (;;) {
       const end = buffered.indexOf("\r\n\r\n");
       if (end < 0) return;
@@ -50,8 +53,12 @@ export async function requireKomodoDebugProtocol(launch: KomodoDebugLaunch, sign
         if (response.command !== "initialize" || response.success !== true ||
           response.body?.supportsConfigurationDoneRequest !== true || response.body.supportsEvaluateForHovers !== true) {
           fail("adapter does not support initialization, configurationDone and Kotlin evaluation");
-        } else initialized.resolve();
+        } else {
+          child.stdout.pause();
+          initialized.resolve();
+        }
       } catch { fail("invalid DAP JSON"); }
+      return;
     }
   });
   signal?.addEventListener("abort", aborted, { once: true });
@@ -68,6 +75,7 @@ export async function requireKomodoDebugProtocol(launch: KomodoDebugLaunch, sign
     // This probe never attaches a debuggee. EOF asks the adapter to dispose; kill also bounds old non-DAP images.
     child.stdin.end();
     if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    child.stdout.destroy();
     await exited.promise;
   }
 }

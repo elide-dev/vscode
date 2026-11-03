@@ -82,11 +82,19 @@ test("developer DAP handshake rejects old and malformed adapters, accepts capabi
   const source = new URL("../src/komodoDebug.ts", import.meta.url).pathname;
   const result = spawnSync(process.execPath, ["--eval", `
     import assert from "node:assert/strict";
-    import { mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+    import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
     import { tmpdir } from "node:os";
     import path from "node:path";
+    import * as childProcess from "node:child_process";
     import { mock } from "bun:test";
     mock.module("vscode", () => ({}));
+    const realSpawn = childProcess.spawn;
+    let spawned;
+    // Preserve the real process boundary, recording its PID so cancellation needs no filesystem notification.
+    mock.module("node:child_process", () => ({ ...childProcess, spawn: (...args) => {
+      spawned = realSpawn(...args);
+      return spawned;
+    } }));
     // The production module must load after the VS Code boundary is installed.
     const { requireKomodoDebugProtocol } = await import(${JSON.stringify(source)});
     const root = mkdtempSync(path.join(tmpdir(), "komodo-dap-probe-"));
@@ -109,18 +117,19 @@ test("developer DAP handshake rejects old and malformed adapters, accepts capabi
       await assert.rejects(requireKomodoDebugProtocol(launch), /invalid DAP JSON/);
       install("process.stdin.once('data', () => process.stdout.write('Content-Length: 1048577' + String.fromCharCode(13,10,13,10)));");
       await assert.rejects(requireKomodoDebugProtocol(launch), /invalid initialize response length/);
+      install("process.stdin.once('data', () => process.stdout.write('x'.repeat(1048577)));");
+      await assert.rejects(requireKomodoDebugProtocol(launch), /invalid initialize response/);
       install(response({ supportsConfigurationDoneRequest: true, supportsEvaluateForHovers: true }));
       await requireKomodoDebugProtocol(launch);
       assert.throws(() => process.kill(Number(readFileSync(marker, "utf8")), 0), /ESRCH/, "successful probe is not left running");
       install("process.stdin.resume();");
       const abort = new AbortController();
-      const watcher = watch(root, (_event, file) => {
-        if (file === "pid") abort.abort(new Error("cancelled probe"));
-      });
-      try {
-        await assert.rejects(requireKomodoDebugProtocol(launch, abort.signal), /cancelled probe/);
-      } finally { watcher.close(); }
-      assert.throws(() => process.kill(Number(readFileSync(marker, "utf8")), 0), /ESRCH/, "cancelled probe is not left running");
+      const pending = requireKomodoDebugProtocol(launch, abort.signal);
+      const pid = spawned.pid;
+      assert.ok(pid, "the probe spawned a real adapter before cancellation");
+      abort.abort(new Error("cancelled probe"));
+      await assert.rejects(pending, /cancelled probe/);
+      assert.throws(() => process.kill(pid, 0), /ESRCH/, "cancelled probe is not left running");
     } finally { rmSync(root, { recursive: true, force: true }); }
   `], { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 20_000 });
   expect(result.error).toBeUndefined();
