@@ -22,6 +22,8 @@ jobs:
     outputs:
       released: ${{ steps.release.outputs.release_created }}
       tag: ${{ steps.release.outputs.tag_name }}
+      prs_created: ${{ steps.release.outputs.prs_created }}
+      prs: ${{ steps.release.outputs.prs }}
     steps:
       - name: Run release-please
         id: release
@@ -30,6 +32,45 @@ jobs:
           # a PAT lets CI run on the release pull request; with the default token GitHub suppresses those events
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           skip-github-pull-request: ${{ github.event_name != 'workflow_dispatch' }}
+
+  sync-release-lock:
+    name: Synchronize Release Lock
+    needs: release-please
+    if: github.event_name == 'workflow_dispatch' && needs.release-please.outputs.prs_created == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # v4 returns created/updated PullRequest objects, not GitHub REST pull objects.
+        pr: ${{ fromJSON(needs.release-please.outputs.prs || '[]') }}
+    steps:
+      - name: Checkout release pull request
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.pr.headBranchName }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.19.1
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      - name: Synchronize npm lock metadata
+        run: bazel run @npm//:sync
+
+      - name: Commit synchronized lock metadata
+        env:
+          RELEASE_BRANCH: ${{ matrix.pr.headBranchName }}
+        run: |
+          git add -- pnpm-lock.yaml .aspect/rules/external_repository_action_cache/
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: synchronize release lock metadata"
+          git push origin "HEAD:refs/heads/$RELEASE_BRANCH"
 
   publish:
     name: Publish Extension

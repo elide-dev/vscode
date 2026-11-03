@@ -322,16 +322,41 @@ Releases are cut on demand by maintainers, driven by
 
 1. Run the **Release** workflow from the Actions tab. It opens or refreshes a release pull request that bumps
    `.version` and `packages/vscode/package.json` and adds the `packages/vscode/CHANGELOG.md` section for the next
-   version, derived from the commits since the last tag.
+   version, derived from the commits since the last tag. For each created or updated release PR, the workflow
+   runs `bazel run @npm//:sync` on its branch and commits any changed `pnpm-lock.yaml` and
+   `.aspect/rules/external_repository_action_cache/` files back to that branch.
 2. Amend that section in the pull request if the generated entries need polish; the merged text is what the
    Marketplace shows. Run the workflow again to fold in commits that landed after the pull request was opened.
-   After any release-PR version bump, run `bazel run @npm//:sync` on its branch and commit the regenerated
-   `.aspect/rules/external_repository_action_cache/` record and any `pnpm-lock.yaml` changes. The frozen npm
-   lock check hashes the whole package manifest, including its version, even when dependencies are unchanged.
-   Verify with `bazel run --config=ci //:gazelle.check` and `bazel test --config=ci //...`.
+   Wait for **Synchronize Release Lock** and CI on the resulting PR head to pass before merging. The frozen npm
+   lock check hashes the whole package manifest, including its version, even when dependencies are unchanged;
+   build and publish retain frozen-lock verification. Local equivalents are
+   `bazel run --config=ci //:gazelle.check` and `bazel test --config=ci //...`.
 3. Merging it tags `v<version>` and creates the GitHub Release, which triggers the publish job: unit tests, the
    `.vsix` published to `plugins.elide.dev` via `tools/deploy.sh`, publication to the Visual Studio Marketplace when
    the `VSCE_PAT` secret is configured, and the `.vsix` attached to the release.
 
 The next version follows the merged commits: `fix:` bumps the patch, `feat:` the minor, and `feat!:` (or a
 `BREAKING CHANGE:` footer) the major. `.release-please-manifest.json` holds the last released version.
+
+Configure `RELEASE_PLEASE_TOKEN` with a PAT allowed to update repository contents and pull requests. Both
+release-please and the lock-metadata push use it so the resulting PR commits trigger CI. The workflow falls back
+to `GITHUB_TOKEN` if it is absent, but GitHub suppresses workflows triggered by that token's writes.
+
+### Recovering the already-tagged v0.8.0 release
+
+The original `v0.8.0` tag contains stale npm action-cache metadata. Rerunning its failed publish job still checks
+out that stale record; do not move or recreate the tag. Build its source in a detached worktree, regenerating only
+the lock metadata locally, then upload the verified archive to the existing release:
+
+```sh
+git worktree add --detach ../elide-vscode-v0.8.0 v0.8.0
+cd ../elide-vscode-v0.8.0
+bazel run @npm//:sync
+bazel run --config=ci //:gazelle.check
+bazel test --config=ci //...
+mkdir -p dist
+cp bazel-bin/packages/vscode/elide.vsix dist/elide-0.8.0.vsix
+gh release upload v0.8.0 dist/elide-0.8.0.vsix --clobber
+```
+
+The upload requires maintainer authorization; no commit, push, or retag is needed for this recovery.
