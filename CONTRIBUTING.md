@@ -44,6 +44,8 @@ Unit tests, including Komodo session and Android process-lifecycle coverage, use
 stand-ins and fake executables; they do not require Komodo, Elide, an Android SDK or a device.
 Keep these tests enabled in CI. Subprocess readiness checks observe persistent marker contents,
 not directory-watch notifications, which can be coalesced before a marker write completes.
+Cancellation checks observe actual child-process exit, not a signal-handler marker: a forcibly
+terminated child cannot write one.
 Tests requiring real optional components belong in the explicitly invoked integration scenarios below.
 
 Outputs land in `bazel-bin/`, never in the source tree. To run the extension interactively, open this repo in VS Code

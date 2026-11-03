@@ -57,9 +57,8 @@ const decoded = spawnSync("/bin/sh", ["-c", "set -- " + args.slice(4).join(" ") 
 if (decoded.status !== 0) { console.error(decoded.stderr); process.exit(1); }
 const command = decoded.stdout.split("\0").slice(0, -1);
 const behavior = fs.existsSync(path.join(root, "behavior")) ? JSON.parse(fs.readFileSync(path.join(root, "behavior"), "utf8")) : {};
-process.on("SIGTERM", () => { fs.writeFileSync(path.join(root, "killed"), "yes"); process.exit(0); });
 if (command[0] === "am") {
-  if (behavior.hangUser) { fs.writeFileSync(path.join(root, "waiting-user"), "yes"); fs.watch(root, () => {}); }
+  if (behavior.hangUser) { fs.writeFileSync(path.join(root, "waiting-user"), String(process.pid)); fs.watch(root, () => {}); }
   else console.log(fs.readFileSync(path.join(root, "user"), "utf8"));
 } else if (command[0] === "cmd") {
   if (command.join(" ") !== "cmd package list packages -3 --user 10") throw new Error("Unsafe package discovery user");
@@ -114,7 +113,7 @@ if (command[0] === "am") {
         fs.appendFileSync(path.join(root, "ids"), id + "\n");
         const now = fs.existsSync(path.join(root, "behavior")) ? JSON.parse(fs.readFileSync(path.join(root, "behavior"), "utf8")) : {};
         // A helper stuck in SQL: it neither answers nor exits at end of input.
-        if (now.hang) { busy = true; fs.watch(root, () => {}); fs.writeFileSync(path.join(root, "waiting-query"), "yes"); return; }
+        if (now.hang) { busy = true; fs.watch(root, () => {}); fs.writeFileSync(path.join(root, "waiting-query"), String(process.pid)); return; }
         if (now.flood) { process.stdout.write("x".repeat(4 * 1024 * 1024 + 1)); return; }
         if (now.noisy) process.stderr.write("linker: harmless warning\n".repeat(10000));
         if (now.garbage) { process.stdout.write("not json\n"); continue; }
@@ -171,6 +170,21 @@ async function waitForFile(file: string, count = 1): Promise<void> {
   } finally {
     deadline.removeEventListener("abort", expired);
     unwatchFile(file, check);
+  }
+}
+
+async function waitForExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (true) {
+    try { process.kill(pid, 0); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+      throw error;
+    }
+    if (Date.now() >= deadline) throw new Error(`adb process ${pid} survived cancellation`);
+    // Observe OS reaping, not a SIGTERM handler that need not run before forced termination.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setImmediate(resolve);
+    await promise;
   }
 }
 
@@ -342,10 +356,11 @@ describe.skipIf(process.platform === "win32")("Android database transport safety
     const session = fake.session();
     const outcomes = Promise.allSettled([session.query("app.db", "SELECT 1"), session.schema("app.db")]);
     await waitForFile(path.join(fake.root, "waiting-query"));
+    const pid = Number(readFileSync(path.join(fake.root, "waiting-query"), "utf8"));
     session.cancel();
     for (const result of await outcomes) expect(result.status === "rejected" && result.reason.name).toBe("AbortError");
     await waitForFile(path.join(fake.root, "remote-killed"));
-    await waitForFile(path.join(fake.root, "killed"));
+    await waitForExit(pid);
     writeFileSync(path.join(fake.root, "behavior"), "{}");
     expect(await session.databases()).toEqual(["app.db"]);
     expect(fake.calls().filter((args) => args.at(-1)?.includes("ELIDE_DATABASE_READY_"))).toHaveLength(1);
@@ -390,13 +405,14 @@ describe.skipIf(process.platform === "win32")("Android database transport safety
     const operations = [session.query("app.db", "SELECT 1"), session.execute("app.db", "DELETE FROM items"), session.schema("app.db")];
     const outcomes = Promise.allSettled(operations);
     await waitForFile(path.join(fake.root, "waiting-query"));
+    const pid = Number(readFileSync(path.join(fake.root, "waiting-query"), "utf8"));
     expect(fake.requests()).toHaveLength(1);
     session.dispose();
     for (const result of await outcomes) {
       expect(result.status).toBe("rejected");
       if (result.status === "rejected") expect(result.reason.name).toBe("AbortError");
     }
-    await waitForFile(path.join(fake.root, "killed"));
+    await waitForExit(pid);
     await waitForFile(path.join(fake.root, "cleaned"));
     expect(readdirSync(path.join(fake.root, "app", "cache"))).toHaveLength(0);
     await expect(session.databases()).rejects.toThrow("disposed");
@@ -410,9 +426,10 @@ describe.skipIf(process.platform === "win32")("Android database transport safety
     const session = fake.session();
     const outcomes = Promise.allSettled([session.databases(), session.databases()]);
     await waitForFile(path.join(fake.root, "waiting-user"));
+    const pid = Number(readFileSync(path.join(fake.root, "waiting-user"), "utf8"));
     session.dispose();
     expect((await outcomes).every((result) => result.status === "rejected")).toBe(true);
-    await waitForFile(path.join(fake.root, "killed"));
+    await waitForExit(pid);
     expect(fake.calls()).toHaveLength(1);
     const controller = new AbortController();
     controller.abort();
