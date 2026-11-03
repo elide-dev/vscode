@@ -195,7 +195,9 @@ function keyCode(character: string): string {
  */
 export class ComposeAgentPreviews implements vscode.Disposable {
   private readonly sessions = new Map<string, AgentSession>();
-  private readonly rendering = new Set<AbortController>();
+  private readonly rendering = new Map<AbortController, boolean>();
+  private readonly groups = new Set<Group>();
+  private readonly availability: vscode.Disposable;
   private readonly idleKomodo = new Map<string, { backend: ComposeBackend; timer: NodeJS.Timeout }>();
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly diagnostics = vscode.languages.createDiagnosticCollection("elide-compose-agent");
@@ -204,7 +206,24 @@ export class ComposeAgentPreviews implements vscode.Disposable {
   private files: { at: number; files: Promise<string[]> } | undefined;
   private disposed = false;
 
-  constructor(private readonly workspace: ElideWorkspace, private readonly ui: ElideUi, private readonly host: AgentPreviewHost) {}
+  constructor(private readonly workspace: ElideWorkspace, private readonly ui: ElideUi, private readonly host: AgentPreviewHost) {
+    this.availability = workspace.onDidChangeKomodoAvailability(() => {
+      if (workspace.komodoPreviewAvailable) return;
+      for (const [controller, native] of this.rendering) {
+        if (native) controller.abort(new Error("Komodo previews became unavailable; sync or install a compatible Komodo before rendering again."));
+      }
+      for (const session of this.sessions.values()) if (session.groups.some((group) => group.komodo)) this.close(session);
+      for (const group of this.groups) if (group.komodo) {
+        group.backend.dispose();
+        this.release(group);
+      }
+      for (const { backend, timer } of this.idleKomodo.values()) {
+        clearTimeout(timer);
+        backend.dispose();
+      }
+      this.idleKomodo.clear();
+    });
+  }
 
   /** Live sessions, for the close command. */
   get liveSessions(): number {
@@ -215,23 +234,25 @@ export class ComposeAgentPreviews implements vscode.Disposable {
     this.ready();
     const controller = new AbortController();
     const cancel = AbortSignal.any([signal, controller.signal]);
-    this.rendering.add(controller);
+    const engine = readConfig().composePreviewEngine;
+    this.rendering.set(controller, engine === "komodo");
     try {
       cancel.throwIfAborted();
-      return await this.renderSession(options, controller, cancel, progress);
+      return await this.renderSession(options, engine, controller, cancel, progress);
     } finally {
       this.rendering.delete(controller);
     }
   }
 
-  private async renderSession(options: AgentRenderOptions, controller: AbortController, cancel: AbortSignal,
+  private async renderSession(options: AgentRenderOptions, engine: "komodo" | "layoutlib", controller: AbortController, cancel: AbortSignal,
     progress: (text: string) => void): Promise<McpContent[]> {
     if (!options.composables.length) throw new Error("Name at least one composable.");
-    const engine = readConfig().composePreviewEngine;
     const theme = options.theme ? await this.theme(options.theme) : undefined;
     const resolved = await Promise.all(options.composables.map(async (item, order) => ({ item, order, ...await this.declaration(item.reference) })));
     const byGroup = new Map<string, { app: { project: ElideProject; target: AndroidTargetModel }; items: typeof resolved }>();
     for (const entry of resolved) {
+      if (engine === "komodo") await this.workspace.requireKomodoPreview(entry.declaration.file);
+      cancel.throwIfAborted();
       const app = await this.application(entry.declaration.file, cancel);
       const key = backendKey(app.project, app.target);
       const groupKey = engine === "komodo" ? key : `${key}\0${entry.declaration.file}`;
@@ -252,7 +273,7 @@ export class ComposeAgentPreviews implements vscode.Disposable {
         session.groups.push(await this.group(app, engine === "komodo", items.map((entry) => ({
           reference: entry.item.reference, order: entry.order, declaration: entry.declaration, text: entry.text,
           arguments: entry.item.arguments ?? {}, configuration: { ...options.preview, ...entry.item.preview },
-        })), theme));
+        })), theme, cancel));
       }
       for (const group of session.groups) await this.renderGroup(group, options.rebuild === true, cancel, trace, progress);
       const content = await this.report(session, this.allCards(session), options.layout !== false);
@@ -264,6 +285,7 @@ export class ComposeAgentPreviews implements vscode.Disposable {
       } else this.close(session);
       return content;
     } catch (error) {
+      for (const group of session.groups) if (group.komodo && !group.backend.disposed) group.komodo.preempt("The agent preview was cancelled or failed.");
       trace.end(cancel.aborted ? "cancelled" : "failed", message(error).split("\n")[0]);
       this.close(session);
       throw error;
@@ -390,7 +412,7 @@ export class ComposeAgentPreviews implements vscode.Disposable {
   /** Live sessions and renders still opening one: the close-sessions command, or a window going away. */
   closeAll(): number {
     const pending = this.rendering.size;
-    for (const controller of this.rendering) controller.abort(new Error("The agent preview render was closed."));
+    for (const controller of this.rendering.keys()) controller.abort(new Error("The agent preview render was closed."));
     const sessions = [...this.sessions.values()];
     for (const session of sessions) this.close(session);
     return sessions.length + pending;
@@ -421,6 +443,7 @@ export class ComposeAgentPreviews implements vscode.Disposable {
 
   dispose(): void {
     this.disposed = true;
+    this.availability.dispose();
     this.closeAll();
     for (const { backend, timer } of this.idleKomodo.values()) {
       clearTimeout(timer);
@@ -447,7 +470,12 @@ export class ComposeAgentPreviews implements vscode.Disposable {
       if (session.closed) throw new Error(`No live preview session ${session.id}; it was closed.`);
       clearTimeout(session.idle);
       try {
-        return await work(AbortSignal.any([signal, session.closing.signal]));
+        const cancel = AbortSignal.any([signal, session.closing.signal]);
+        for (const group of session.groups) if (group.komodo) await this.workspace.requireKomodoPreview(group.sourceFile);
+        cancel.throwIfAborted();
+        const result = await work(cancel);
+        cancel.throwIfAborted();
+        return result;
       } finally {
         if (!session.closed) this.touch(session);
       }
@@ -563,7 +591,7 @@ export class ComposeAgentPreviews implements vscode.Disposable {
   /** A backend's share of a session: the generated wrappers and the previews selected for its composables. */
   private async group(app: { project: ElideProject; target: AndroidTargetModel }, komodo: boolean,
     items: { reference: string; order: number; declaration: ComposableDeclaration; text: string; arguments: Readonly<Record<string, string>>; configuration: PreviewConfiguration }[],
-    theme: ComposableDeclaration | undefined): Promise<Group> {
+    theme: ComposableDeclaration | undefined, signal: AbortSignal): Promise<Group> {
     const key = backendKey(app.project, app.target);
     const placements: Placement[] = [];
     const previews: CompiledPreview[] = [];
@@ -601,14 +629,19 @@ export class ComposeAgentPreviews implements vscode.Disposable {
       previews.push({ methodFQN: wrapper.methodFQN, previewId: wrapper.methodFQN, name: declaration.name, previewParams: wrapper.previewParams, methodParams: [] });
     }
     const files = [...new Set(items.map((item) => item.declaration.file))];
+    if (komodo) await this.workspace.requireKomodoPreview(files[0]!);
+    signal.throwIfAborted();
+    if ((readConfig().composePreviewEngine === "komodo") !== komodo) throw new Error("The Compose preview engine changed; render again with the selected engine.");
     const backend = komodo ? this.komodoBackend(key) : this.host.backends.acquire(key);
     const group: Group = {
       key, app, backend, komodo: backend instanceof KomodoBackend ? backend : undefined, sourceFile: files[0]!, files: files.slice(1),
       appendices, previews, placements, units: [], originals,
       texts: new Map(), latest: new Map(), frameAt: new Map(), lost: false, subscriptions: [], released: false,
     };
+    this.groups.add(group);
     group.subscriptions.push(
       backend.onImages((images) => {
+        if (group.released) return;
         for (const image of images) {
           group.latest.set(image.id, image);
           group.frameAt.set(image.id, performance.now());
@@ -643,6 +676,7 @@ export class ComposeAgentPreviews implements vscode.Disposable {
   private release(group: Group): void {
     if (group.released) return;
     group.released = true;
+    this.groups.delete(group);
     for (const unsubscribe of group.subscriptions) unsubscribe();
     if (!group.komodo) {
       this.host.backends.release(group.backend);
@@ -651,7 +685,7 @@ export class ComposeAgentPreviews implements vscode.Disposable {
     for (const image of group.latest.keys()) group.backend.blur(image);
     this.host.arbiter.setActive(group.komodo, false);
     const previous = this.idleKomodo.get(group.key);
-    if (this.disposed || group.backend.disposed || (previous && previous.backend !== group.backend)) {
+    if (this.disposed || !this.workspace.komodoPreviewAvailable || group.backend.disposed || (previous && previous.backend !== group.backend)) {
       group.backend.dispose();
       return;
     }
@@ -706,7 +740,10 @@ export class ComposeAgentPreviews implements vscode.Disposable {
   private async renderGroup(group: Group, rebuild: boolean, signal: AbortSignal, trace: TimelineNode | undefined, progress: (text: string) => void): Promise<void> {
     const queueKey = group.komodo ? `komodo\0${group.key}` : group.key;
     const previous = this.queues.get(queueKey) ?? Promise.resolve();
-    const run = previous.then(() => this.renderNow(group, rebuild, signal, trace, progress));
+    const run = previous.then(() => this.renderNow(group, rebuild, signal, trace, progress)).catch((error: unknown) => {
+      if (group.komodo && !group.backend.disposed) group.komodo.preempt("The agent preview did not complete; refresh to try again.");
+      throw error;
+    });
     const settled = run.catch(() => {});
     this.queues.set(queueKey, settled);
     void settled.then(() => { if (this.queues.get(queueKey) === settled) this.queues.delete(queueKey); });
@@ -716,6 +753,12 @@ export class ComposeAgentPreviews implements vscode.Disposable {
   private async renderNow(group: Group, rebuild: boolean, signal: AbortSignal, trace: TimelineNode | undefined, progress: (text: string) => void): Promise<void> {
     signal.throwIfAborted();
     const { backend } = group;
+    if (group.komodo) {
+      await this.workspace.requireKomodoPreview(group.sourceFile);
+      signal.throwIfAborted();
+      await group.komodo.prepareSession(group.sourceFile, group.appendices.size > 0, signal);
+      signal.throwIfAborted();
+    }
     const project = this.workspace.projectAt(group.app.project.root);
     const model = project?.model;
     if (!project || !model) throw new Error(`Sync ${path.basename(group.app.project.root)} before previewing.`);
@@ -727,9 +770,12 @@ export class ComposeAgentPreviews implements vscode.Disposable {
     };
     progress("Reading sources");
     const request = await this.request(group);
+    signal.throwIfAborted();
     const build = previewBuild(this.workspace, project, model, artifact);
     const runtime = await step("Compose runtime", () => ensureComposeRuntime(this.host.cacheRoot, signal, progress));
+    signal.throwIfAborted();
     await backend.startRenderer(runtime, javaFor(model), group.previews.length);
+    signal.throwIfAborted();
     let built = false;
     if (rebuild) {
       await this.build(project, model, artifact, build.models, signal, trace, progress);
@@ -740,6 +786,7 @@ export class ComposeAgentPreviews implements vscode.Disposable {
     } catch (error) {
       // Never built, or a build is rewriting its outputs: build, then derive the compiler from what it wrote.
       if (built || error instanceof StaleBuildRecordError) throw error;
+      signal.throwIfAborted();
       await this.build(project, model, artifact, build.models, signal, trace, progress);
       await step("Prepare compiler", () => backend.configure(build, request.documents, true));
     }

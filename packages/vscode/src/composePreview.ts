@@ -428,6 +428,14 @@ class PreviewSession implements vscode.Disposable {
         }
         if (rebuild !== undefined) this.schedule(rebuild);
       }),
+      workspace.onDidChangeKomodoAvailability(() => {
+        if (this.backend.engine !== "komodo" || workspace.komodoPreviewAvailable) return;
+        const file = this.source.fsPath;
+        this.dispose();
+        void workspace.requireKomodoPreview(file).catch((error: unknown) => {
+          void vscode.window.showWarningMessage(`Elide: Compose preview stopped: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }),
       workspace.onDidChange(() => {
         if (!workspace.projectAt(project.root)) this.dispose();
         else if (this.model && workspace.projectAt(project.root)?.model !== this.model) this.schedule(true);
@@ -851,12 +859,19 @@ class PreviewSession implements vscode.Disposable {
     let preparing = false;
     try {
       if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before executing Compose previews.");
+      if (backend instanceof KomodoBackend) {
+        await this.workspace.requireKomodoPreview(this.source.fsPath);
+        signal.throwIfAborted();
+        await backend.prepareSession(this.source.fsPath, false, signal);
+        signal.throwIfAborted();
+      }
       const model = this.workspace.projectAt(this.project.root)?.model;
       if (!model) throw new Error("Sync the Android project before previewing.");
       const artifact = model.android?.targets.find((target) => target.name === this.artifact.name);
       if (!artifact) throw new Error(`Android artifact ${this.artifact.name} no longer exists. Reopen the preview.`);
       const request = { ...await previewRequest(this.workspace, this.project.folder, this.source), inspect: this.inspecting };
       if (this.closed) return;
+      signal.throwIfAborted();
       let gallery: PreviewGallery | undefined;
       if (this.rebuild || !backend.compiler) {
         preparing = true;
@@ -941,6 +956,7 @@ class PreviewSession implements vscode.Disposable {
       this.confirm(revision);
       outcome = "succeeded";
     } catch (error) {
+      if (backend instanceof KomodoBackend && !backend.disposed) backend.preempt("The preview did not complete; refresh to try again.");
       // A failed resource/build setup cannot be repaired by compiling only the next Kotlin edit.
       if (preparing) this.rebuild = true;
       if (!this.closed && revision === this.revision && cancel.signal.aborted) {
@@ -1028,6 +1044,7 @@ export function registerComposePreview(workspace: ElideWorkspace, ui: ElideUi, c
         session: (file) => workspace.komodoPreviewSession(file),
         sync: (files) => workspace.komodoPreviewSync(files),
         log: (line) => ui.log(line),
+        unavailable: (reason) => workspace.rejectKomodoPreview(reason),
         arbiter,
         role,
       })
@@ -1056,7 +1073,8 @@ export function registerComposePreview(workspace: ElideWorkspace, ui: ElideUi, c
   };
   const updateAvailability = (): void => {
     clearTimeout(availabilityTimer);
-    const value = !disposed && previewable(vscode.window.activeTextEditor) !== undefined;
+    const value = !disposed && (readConfig().composePreviewEngine !== "komodo" || workspace.komodoPreviewAvailable)
+      && previewable(vscode.window.activeTextEditor) !== undefined;
     if (value === available) return;
     available = value;
     void vscode.commands.executeCommand("setContext", "elide.composePreviewAvailable", value);
@@ -1074,15 +1092,19 @@ export function registerComposePreview(workspace: ElideWorkspace, ui: ElideUi, c
     if (!runtime || disposed || session?.open) return;
     // previewApp keeps the application in the file's workspace folder.
     const request = await previewRequest(workspace, app.project.folder, editor.document.uri);
+    if (readConfig().composePreviewEngine === "komodo") await workspace.requireKomodoPreview(editor.document.uri.fsPath);
     if (disposed || session?.open) return;
     const key = backendKey(app.project, app.target);
     const backend = backends.obtain(key);
     const file = path.basename(editor.document.uri.fsPath);
     try {
+      if (backend instanceof KomodoBackend) await backend.prepareSession(editor.document.uri.fsPath);
+      if (backend.disposed || disposed || session?.open) return;
       // The first warm-up of a large project can take a minute: say so where background work shows.
       await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: `Warming Compose preview for ${file}` }, (progress) =>
         backend.prewarm(previewBuild(workspace, app.project, model, app.target), runtime, javaFor(model), request, (step) => progress.report({ message: step })));
     } catch (error) {
+      if (backend instanceof KomodoBackend && !backend.disposed) backend.preempt("Preview prewarm did not complete.");
       // Expiry, a model change or shutdown stopped this backend: nothing failed.
       if (backend.disposed || disposed) return;
       throw new Error(`Compose preview prewarm for ${file} failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
@@ -1144,12 +1166,15 @@ export function registerComposePreview(workspace: ElideWorkspace, ui: ElideUi, c
       const editor = vscode.window.activeTextEditor;
       if (!editor || editor.document.languageId !== "kotlin" || editor.document.uri.scheme !== "file") throw new Error("Open a Kotlin source file containing @Preview functions.");
       // Building cannot find previews the source does not declare; say so before spending a build on it.
+      if (readConfig().composePreviewEngine === "komodo") await workspace.requireKomodoPreview(editor.document.uri.fsPath);
       if (!composePreviewAnnotations(editor.document.getText())) {
         throw new Error(`${path.basename(editor.document.uri.fsPath)} declares no @Preview functions. Annotate a composable with @Preview, or with a multipreview annotation whose name contains "Preview", to preview it.`);
       }
       const source = editor.document.uri;
       const app = await previewTarget(source);
       if (!app || disposed) return;
+      if (readConfig().composePreviewEngine === "komodo") await workspace.requireKomodoPreview(source.fsPath);
+      if (disposed) return;
       // The open panel keeps its place, gallery and state; its Rebuild button builds again.
       if (session?.open && session.previews(app.project, app.target, source)) {
         session.reveal();
@@ -1177,7 +1202,9 @@ export function registerComposePreview(workspace: ElideWorkspace, ui: ElideUi, c
       try {
         if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before building a preview.");
         await vscode.workspace.fs.stat(saved).then(undefined, () => { throw new Error(`${file} no longer exists.`); });
+        if (readConfig().composePreviewEngine === "komodo") await workspace.requireKomodoPreview(saved.fsPath);
         const app = await previewTarget(saved);
+        if (readConfig().composePreviewEngine === "komodo") await workspace.requireKomodoPreview(saved.fsPath);
         // The user opened another preview meanwhile; there is one at a time.
         if (!app || disposed || session?.open) {
           panel.dispose();
@@ -1197,6 +1224,13 @@ export function registerComposePreview(workspace: ElideWorkspace, ui: ElideUi, c
     errors,
     diagnostics,
     prewarmed,
+    workspace.onDidChangeKomodoAvailability(() => {
+      if (!workspace.komodoPreviewAvailable) {
+        clearTimeout(prewarmTimer);
+        backends.retireEngine("komodo");
+      } else schedulePrewarm();
+      updateAvailability();
+    }),
     vscode.window.onDidChangeActiveTextEditor(() => {
       updateAvailability();
       schedulePrewarm();
@@ -1212,6 +1246,7 @@ export function registerComposePreview(workspace: ElideWorkspace, ui: ElideUi, c
       session?.focusInput(undefined);
       backends.rearm();
       schedulePrewarm();
+      updateAvailability();
     }),
     workspace.onDidChange(() => {
       backends.retain((key) => workspace.projects.some((project) => project.model?.android?.targets.some((target) => backendKey(project, target) === key)));

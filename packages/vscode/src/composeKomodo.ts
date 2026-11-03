@@ -76,8 +76,8 @@ export class KomodoRenderer {
   private static async handshake(renderer: KomodoRenderer, timeoutMs: number): Promise<KomodoRenderer> {
     try {
       const ready = await renderer.next((event) => event.event === "ready", timeoutMs);
-      if (typeof ready.protocol !== "number" || ready.protocol < KOMODO_PROTOCOL) {
-        throw new KomodoUnavailable("this Komodo is too old for the Komodo preview engine; install a compatible Komodo through Elide and reload the window");
+      if (ready.protocol !== KOMODO_PROTOCOL) {
+        throw new KomodoUnavailable("Unsupported Komodo preview protocol; install a compatible Komodo through Elide, then sync.");
       }
       renderer.ready = ready;
       return renderer;
@@ -221,6 +221,8 @@ export interface KomodoOptions {
   session: (file: string) => Promise<{ protocol: number; port: number; token: string; pid?: number }>;
   sync: (files: readonly string[]) => Promise<void>;
   log: (line: string) => void;
+  /** A known protocol/capability mismatch disables native previews until compatibility is refreshed. */
+  unavailable?: (reason: string) => void;
   /** Shared by every backend of the window: the language server hosts one preview session at a time. */
   arbiter?: KomodoSessionArbiter;
   /** Who previews with this backend (default `panel`); an agent's backend is created by {@link ComposeBackends.detached}. */
@@ -303,6 +305,8 @@ export class KomodoBackend extends ComposeBackend {
   /** The process of a closed session, kept for the next session's configure when it advertises `reconfigure`. */
   private spare: KomodoRenderer | undefined;
   private starting: Promise<KomodoRenderer> | undefined;
+  private prepared: KomodoRenderer | undefined;
+  private preparing: Promise<KomodoRenderer> | undefined;
   /** Owns a session before it is configured and published as `daemon`. */
   private startup: AbortController | undefined;
   /** The inputs and previewed file of the current session; others start a new one. */
@@ -360,6 +364,43 @@ export class KomodoBackend extends ComposeBackend {
     super(key, cacheRoot, helperDirectory, store);
   }
 
+  /** Validate the native session before a preview allocates runtime/compiler inputs or builds the project. */
+  async prepareSession(file: string, appendices = false, signal?: AbortSignal): Promise<void> {
+    this.signal.throwIfAborted();
+    signal?.throwIfAborted();
+    if (this.paused || this.options.arbiter && !this.options.arbiter.claim(this)) throw new Error(`Komodo: ${KOMODO_PAUSED}`);
+    try {
+      // This method is required for unsaved buffers too; reject unsupported servers before any preview build.
+      await this.options.sync([file]);
+      this.signal.throwIfAborted();
+      signal?.throwIfAborted();
+      const renderer = this.daemon?.alive ? this.daemon : this.prepared?.alive ? this.prepared
+        : await (this.preparing ??= (async () => {
+          const controller = new AbortController();
+          const abort = () => controller.abort(signal?.reason);
+          signal?.addEventListener("abort", abort, { once: true });
+          this.startup = controller;
+          try {
+            const renderer = await this.open(file, AbortSignal.any([this.signal, controller.signal]));
+            this.prepared = renderer;
+            return renderer;
+          } finally {
+            signal?.removeEventListener("abort", abort);
+            if (this.startup === controller) this.startup = undefined;
+            this.preparing = undefined;
+          }
+        })());
+      this.signal.throwIfAborted();
+      signal?.throwIfAborted();
+      if (appendices && !supports(renderer, "appendices")) {
+        throw new KomodoUnavailable("Previewing a composable without @Preview needs Komodo's appendices capability. Install a compatible Komodo through Elide, then sync.");
+      }
+    } catch (error) {
+      if (error instanceof KomodoUnavailable) this.options.unavailable?.(error.message);
+      throw error;
+    }
+  }
+
   get role(): "panel" | "agent" { return this.options.role ?? "panel"; }
 
   /**
@@ -377,6 +418,8 @@ export class KomodoBackend extends ComposeBackend {
     daemon?.dispose();
     this.spare?.dispose();
     this.spare = undefined;
+    this.prepared?.dispose();
+    this.prepared = undefined;
     const cards = [...this.hosted].map((id) => {
       this.latest.delete(id);
       return { ...this.base(id), error: reason };
@@ -525,6 +568,7 @@ export class KomodoBackend extends ComposeBackend {
       try {
         return await this.previewNow(request, compile, trace);
       } catch (error) {
+        if (error instanceof KomodoUnavailable) this.options.unavailable?.(error.message);
         // An agent took the session meanwhile (its configure or hosting then fails): the panel pauses, as if it had found it in use.
         if (this.paused && this.preemptions !== preemptions && !this.disposed) return { images: this.pausedGallery(), verified: true, reused: false };
         throw error;
@@ -612,6 +656,8 @@ export class KomodoBackend extends ComposeBackend {
     daemon?.dispose();
     this.spare?.dispose();
     this.spare = undefined;
+    this.prepared?.dispose();
+    this.prepared = undefined;
     this.options.arbiter?.release(this);
     super.dispose();
   }
@@ -711,15 +757,8 @@ export class KomodoBackend extends ComposeBackend {
     }
     const daemon = reused ?? await (this.starting ??= (async () => {
       try {
-        const started = await this.open(sourceFile, signal);
-        started.on((event) => {
-          if (this.daemon !== started) return;
-          if (event.event === "error" && typeof event.entry !== "string" && event.kind !== "rejected" && typeof event.message === "string") {
-            this.lastError = event.message.split("\n")[0];
-          }
-          this.event(event);
-        });
-        started.onClose(() => this.closed(started));
+        const started = this.prepared?.alive ? this.prepared : await this.open(sourceFile, signal);
+        this.prepared = undefined;
         return started;
       } finally {
         this.starting = undefined;
@@ -776,16 +815,27 @@ export class KomodoBackend extends ComposeBackend {
     if (this.options.arbiter && !this.options.arbiter.claim(this)) throw new Error(`Komodo: ${KOMODO_PAUSED}`);
     const session = await this.options.session(sourceFile);
     signal.throwIfAborted();
+    if (session.protocol !== KOMODO_PROTOCOL) {
+      throw new KomodoUnavailable(`Unsupported Komodo preview protocol ${session.protocol}; expected ${KOMODO_PROTOCOL}. Install a compatible Komodo through Elide, then sync.`);
+    }
     const connected = await KomodoRenderer.connect(session.port, session.token, this.options.log, 60_000, signal);
     if (connected.ready.compiler !== "workspace-fir") {
       connected.dispose();
-      throw new KomodoUnavailable("The Komodo preview engine needs a newer Komodo language server. Install a compatible Komodo through Elide and reload the window.");
+      throw new KomodoUnavailable("The Komodo preview engine needs a compatible workspace-fir language server. Install a compatible Komodo through Elide, then sync.");
     }
     if (signal.aborted) {
       connected.dispose();
       signal.throwIfAborted();
     }
     this.options.log(`Komodo: preview session in the language server ready (protocol ${String(connected.ready.protocol)}, host ${String(connected.ready.host)}, Kotlin ${String(connected.ready.kotlin)}, compiler ${String(connected.ready.compiler ?? "unreported")}, pid ${String(session.pid ?? connected.ready.pid ?? "unreported")})`);
+    connected.on((event) => {
+      if (this.daemon !== connected) return;
+      if (event.event === "error" && typeof event.entry !== "string" && event.kind !== "rejected" && typeof event.message === "string") {
+        this.lastError = event.message.split("\n")[0];
+      }
+      this.event(event);
+    });
+    connected.onClose(() => this.closed(connected));
     return connected;
   }
 
@@ -795,7 +845,7 @@ export class KomodoBackend extends ComposeBackend {
     const runtime = this.runtime;
     if (!runtime) return "the layoutlib runtime is not installed yet";
     if (this.appendices.size && !supports(daemon, "appendices")) {
-      throw new KomodoUnavailable("Previewing a composable without @Preview needs a newer Komodo (the appendices feature). Install a compatible Komodo through Elide and reload the window.");
+      throw new KomodoUnavailable("Previewing a composable without @Preview needs a compatible Komodo (the appendices feature). Install it through Elide, then sync.");
     }
     const appendices = JSON.stringify([...this.appendices]);
     await this.pushing;

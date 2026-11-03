@@ -530,6 +530,20 @@ try {
     assert.equal(backend.disposed, false, "a keep-alive beyond the timer limit keeps the backend");
     backends.dispose();
     assert.equal(backend.disposed, true);
+  } else if (scenario === "retire-native") {
+    class NativeBackend extends ComposeBackend { override readonly engine = "komodo"; }
+    const backends = new ComposeBackends(root, root, () => 60_000, (key, cache, helpers, store) =>
+      key.startsWith("native") ? new NativeBackend(key, cache, helpers, store) : new ComposeBackend(key, cache, helpers, store));
+    const active = backends.acquire("native-active");
+    const layoutlib = backends.acquire("layoutlib");
+    const idle = backends.obtain("native-idle");
+    backends.idle(idle);
+    backends.retireEngine("komodo");
+    assert.equal(active.disposed, true);
+    assert.equal(idle.disposed, true);
+    assert.equal(layoutlib.disposed, false, "native compatibility loss must preserve layoutlib");
+    assert.notEqual(backends.acquire("native-active"), active, "recovery allocates a fresh backend");
+    backends.dispose();
   } else if (scenario === "selection") {
     const calls: (readonly string[] | undefined)[] = [];
     renderGallery = async (_renderer, methods) => {

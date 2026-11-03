@@ -731,6 +731,11 @@ export class ComposeBackends {
     for (const backend of this.backends.values()) if (!backend.users && !keep(backend.key)) this.drop(backend);
   }
 
+  /** Compatibility loss retires an engine's active and idle resources without touching other engines. */
+  retireEngine(engine: string): void {
+    for (const backend of this.backends.values()) if (backend.engine === engine) this.drop(backend);
+  }
+
   dispose(): void {
     for (const backend of this.backends.values()) this.drop(backend);
   }

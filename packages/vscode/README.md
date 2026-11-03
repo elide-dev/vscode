@@ -265,9 +265,19 @@ previewed file and the files it uses reach the cards as you type; clicks run the
 providers expand into one card per value; compile errors appear in the Problems view and on the cards, which recover
 once the code compiles again. A card Komodo cannot render says why. There is no fallback to the `layoutlib` engine:
 a `komodo` too old for the engine says so. The project's resources and library classes come from the last Elide
-build, which the panel runs as with `layoutlib`; Java and resource changes need a save. If the language server
-reloads, restarts or crashes, the cards say the preview session closed and the panel reconnects on its own; a save
-that rebuilds the project starts a new session over the new build's classes.
+build, which the panel runs as with `layoutlib`; Java and resource changes need a save. A save that rebuilds the
+project starts a new session over the new build's classes.
+
+Missing or incompatible Komodo automatically disables native previews **at runtime**, leaving engine and language
+server settings unchanged. Opening a panel, prewarming and MCP rendering check availability before project builds or
+compiler/runtime preparation; a native session also validates its protocol handshake before those operations.
+Availability loss closes native panels, cancels pending renders and retires live agent sessions and idle native
+backends, so obsolete frames or queued interactions cannot be returned. Layoutlib previews and ordinary project
+builds remain independent. There is no automatic Komodo download or renderer fallback.
+
+A protocol/capability incompatibility stays disabled rather than retrying builds on each edit. Use **Elide: Install
+Komodo**, fix the executable/configuration or sync to recheck it. Once compatible, reopen the panel or render a new
+agent session without reloading the window; old session IDs are intentionally retired.
 
 **Inspect** outlines each card's composable calls (`Text`, `Column`, your own composables) by their measured runtime
 layouts; select them by pointer or arrow keys, read their size and image-pixel position, and choose **Open source**,
@@ -681,6 +691,9 @@ Bearer $ELIDE_COMPOSE_PREVIEW_MCP_TOKEN"`). `elide.android.composePreview.mcp.en
 the project's code, as the preview panel does: the tools refuse to run in an untrusted workspace.
 Malformed HTTP request targets receive HTTP 400 without interrupting other requests. Closing the extension clears
 its terminal URL/token contributions, including when startup is still persisting the server's port.
+Native render/refresh/interact operations follow the same availability checks as the panel. Losing compatible Komodo
+cancels native requests and closes their sessions, but does not shut down this MCP server: composable listing and
+layoutlib rendering still work. Recovery requires a new native render, not reuse of a retired session ID.
 
 | Tool | What it does |
 | --- | --- |

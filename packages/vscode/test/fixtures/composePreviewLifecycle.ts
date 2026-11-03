@@ -21,17 +21,21 @@ class EventEmitter<T> {
   dispose(): void { this.listeners.clear(); }
 }
 const scenario = process.argv[2];
+const native = scenario?.startsWith("komodo-") === true;
 const processing = ["processing", "processor-failure", "processing-recovery", "superseded-processing", "stale-paint"].includes(scenario!);
 /** Scenarios whose webview acknowledges every gallery it receives, as soon as it arrives. */
 const acknowledging = processing || ["cold-initialization", "inspect", "replay", "rename", "session-lost", "restore"].includes(scenario!);
 /** Scenarios whose error notifications are recorded rather than failing the run. */
-const notifying = ["availability", "sync-failure"].includes(scenario!);
+const notifying = native || ["availability", "sync-failure"].includes(scenario!);
 const changed = new EventEmitter<unknown>();
 const received = new EventEmitter<unknown>();
 const disposed = new EventEmitter<void>();
 const renamed = new EventEmitter<unknown>();
 const deleted = new EventEmitter<unknown>();
 const workspaceChanged = new EventEmitter<void>();
+const availabilityChanged = new EventEmitter<void>();
+let nativeAvailable = scenario !== "komodo-missing";
+let nativeReason = "Komodo is missing; install a compatible Komodo through Elide, then sync.";
 const noopEvent = () => new Disposable();
 const messages: Record<string, unknown>[] = [];
 const commands = new Map<string, () => unknown>();
@@ -127,7 +131,8 @@ mock.module("vscode", () => ({
     onDidChangeConfiguration: noopEvent },
 }));
 const prewarming = scenario === "prewarm-close" || scenario === "prewarm-failure";
-mock.module("../../src/config.js", () => ({ readConfig: () => ({ composePreviewPrewarm: prewarming, composePreviewKeepAlive: 1 }) }));
+mock.module("../../src/config.js", () => ({ readConfig: () => ({ composePreviewPrewarm: prewarming, composePreviewKeepAlive: 1,
+  composePreviewEngine: native ? "komodo" : "layoutlib" }) }));
 const runtimeGate = Promise.withResolvers<object>();
 let runtimeEntered = false;
 mock.module("../../src/composeRuntime.js", () => ({
@@ -174,6 +179,13 @@ let pushImages: (images: unknown[]) => void = () => {};
 let compiled: (outcome: { failed: boolean; messages: unknown[] }) => void = () => {};
 let sessionLost = () => {};
 const backend = {
+  engine: native ? "komodo" : "layoutlib",
+  prepareSession: async () => {
+    if (scenario === "komodo-incompatible") {
+      workspace.rejectKomodoPreview("Unsupported Komodo preview protocol; install a compatible Komodo, then sync.");
+      throw new Error(nativeReason);
+    }
+  },
   compiler: { ready: true, seeded: false, processingRequired: processing, processingStats: { stubs: 0, apt: 0 },
     needsWarmup: scenario === "cold-initialization",
     supports: () => true, sources: async (documents: ReadonlyMap<string, string>) => ({ files: [documents] }) },
@@ -229,8 +241,13 @@ mock.module("../../src/composeBackend.js", () => ({ isPreviewKeyEvent, PREVIEW_K
   idle() {}
   release() {}
   retain() {}
+  retireEngine(engine: string) { if (backend.engine === engine) backend.disposed = true; }
   dispose() {}
 } }));
+mock.module("../../src/composeKomodo.js", () => ({
+  KomodoBackend: class { static [Symbol.hasInstance](value: unknown) { return value === backend && native; } },
+  KomodoSessionArbiter: class {},
+}));
 // The session resolves the CLI before running it, whether or not the host has one installed; `runObservedElide` is
 // mocked, so any file at `bin/elide` stands in.
 const elideHome = mkdtempSync(path.join(tmpdir(), "elide-compose-home-"));
@@ -250,7 +267,12 @@ const syncing = scenario === "sync-wait" || scenario === "sync-failure";
 const project: { root: string; folder: typeof folder; model?: typeof model } = { root: "/app", folder, ...(syncing ? {} : { model }) };
 const sync = { running: syncing, error: undefined as string | undefined };
 const workspace = { projects: [project], projectFor: () => project, projectAt: () => project, onDidChange: workspaceChanged.event,
-  isSyncing: () => sync.running, lastError: () => sync.error };
+  isSyncing: () => sync.running, lastError: () => sync.error,
+  get komodoPreviewAvailable() { return nativeAvailable; },
+  onDidChangeKomodoAvailability: availabilityChanged.event,
+  requireKomodoPreview: async () => { if (!nativeAvailable) throw new Error(nativeReason); },
+  rejectKomodoPreview: (reason: string) => { nativeReason = reason; nativeAvailable = false; availabilityChanged.fire(); },
+};
 const roots: TimelineNode[] = [];
 /** The Activity view's Cancel of each operation. */
 const cancels: (() => void)[] = [];
@@ -298,11 +320,50 @@ try {
     workspaceState.set(RENAMES_KEY, { "file:///app/src/main/Old.kt": "file:///app/src/main/Moved.kt", "file:///app/src/main/Moved.kt": uri.toString() });
     await serializer!.deserializeWebviewPanel(panel, { source: "file:///app/src/main/Moved.kt", fitted: true });
     await until(() => runtimeEntered);
-  } else if (!["availability", "sync-wait", "sync-failure"].includes(scenario!)) {
+  } else if (!native && !["availability", "sync-wait", "sync-failure", "layoutlib-native-loss"].includes(scenario!)) {
     if (!prewarming) await commands.get("elide.androidComposePreview")!();
     await until(() => runtimeEntered);
   }
-  if (scenario === "availability") {
+  if (scenario === "komodo-missing") {
+    await commands.get("elide.androidComposePreview")!();
+    assert.match(shown[0]!, /Komodo is missing/);
+    assert.equal(panels, 0);
+    assert.equal(runtimeEntered, false);
+    assert.equal(builds, 0);
+    nativeAvailable = true;
+    availabilityChanged.fire();
+    await commands.get("elide.androidComposePreview")!();
+    await until(() => runtimeEntered);
+    assert.equal(panels, 1, "sync recovery can open a native preview without reloading");
+  } else if (scenario === "komodo-incompatible") {
+    await commands.get("elide.androidComposePreview")!();
+    await until(() => panelDisposed);
+    await commands.get("elide.androidComposePreview")!();
+    assert.equal(panels, 1, "protocol failure stays disabled until compatibility refresh");
+    assert.equal(runtimeEntered, false);
+    assert.equal(builds, 0);
+    assert.equal(starts, 0);
+    assert.equal(backend.disposed, true);
+    assert.match(shown[0]!, /Unsupported Komodo preview protocol/);
+  } else if (scenario === "komodo-loss" || scenario === "layoutlib-native-loss") {
+    await commands.get("elide.androidComposePreview")!();
+    await until(() => runtimeEntered);
+    nativeAvailable = false;
+    availabilityChanged.fire();
+    runtimeGate.resolve({});
+    if (native) {
+      await until(() => panelDisposed);
+      await sleep(20);
+      assert.equal(builds, 0, "availability loss cancels a runtime await before the build starts");
+      assert.equal(previews, 0);
+      assert.equal(backend.disposed, true);
+      assert.equal(registration.api.pointer("live", "down", 1, 1), false);
+    } else {
+      await until(() => builds === 1);
+      assert.equal(panelDisposed, false, "layoutlib remains open on native availability loss");
+      assert.equal(backend.disposed, false);
+    }
+  } else if (scenario === "availability") {
     assert.deepEqual(contexts.at(-1), ["setContext", "elide.composePreviewAvailable", true], "a preview source of a synced Android app offers the editor button");
     text = "package sample\nclass MainActivity";
     changed.fire({ document, contentChanges: [{}] });

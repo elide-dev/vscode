@@ -451,6 +451,13 @@ input, modifiers, Backspace/Delete, arrows, Enter and Tab between Compose contro
 leave; ordinary Escape still reaches Compose. Leaving the canvas, switching cards or enabling **Inspect** releases
 held keys. IME composition and clipboard paste are not supported. There is no fallback to `layoutlib`.
 
+Native previews are effectively disabled while Komodo is missing or incompatible, without changing your engine
+preference or installing anything automatically. Opening, prewarming and agent rendering check compatibility before
+building or preparing preview resources. Losing availability closes native panels, cancels in-flight work and retires
+agent sessions and warm native backends; layoutlib and source-only agent tools remain available. Install Komodo
+explicitly with **Elide: Install Komodo**, correct its settings or sync to recheck compatibility, then reopen the preview
+or start a new agent render. A rejected native session protocol stays disabled until that recheck, without build loops.
+
 The first preview downloads a pinned, SHA-256-verified renderer/runtime from Google Maven into extension storage.
 Subsequent previews reuse it offline. A matching-architecture JDK 17+ is required; supported extension hosts are
 macOS arm64/x64, Linux x64 and Windows x64. The default `layoutlib` engine produces snapshots; neither engine is

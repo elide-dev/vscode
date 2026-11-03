@@ -18,6 +18,7 @@ describe("Compose backend lifecycle", () => {
     ["a gallery is stored under the JDK that rendered it, not one starting meanwhile", "composeBackendLifecycle", "renderer-identity"],
     ["prewarm stops once a panel uses its backend", "composeBackendLifecycle", "prewarm-yields"],
     ["a keep-alive of months keeps the unused backend instead of dropping it at once", "composeBackendLifecycle", "keep-alive"],
+    ["native compatibility loss retires active and idle native backends but retains layoutlib", "composeBackendLifecycle", "retire-native"],
     ["a selection compiles its appendices and renders and stores only its previews, apart from the file's gallery", "composeBackendLifecycle", "selection"],
     ["managed Compose modules share cold worker initialization", "composeCompilerLifecycle", "managed-compose"],
     ["custom Kotlin plugins retain their project-local worker", "composeCompilerLifecycle", "custom-plugin"],

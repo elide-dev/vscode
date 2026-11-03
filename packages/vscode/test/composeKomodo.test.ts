@@ -232,6 +232,84 @@ describe("Komodo engine sessions", () => {
     return backend;
   }
 
+  test("preflight checks buffer synchronization before opening a native session", async () => {
+    const daemon = await fakeDaemon();
+    let opened = false;
+    const backend = await engine(daemon, {
+      sync: async () => { throw new Error("This server cannot synchronize preview buffers"); },
+      session: async () => { opened = true; return { protocol: 2, port: daemon.port, token: "session-token" }; },
+    });
+    await expect(backend.prepareSession(file)).rejects.toThrow("cannot synchronize");
+    expect(opened).toBe(false);
+    expect(daemon.commands("configure")).toEqual([]);
+  });
+
+  test("cancelling a preflight closes its handshake socket without waiting for ready", async () => {
+    const authenticating = Promise.withResolvers<void>();
+    const daemon = await fakeDaemon({ ready: () => authenticating.resolve() });
+    const backend = await engine(daemon);
+    const cancel = new AbortController();
+    const result = backend.prepareSession(file, false, cancel.signal).catch((error: unknown) => error);
+    await authenticating.promise;
+    cancel.abort();
+    expect(await result).toBeInstanceOf(Error);
+    await serverClosed(daemon.connections[0]!.socket);
+    expect(daemon.commands("configure")).toEqual([]);
+  });
+
+  test("preflight validates and reuses the session before configuring any project inputs", async () => {
+    const daemon = await fakeDaemon();
+    const backend = await engine(daemon);
+    await backend.prepareSession(file);
+    expect(daemon.connections).toHaveLength(1);
+    expect(daemon.commands("configure")).toEqual([]);
+    await backend.preview(request(card));
+    expect(daemon.connections).toHaveLength(1);
+    expect(daemon.commands("configure")).toHaveLength(1);
+  });
+
+  test("preflight reports protocol incompatibility without connecting or configuring a daemon", async () => {
+    const daemon = await fakeDaemon();
+    const unavailable: string[] = [];
+    const backend = await engine(daemon, {
+      session: async () => ({ protocol: 1, port: daemon.port, token: "session-token" }),
+      unavailable: (reason) => unavailable.push(reason),
+    });
+    await expect(backend.prepareSession(file)).rejects.toBeInstanceOf(KomodoUnavailable);
+    expect(unavailable).toHaveLength(1);
+    expect(daemon.connections).toEqual([]);
+    expect(daemon.commands("configure")).toEqual([]);
+  });
+
+  test("preflight rejects an incompatible renderer or missing appendices before any configure", async () => {
+    for (const ready of [
+      { event: "ready", protocol: 1, compiler: "workspace-fir" },
+      { event: "ready", protocol: 2, compiler: "workspace" },
+      { event: "ready", protocol: 2, compiler: "workspace-fir", features: [] },
+    ]) {
+      const daemon = await fakeDaemon({ ready: (out) => out(ready) });
+      const unavailable: string[] = [];
+      const backend = await engine(daemon, { unavailable: (reason) => { unavailable.push(reason); backend.dispose(); } });
+      await expect(backend.prepareSession(file, true)).rejects.toBeInstanceOf(KomodoUnavailable);
+      expect(unavailable).toHaveLength(1);
+      expect(daemon.commands("configure")).toEqual([]);
+      await serverClosed(daemon.connections[0]!.socket);
+    }
+  });
+
+  test("disposing during preflight cannot adopt its late endpoint", async () => {
+    const opening = Promise.withResolvers<void>();
+    const endpoint = Promise.withResolvers<{ protocol: number; port: number; token: string }>();
+    const daemon = await fakeDaemon();
+    const backend = await engine(daemon, { session: () => { opening.resolve(); return endpoint.promise; } });
+    const result = backend.prepareSession(file).catch((error: unknown) => error);
+    await opening.promise;
+    backend.dispose();
+    endpoint.resolve({ protocol: 2, port: daemon.port, token: "session-token" });
+    expect(await result).toBeInstanceOf(Error);
+    expect(daemon.connections).toEqual([]);
+  });
+
   test("disposing during the ready handshake closes the socket without waiting for ready", async () => {
     const authenticating = Promise.withResolvers<void>();
     const daemon = await fakeDaemon({ ready: () => authenticating.resolve() });
@@ -486,7 +564,7 @@ describe("Komodo engine sessions", () => {
     const backend = await engine(daemon);
     const failure = await backend.preview(selected(card)).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(KomodoUnavailable);
-    expect((failure as Error).message).toContain("newer Komodo");
+    expect((failure as Error).message).toContain("compatible Komodo");
     expect(daemon.commands("configure")).toEqual([]);
   });
 
