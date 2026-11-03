@@ -340,11 +340,14 @@ describe("Komodo engine sessions", () => {
     previews = [preview("Card"), preview("New")];
     const result = backend.preview(request(`${card}\n@Preview\nfun New() {}\n`)).catch((error: unknown) => error);
     const out = await configuring.promise;
-    backend.dispose();
+    const closed = serverClosed(daemon.connections[0]!.socket);
+    // Queue stale replies on the open peer, then dispose before the client can process TCP events.
+    // Writing after disposal instead races the platform's socket teardown, not the backend lifecycle.
     out({ event: "compile", outcome: "failure", messages: [{ level: "error", text: "obsolete compile" }] });
     out({ event: "configured", module: "main" });
+    backend.dispose();
     expect(await result).toBeInstanceOf(Error);
-    await serverClosed(daemon.connections[0]!.socket);
+    await closed;
     expect(published).toEqual([]);
     expect(daemon.commands("entries")).toHaveLength(reused ? 1 : 0);
   });

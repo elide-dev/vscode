@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -157,9 +157,11 @@ async function waitForFile(file: string, count = 1): Promise<void> {
   const check = () => {
     if (existsSync(file) && readFileSync(file, "utf8").trim().split("\n").filter(Boolean).length >= count) resolve();
   };
-  const watcher = watch(path.dirname(file), check);
+  // Directory watch events can arrive before a marker's contents or be coalesced by Bun on Linux.
+  // Poll the durable marker instead, including append-only markers that count completed cleanups.
+  const watcher = watchFile(file, { interval: 10 }, check);
   watcher.on("error", reject);
-  // Await real subprocess events, not a sleep; the deadline only bounds a broken fixture's failure.
+  // Keep the same bounded failure deadline; polling does not extend a broken fixture's lifetime.
   const deadline = AbortSignal.timeout(3_000);
   const expired = () => reject(new Error(`Timed out waiting for ${file}`));
   deadline.addEventListener("abort", expired, { once: true });
@@ -168,7 +170,7 @@ async function waitForFile(file: string, count = 1): Promise<void> {
     await promise;
   } finally {
     deadline.removeEventListener("abort", expired);
-    watcher.close();
+    unwatchFile(file, check);
   }
 }
 
