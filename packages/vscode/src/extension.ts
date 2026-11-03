@@ -76,9 +76,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const nativeDebugConfigurations = new ElideNativeDebugConfigurationProvider(workspace, ui);
   const androidDebugConfigurations = new ElideAndroidDebugConfigurationProvider(workspace, ui, debugConfigurations.sessions, deployments);
   const tests = new ElideTestController(workspace, ui, debugConfigurations.sessions);
-  const androidTests = new ElideAndroidTestController(workspace, ui, deployments);
+  const explorer = new ElideProjectsView(workspace, ui, context.workspaceState);
+  // A target run from one of the sidebar's own rows counts towards its Frequently used section.
+  const counted = (run: (target: unknown) => unknown) => (target: unknown) => {
+    explorer.recordUse(target);
+    return run(target);
+  };
+  const androidTests = new ElideAndroidTestController(workspace, ui, deployments, (target) => explorer.recordUse(target));
   const codeLenses = new ElideCodeLensProvider(workspace);
-  const explorer = new ElideProjectsView(workspace, ui);
   context.subscriptions.push(
     codeLenses,
     registerBuildExtensionLinks(workspace),
@@ -92,16 +97,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
     vscode.commands.registerCommand("elide.newProject", () => newProject(ui)),
     vscode.commands.registerCommand("elide.addMember", (target: unknown) => addWorkspaceMember(workspace, ui, target)),
     vscode.commands.registerCommand("elide.run", (target: unknown) => runEntrypoint(workspace, ui, target, "run")),
-    vscode.commands.registerCommand("elide.build", (target: unknown) => runEntrypoint(workspace, ui, target, "build")),
-    vscode.commands.registerCommand("elide.runArtifact", (target: unknown) => runArtifact(workspace, ui, target)),
-    vscode.commands.registerCommand("elide.debug", (target: unknown) => debugEntrypoint(workspace, target)),
-    vscode.commands.registerCommand("elide.debugArtifact", (target: unknown) => debugArtifact(workspace, target)),
-    vscode.commands.registerCommand("elide.executeTask", (target: unknown) => runNamedTask(workspace, ui, target)),
+    vscode.commands.registerCommand("elide.build", counted((target) => runEntrypoint(workspace, ui, target, "build"))),
+    vscode.commands.registerCommand("elide.runArtifact", counted((target) => runArtifact(workspace, ui, target))),
+    vscode.commands.registerCommand("elide.debug", counted((target) => debugEntrypoint(workspace, target))),
+    vscode.commands.registerCommand("elide.debugArtifact", counted((target) => debugArtifact(workspace, target))),
+    vscode.commands.registerCommand("elide.executeTask", counted((target) => runNamedTask(workspace, ui, target))),
     vscode.commands.registerCommand("elide.openManifest", (target: unknown) => openManifest(workspace, target)),
     vscode.commands.registerCommand("elide.androidSelectTarget", (target: unknown) => deployments.select(target)),
-    vscode.commands.registerCommand("elide.androidRun", (target: unknown) => runAndroid(workspace, ui, deployments, target)),
-    vscode.commands.registerCommand("elide.androidDebug", (target: unknown) => debugAndroid(workspace, deployments, target)),
-    vscode.commands.registerCommand("elide.androidRunDeviceTask", (target: unknown) => runAndroidDeviceTask(workspace, ui, deployments, target)),
+    vscode.commands.registerCommand("elide.androidRun", counted((target) => runAndroid(workspace, ui, deployments, target))),
+    vscode.commands.registerCommand("elide.androidDebug", counted((target) => debugAndroid(workspace, deployments, target))),
+    vscode.commands.registerCommand("elide.androidRunDeviceTask", counted((target) => runAndroidDeviceTask(workspace, ui, deployments, target))),
     vscode.commands.registerCommand("elide.androidStartEmulator", (target: unknown) => startAndroidEmulator(workspace, target)),
     vscode.commands.registerCommand("elide.androidStopEmulator", (target: unknown) => stopAndroidEmulator(workspace, target)),
     vscode.commands.registerCommand("elide.androidCreateAvd", (target: unknown) => createAndroidAvd(workspace, target)),

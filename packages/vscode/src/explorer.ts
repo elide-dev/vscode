@@ -28,6 +28,7 @@ import { readConfig } from "./config.js";
 import { onDidEndDebugRun } from "./debug.js";
 import type { ElideUi } from "./output.js";
 import type { ElideProject, ElideWorkspace } from "./projects.js";
+import { TargetShortcuts, type ShortcutKind, type TargetRef } from "./targetShortcuts.js";
 import { entrypointArgs } from "./tasks.js";
 
 export const PROJECTS_VIEW_ID = "elide.projects";
@@ -35,32 +36,38 @@ export const PROJECTS_VIEW_ID = "elide.projects";
 /**
  * The fixed sections of a project, plus the lazily loaded build targets and Android devices nested under them. A
  * workspace tree's devices and Android tools are one `androidTools` section of its top-level row, not one per member.
+ * `pinned` and `frequent` sit above every project: the targets pinned, and the ones run from the sidebar most often.
  */
-type GroupKind = "entrypoints" | "android" | "androidTools" | "androidDevices" | "tasks" | "buildTargets" | "otherBuildTargets" | "sourceSets" | "dependencies";
+type GroupKind = "pinned" | "frequent" | "entrypoints" | "android" | "androidTools" | "androidDevices" | "tasks" | "buildTargets" | "sourceSets" | "dependencies";
 
 const GROUP_LABELS: Record<GroupKind, string> = {
+  pinned: "Pinned",
+  frequent: "Frequently used",
   entrypoints: "Entrypoints",
   android: "Android",
   androidTools: "Android devices & tools",
   androidDevices: "Devices",
   tasks: "Tasks",
   buildTargets: "Build targets",
-  otherBuildTargets: "Other targets",
   sourceSets: "Source sets",
   dependencies: "Dependencies",
 };
 
 const GROUP_ICONS: Record<GroupKind, string> = {
+  pinned: "pinned",
+  frequent: "history",
   entrypoints: "rocket",
   android: "device-mobile",
   androidTools: "remote-explorer",
   androidDevices: "plug",
   tasks: "tools",
   buildTargets: "list-tree",
-  otherBuildTargets: "ellipsis",
   sourceSets: "folder-library",
   dependencies: "library",
 };
+
+/** Rows of the `frequent` section: the most used targets that are not pinned. */
+const FREQUENT_LIMIT = 5;
 
 /** Tasks offered for every project, whether or not its model has been resolved yet. */
 const PROJECT_TASKS: ElideCommand[] = ["build", "test", "install"];
@@ -70,13 +77,15 @@ const PROJECT_TASKS: ElideCommand[] = ["build", "test", "install"];
  *
  * The command-carrying kinds are shaped like the argument `elide.run`/`elide.debug`/`elide.executeTask` accept
  * (`root`, `args`, and for tasks `command`), so a node can be handed to those commands unchanged — that is what the
- * inline buttons of `view/item/context` pass.
+ * inline buttons of `view/item/context` pass. A target row repeated in the `pinned` or `frequent` section says which
+ * in `shortcut`.
  */
 export type ElideNode =
   | { kind: "project"; label: string; root: string; member: boolean }
   | { kind: "group"; label: string; root: string; group: GroupKind }
+  | { kind: "buildTargetProject"; label: string; root: string }
   | { kind: "entrypoint"; label: string; root: string; args: string[]; script: boolean }
-  | { kind: "task"; label: string; root: string; command: ElideCommand; args: string[] }
+  | { kind: "task"; label: string; root: string; command: ElideCommand; args: string[]; shortcut?: ShortcutSection }
   | {
       kind: "buildTarget";
       label: string;
@@ -94,6 +103,9 @@ export type ElideNode =
       deviceBound: boolean;
       /** Output name the artifact declares, which decides the binary `elide.runArtifact` runs. */
       outputName?: string;
+      shortcut?: ShortcutSection;
+      /** Distinguish rows repeated in the workspace listing from the member's own section. */
+      workspaceListing?: boolean;
     }
   | {
       kind: "androidTarget";
@@ -107,6 +119,7 @@ export type ElideNode =
       description: string;
       /** What Elide lists for an APK — Run, Debug, instrumented tests — which decides the actions its row offers. */
       offers?: AndroidDeviceTargets;
+      shortcut?: ShortcutSection;
     }
   /** The obfuscation mapping a minifying Android artifact publishes, beside the archive it belongs to. */
   | { kind: "androidMapping"; label: string; root: string; artifact: string; path: string; description: string }
@@ -119,7 +132,12 @@ export type ElideNode =
   | { kind: "module"; label: string; root: string; module: ModuleModel }
   | { kind: "sourceRoot"; label: string; root: string; module: string; path: string; sourceKind: SourceRootKind }
   | { kind: "library"; label: string; root: string; classes: string; attached: string }
+  /** A pinned target its project no longer offers, or that cannot be listed now: `description` says which. */
+  | { kind: "missingTarget"; label: string; root: string; target: TargetRef; description: string }
   | { kind: "message"; label: string };
+
+type ShortcutSection = "pinned" | "frequent";
+type TargetNode = Extract<ElideNode, { kind: ShortcutKind }>;
 
 /** What `activate` exposes for the extension-host integration test. */
 export interface ElideExplorerApi {
@@ -128,12 +146,14 @@ export interface ElideExplorerApi {
 
 /**
  * The **Elide** activity-bar tree: one node per project with its entrypoints, tasks, source sets and dependencies.
- * The members of an Elide workspace are nested under its root, after the root's own sections.
+ * The members of an Elide workspace are nested under its root, after the root's own sections. Above the projects, the
+ * targets pinned and the ones run most often from this tree; a run from the CLI, a code lens or the palette is not
+ * counted.
  *
  * Everything but the build targets comes from the project model the sync already resolved, so expanding the tree
- * never shells out; `elide build --inspect` runs on first expansion of `Build targets` and is cached until the next
- * model change. Inside a workspace the listing covers every project of the build graph wherever it is run from, so it
- * is read once for the whole workspace.
+ * never shells out; `elide build --inspect` runs on first expansion of `Build targets` — or of a section above that
+ * lists one — and is cached until the next model change. Inside a workspace the listing covers every project of the
+ * build graph wherever it is run from, so it is read once for the whole workspace.
  */
 export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, ElideExplorerApi, vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<ElideNode | undefined>();
@@ -144,11 +164,16 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
   private buildGeneration = 0;
   /** Artifacts declared by each project's manifest, per project root, dropped when the model changes. */
   private readonly artifacts = new Map<string, ManifestArtifact[]>();
+  private readonly shortcuts: TargetShortcuts;
+  /** The target rows this tree handed out: a command invoked with one of them was invoked from the tree. */
+  private readonly issued = new WeakSet<TargetNode>();
 
   constructor(
     private readonly workspace: ElideWorkspace,
     private readonly ui: ElideUi,
+    state: vscode.Memento,
   ) {
+    this.shortcuts = new TargetShortcuts(state);
     this.subscriptions = [
       workspace.onDidChange(() => {
         this.buildTasks.clear();
@@ -171,6 +196,13 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         this.changed.fire(undefined);
       }),
       vscode.commands.registerCommand("elide.androidRefreshDevices", () => this.changed.fire(undefined)),
+      vscode.commands.registerCommand("elide.pinTarget", (node: unknown) => this.editShortcuts(node, (target) => this.shortcuts.pin(target))),
+      vscode.commands.registerCommand("elide.unpinTarget", (node: unknown) => this.editShortcuts(node, (target) => this.shortcuts.unpin(target))),
+      vscode.commands.registerCommand("elide.forgetFrequentTarget", (node: unknown) => this.editShortcuts(node, (target) => this.shortcuts.forget(target))),
+      vscode.commands.registerCommand("elide.clearFrequentTargets", async () => {
+        await this.shortcuts.clearUsage();
+        this.changed.fire(undefined);
+      }),
       vscode.tasks.onDidEndTask((event) => {
         if (event.execution.task.source === "elide") this.changed.fire(undefined);
       }),
@@ -182,6 +214,24 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
   dispose(): void {
     for (const d of this.subscriptions) d.dispose();
     this.changed.dispose();
+  }
+
+  /**
+   * Count a run of a target for the `frequent` section, when `value` — the argument of the command that runs it — is
+   * a row of this tree: its own click or inline action. Anything else, a code lens or the palette, is not counted.
+   */
+  recordUse(value: unknown): void {
+    if (typeof value !== "object" || value === null || !this.issued.has(value as TargetNode)) return;
+    void this.shortcuts.record(targetRef(value as TargetNode)).then(() => this.changed.fire(undefined));
+  }
+
+  private async editShortcuts(value: unknown, edit: (target: TargetRef) => Promise<void>): Promise<void> {
+    if (typeof value !== "object" || value === null) return;
+    const node = value as ElideNode;
+    const target = node.kind === "missingTarget" ? node.target : isTargetNode(node) ? targetRef(node) : undefined;
+    if (!target) return;
+    await edit(target);
+    this.changed.fire(undefined);
   }
 
   getTreeItem(node: ElideNode): vscode.TreeItem {
@@ -197,6 +247,7 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
       const project = this.workspace.projectAt(node.root);
       if (project && !this.workspace.komodoDebugAvailable(project.folder)) item.contextValue = item.contextValue.replace(".debug", "");
     }
+    item.contextValue += this.shortcutContext(node);
     const id = nodeId(node);
     if (id) item.id = id;
     switch (node.kind) {
@@ -213,6 +264,9 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
       }
       case "group":
         item.iconPath = new vscode.ThemeIcon(GROUP_ICONS[node.group]);
+        break;
+      case "buildTargetProject":
+        item.iconPath = new vscode.ThemeIcon("package");
         break;
       case "entrypoint":
         item.iconPath = new vscode.ThemeIcon(node.script ? "terminal" : "play");
@@ -274,20 +328,50 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         item.description = node.attached;
         item.tooltip = node.classes;
         break;
+      case "missingTarget":
+        item.iconPath = new vscode.ThemeIcon("circle-slash");
+        item.description = node.description;
+        item.tooltip = `${node.label} (${node.root}): ${node.description}`;
+        break;
       case "message":
         item.iconPath = new vscode.ThemeIcon("warning");
         break;
     }
+    // The sections above the projects mix them; with more than one, each row says which it belongs to.
+    if (((isTargetNode(node) && node.shortcut) || node.kind === "missingTarget") && this.workspace.projects.length > 1) {
+      item.description = [this.workspace.projectAt(node.root)?.model?.name ?? path.basename(node.root), item.description].filter(Boolean).join(" · ");
+    }
     return item;
   }
 
+  /**
+   * `.pinned` on a pinned target wherever it is shown, `.frequent` on a row of the `frequent` section: what decides
+   * between its Pin, Unpin and Remove actions.
+   */
+  private shortcutContext(node: ElideNode): string {
+    if (node.kind === "missingTarget") return ".pinned";
+    if (!isTargetNode(node)) return "";
+    if (this.shortcuts.isPinned(targetRef(node))) return ".pinned";
+    return node.shortcut === "frequent" ? ".frequent" : "";
+  }
+
   async getChildren(node?: ElideNode): Promise<ElideNode[]> {
-    if (!node) return this.workspace.projects.filter((p) => !p.workspaceRoot).map((p) => projectNode(p));
+    const children = await this.childrenOf(node);
+    for (const child of children) if (isTargetNode(child)) this.issued.add(child);
+    return children;
+  }
+
+  private async childrenOf(node?: ElideNode): Promise<ElideNode[]> {
+    if (!node) return [...this.shortcutGroups(), ...this.workspace.projects.filter((p) => !p.workspaceRoot).map((p) => projectNode(p))];
     switch (node.kind) {
       case "project":
         return [...this.projectGroups(node.root), ...this.workspace.membersOf(node.root).map((p) => projectNode(p))];
       case "group":
         return await this.groupChildren(node);
+      case "buildTargetProject": {
+        const project = this.workspace.projectAt(node.root);
+        return project ? await this.buildTargetNodes(project, node.label) : [];
+      }
       case "module":
         return node.module.contentRoots.flatMap((content) =>
           content.sourceRoots.map((sourceRoot) => ({
@@ -301,6 +385,62 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         );
       default:
         return [];
+    }
+  }
+
+  /** The `pinned` and `frequent` sections, each while it has something to show. */
+  private shortcutGroups(): ElideNode[] {
+    const groups: ElideNode[] = [];
+    if (this.shortcuts.pinned().length > 0) groups.push({ kind: "group", label: GROUP_LABELS.pinned, root: "", group: "pinned" });
+    if (this.shortcuts.frequent().length > 0) groups.push({ kind: "group", label: GROUP_LABELS.frequent, root: "", group: "frequent" });
+    return groups;
+  }
+
+  /** Every pinned target, as its project offers it now; one it no longer offers stays, saying why, until unpinned. */
+  private async pinnedNodes(): Promise<ElideNode[]> {
+    return await Promise.all(this.shortcuts.pinned().map(async (target): Promise<ElideNode> => {
+      const node = await this.resolveTarget(target);
+      return typeof node === "string"
+        ? { kind: "missingTarget", label: target.name, root: target.root, target, description: node }
+        : { ...node, shortcut: "pinned" };
+    }));
+  }
+
+  /** The most used targets that are not pinned; one its project no longer offers is skipped, not shown. */
+  private async frequentNodes(): Promise<ElideNode[]> {
+    const nodes: ElideNode[] = [];
+    for (const target of this.shortcuts.frequent()) {
+      if (nodes.length === FREQUENT_LIMIT) break;
+      const node = await this.resolveTarget(target);
+      if (typeof node !== "string") nodes.push({ ...node, shortcut: "frequent" });
+    }
+    return nodes;
+  }
+
+  /** The row `target` names, as its project's sections list it now; or why there is none. */
+  private async resolveTarget(target: TargetRef): Promise<TargetNode | string> {
+    const project = this.workspace.projectAt(target.root);
+    if (!project) return "project no longer in the workspace";
+    switch (target.kind) {
+      case "task": {
+        const command = PROJECT_TASKS.find((task) => task === target.name);
+        return command ? taskNode(target.root, command) : "no such task";
+      }
+      case "androidTarget": {
+        if (!project.model) return "project not synced";
+        const artifact = project.model.android?.targets.find((candidate) => candidate.name === target.name);
+        return artifact ? androidTargetNode(target.root, artifact) : "no longer declared";
+      }
+      case "buildTarget": {
+        let targets: TargetNode[];
+        try {
+          targets = await this.buildTargets(project);
+        } catch (e) {
+          this.ui.log(`could not list build targets of ${project.root}: ${e instanceof Error ? e.message : String(e)}`);
+          return "could not list build targets — see Elide output";
+        }
+        return targets.find((candidate) => candidate.label === target.name) ?? "no longer a build target";
+      }
     }
   }
 
@@ -325,6 +465,8 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
   }
 
   private async groupChildren(node: Extract<ElideNode, { kind: "group" }>): Promise<ElideNode[]> {
+    if (node.group === "pinned") return await this.pinnedNodes();
+    if (node.group === "frequent") return await this.frequentNodes();
     const project = this.workspace.projectAt(node.root);
     if (!project) return [];
     const model = project.model;
@@ -332,14 +474,9 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
       case "entrypoints":
         return (model?.entrypoints ?? []).map((entrypoint) => entrypointNode(node.root, entrypoint));
       case "tasks":
-        return [
-          ...PROJECT_TASKS.map((command) => ({ kind: "task" as const, label: command, root: node.root, command, args: [] })),
-          { kind: "group", label: GROUP_LABELS.buildTargets, root: node.root, group: "buildTargets" },
-        ];
+        return [...PROJECT_TASKS.map((command) => taskNode(node.root, command)), { kind: "group", label: GROUP_LABELS.buildTargets, root: node.root, group: "buildTargets" }];
       case "buildTargets":
-        return await this.buildTargetNodes(project, true);
-      case "otherBuildTargets":
-        return await this.buildTargetNodes(project, false);
+        return await this.buildTargetNodes(project);
       case "sourceSets":
         return (model?.modules ?? []).map((module) => ({ kind: "module", label: module.sourceSet, root: node.root, module }));
       case "android":
@@ -363,26 +500,36 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
     }
   }
 
-  /**
-   * The project's build targets: the ones Elide describes, then a group of the rest. Elide gives its internal
-   * targets — indexing, classpath files, the source rewriter — no description, and among ~30 rows those are noise.
-   */
-  private async buildTargetNodes(project: ElideProject, described: boolean): Promise<ElideNode[]> {
-    let tasks: BuildTaskInfo[];
+  /** Mirror inspect's project groups and target order, including targets without descriptions. */
+  private async buildTargetNodes(project: ElideProject, scope?: string): Promise<ElideNode[]> {
+    let targets: Extract<ElideNode, { kind: "buildTarget" }>[];
     try {
-      tasks = await this.inspectBuild(project);
+      if (!scope && !project.workspaceRoot) {
+        const tasks = await this.inspectBuild(project);
+        const projects = [...new Set(tasks.flatMap((task) => task.project === undefined ? [] : [task.project]))];
+        if (projects.length > 0) {
+          return projects.map((label) => ({ kind: "buildTargetProject", label, root: project.root }));
+        }
+      }
+      targets = await this.buildTargets(project, scope);
     } catch (e) {
       this.ui.log(`could not list build targets of ${project.root}: ${e instanceof Error ? e.message : String(e)}`);
       return [{ kind: "message", label: "could not list build targets — see Elide output" }];
     }
+    return targets;
+  }
+
+  /** Every build target of the project, described or not. */
+  private async buildTargets(project: ElideProject, scope?: string): Promise<Extract<ElideNode, { kind: "buildTarget" }>[]> {
+    const tasks = await this.inspectBuild(project);
+    const owner = scope ? [project, ...this.workspace.membersOf(project.root)]
+      .find((member) => (member.model?.name ?? path.basename(member.root)) === scope) : undefined;
+    if (owner) return (await this.buildTargets(owner)).map((target) => ({ ...target, workspaceListing: true }));
     // A build target takes the name of the artifact it produces, so the manifest says which ones are binaries.
     const images = new Map((await this.manifestArtifacts(project)).filter(isNativeImageBinary).map((a) => [a.name, a] as const));
-    const name = project.model?.name ?? path.basename(project.root);
-    const own = buildTasksOf(tasks, name);
-    const nodes: ElideNode[] = own.filter((target) => (target.description.length > 0) === described).map((target) => {
-      // Tasks run in the project's own directory, which focuses the CLI on it: a bare name then resolves to this
-      // project's task rather than to a same-named one of the root, and stays the artifact's key in the manifest.
-      const label = unqualifiedTaskName(target);
+    const name = scope ?? project.model?.name ?? path.basename(project.root);
+    return buildTasksOf(tasks, name).map((target) => {
+      const label = scope ? target.name : unqualifiedTaskName(target);
       const image = images.get(label);
       return {
         kind: "buildTarget",
@@ -398,10 +545,6 @@ export class ElideProjectsView implements vscode.TreeDataProvider<ElideNode>, El
         ...(image?.outputName ? { outputName: image.outputName } : {}),
       };
     });
-    if (described && own.some((target) => target.description.length === 0)) {
-      nodes.push({ kind: "group", label: GROUP_LABELS.otherBuildTargets, root: project.root, group: "otherBuildTargets" });
-    }
-    return nodes;
   }
 
   /**
@@ -463,6 +606,26 @@ function projectNode(project: ElideProject): ElideNode {
   return { kind: "project", label: project.model?.name ?? path.basename(project.root), root: project.root, member: project.workspaceRoot !== undefined };
 }
 
+function taskNode(root: string, command: ElideCommand): TargetNode {
+  return { kind: "task", label: command, root, command, args: [] };
+}
+
+function isTargetNode(node: ElideNode): node is TargetNode {
+  return node.kind === "task" || node.kind === "buildTarget" || node.kind === "androidTarget";
+}
+
+/** What the `pinned` and `frequent` sections remember of a target row. */
+function targetRef(node: TargetNode): TargetRef {
+  switch (node.kind) {
+    case "task":
+      return { kind: node.kind, root: node.root, name: node.command };
+    case "buildTarget":
+      return { kind: node.kind, root: node.root, name: node.label };
+    case "androidTarget":
+      return { kind: node.kind, root: node.root, name: node.artifact };
+  }
+}
+
 /**
  * The devices & tools section of a workspace tree, shown once however many Android members it has: what is attached,
  * then the actions. `owner` is the project they act for; selection and logcat choose among all Android projects, as
@@ -500,17 +663,7 @@ function androidToolNodes(owner: ElideProject, tree: readonly ElideProject[]): E
  * is what a stack trace from a shrunk build is read with.
  */
 function androidTargetNodes(root: string, target: AndroidTargetModel): ElideNode[] {
-  const node: ElideNode = {
-    kind: "androidTarget",
-    label: target.name,
-    root,
-    artifact: target.name,
-    targetKind: target.kind,
-    args: [target.kind === "feature" ? androidFeatureTask(target.name) : target.name],
-    description: target.kind === "feature" ? `${target.delivery} → ${target.base}${target.featureDependencies?.length ? ` · requires: ${target.featureDependencies.join(", ")}` : ""}` :
-      target.features?.length ? `${path.basename(target.output)} · features: ${target.features.join(", ")}` : path.basename(target.output),
-    ...(target.device ? { offers: currentAndroidDeviceTargets(root, target) ?? target.device } : {}),
-  };
+  const node = androidTargetNode(root, target);
   if (!target.mapping) return [node];
   return [
     node,
@@ -525,6 +678,20 @@ function androidTargetNodes(root: string, target: AndroidTargetModel): ElideNode
   ];
 }
 
+function androidTargetNode(root: string, target: AndroidTargetModel): TargetNode {
+  return {
+    kind: "androidTarget",
+    label: target.name,
+    root,
+    artifact: target.name,
+    targetKind: target.kind,
+    args: [target.kind === "feature" ? androidFeatureTask(target.name) : target.name],
+    description: target.kind === "feature" ? `${target.delivery} → ${target.base}${target.featureDependencies?.length ? ` · requires: ${target.featureDependencies.join(", ")}` : ""}` :
+      target.features?.length ? `${path.basename(target.output)} · features: ${target.features.join(", ")}` : path.basename(target.output),
+    ...(target.device ? { offers: currentAndroidDeviceTargets(root, target) ?? target.device } : {}),
+  };
+}
+
 /** Row icon and context value of each Android artifact: an installable package, an upload bundle, a library. */
 const ANDROID_TARGET_ICONS: Record<AndroidArtifactKind, string> = { apk: "device-mobile", aab: "archive", aar: "package", feature: "extensions" };
 const ANDROID_TARGET_CONTEXTS: Record<AndroidArtifactKind, string> = { apk: "androidApk", aab: "androidAab", aar: "androidAar", feature: "androidFeature" };
@@ -535,11 +702,12 @@ const ANDROID_TARGET_CONTEXTS: Record<AndroidArtifactKind, string> = { apk: "and
  * action only when it declares `--debugger`, the Run/Debug pair of a Native Image only when it is a binary one, and
  * runs on the deployment target when it installs onto a device. An APK row carries `.run`, `.debug` and `.test` for
  * the device targets Elide lists for it; only a device in the `device` state can take an install, and only an
- * emulator can be stopped.
+ * emulator can be stopped. The view appends a target's pinned state (see `shortcutContext`), so menus match target
+ * keys as prefixes.
  */
 function contextValueOf(node: ElideNode): string {
   if (node.kind === "project") return node.member ? "projectMember" : "project";
-  if (node.kind === "group" && (node.group === "android" || node.group === "androidTools" || node.group === "androidDevices")) return node.group;
+  if (node.kind === "group" && (node.group === "android" || node.group === "androidTools" || node.group === "androidDevices" || node.group === "frequent")) return node.group;
   if (node.kind === "entrypoint") return node.script ? "script" : node.kind;
   if (node.kind === "buildTarget" && node.runnable) return "buildTargetRunnable";
   if (node.kind === "buildTarget" && node.deviceBound) return "buildTargetDevice";
@@ -570,6 +738,10 @@ function collapsibleState(node: ElideNode): vscode.TreeItemCollapsibleState {
       // Members sit below their root's own sections: expanded, a workspace would bury them.
       return node.member ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.Expanded;
     case "group":
+      // The sections above the projects are what the tree is opened for.
+      return node.group === "pinned" || node.group === "frequent" ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed;
+    case "buildTargetProject":
+      return vscode.TreeItemCollapsibleState.Collapsed;
     case "module":
       return vscode.TreeItemCollapsibleState.Collapsed;
     default:
@@ -577,20 +749,30 @@ function collapsibleState(node: ElideNode): vscode.TreeItemCollapsibleState {
   }
 }
 
-/** Stable per-row identity, so expansion survives a refresh and same-named rows of different projects never clash. */
+/**
+ * Stable per-row identity, so expansion survives a refresh and same-named rows of different projects never clash. A
+ * target repeated in a section above the projects is a row of its own there.
+ */
 function nodeId(node: ElideNode): string | undefined {
+  const id = ownNodeId(node);
+  return id && isTargetNode(node) && node.shortcut ? `${node.shortcut}:${id}` : id;
+}
+
+function ownNodeId(node: ElideNode): string | undefined {
   switch (node.kind) {
     case "project":
       return `p:${node.root}`;
     case "group":
       return `g:${node.root}:${node.group}`;
+    case "buildTargetProject":
+      return `bp:${node.root}:${node.label}`;
     case "entrypoint":
       return `e:${node.root}:${node.label}`;
     case "task":
       // Several build tasks share one subcommand, so the arguments are part of the row's identity.
       return `t:${node.root}:${node.command}:${node.args.join(" ")}`;
     case "buildTarget":
-      return `b:${node.root}:${node.label}`;
+      return `${node.workspaceListing ? "workspace:" : ""}b:${node.root}:${node.label}`;
     case "module":
       return `m:${node.root}:${node.module.name}`;
     case "sourceRoot":
@@ -608,5 +790,7 @@ function nodeId(node: ElideNode): string | undefined {
       return `x:${node.root}:${node.command}:${node.label}`;
     case "androidMapping":
       return `am:${node.root}:${node.artifact}`;
+    case "missingTarget":
+      return `pinned:missing:${node.target.kind}:${node.root}:${node.target.name}`;
   }
 }

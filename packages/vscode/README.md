@@ -36,7 +36,12 @@ test, and debug commands are available from the editor.
   `elide test --reporter=tap` with live results, failure messages and stack-trace locations. **Run with Coverage**
   shows the run's LCOV and JaCoCo XML reports in the editor's coverage gutter and Test Coverage view.
 - **Elide sidebar.** An activity-bar view with each project's entrypoints, tasks, build targets (`elide build
-  --inspect`), source sets and dependencies; run, debug, build and sync straight from the tree.
+  --inspect`), source sets and dependencies; run, debug, build and sync straight from the tree. A workspace's
+  **Tasks → Build targets** groups targets by project in the CLI's order; standalone projects list them directly.
+  Targets without descriptions stay alongside the others. **Pin to Top** (a
+  task's, build target's or Android artifact's context menu) keeps a target in a **Pinned** section above the
+  projects, and a **Frequently used** section lists the five targets run most often from the sidebar itself — runs
+  from the CLI, code lenses or the palette are not counted. Both are remembered per workspace.
 - **Activity.** The sidebar's **Activity** view lists every sync and Compose preview build of the window, live
   while it runs: each step (reading the manifest, installing dependencies, resolving classpaths, generating
   resources, writing `workspace.json`), the `elide` commands it ran, and the build tasks those reported, each with
@@ -231,6 +236,10 @@ file or version banner alone is not proof of compatibility; no guessed version c
 load error disables native services just like a failed start or reload. Managed preview protocol/capability metadata
 is retained for preview consumers, independently of native analysis/debug compatibility.
 
+This includes Android debug actions when the selected adapter is Komodo: their tree actions, code lenses and
+palette/menu entries are withdrawn while it is unavailable. Native Compose preview commands are disabled too.
+Run/build actions, other selected debuggers and layoutlib previews remain independent.
+
 With `elide.kotlinLsp.server` set to `komodo`, `komodo` is the folder's Kotlin language server. Each sync writes a
 Komodo project manifest into the extension's storage (nothing in the project: no `workspace.json`) and starts the
 server, or makes it reload the manifest without a restart. One server serves the whole window: every Komodo
@@ -421,7 +430,7 @@ Every other Android step — `android-resources-*`, `android-link-*`, `android-d
 `android-sign-*`, `android-bundle-*` — is listed under **Build targets** like any other target of the project. A
 target there that installs onto a device (it takes `--device`: `android-run-*`, `android-debug-*`, `android-test-*`)
 runs on the deployment target's device, resolved as **Run** resolves it, rather than on whichever device Elide would
-pick. Targets Elide gives no description, its internal ones, are grouped under **Other targets**.
+pick. Targets without descriptions appear in the same order as `elide build --inspect`, alongside the other targets.
 
 A published `.aar` dependency appears under **Dependencies** named by its coordinate, with the sources of the
 archive attached: Elide unpacks each one into `.dev/android/libraries/<group>/<artifact>/<version>/` and compiles

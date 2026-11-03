@@ -94,6 +94,7 @@ test("Android instrumented tests report crashes, honor exclusions and reject lat
       { projects: [project], projectAt: () => project, onDidChange: () => events$ },
       { log() {} },
       { resolve: async () => ({}), readyDevice: async () => "serial" },
+      () => {},
     );
     await commands.get("elide.androidTest")(undefined);
     assert.deepEqual(events, [
@@ -206,6 +207,7 @@ test("Disposing the controller ends the detached android-test process of a run i
       { projects: [project], projectAt: () => project, onDidChange: () => events$ },
       { log() {} },
       { resolve: async () => ({}), readyDevice: async () => "serial" },
+      () => {},
     );
     const command = commands.get("elide.androidTest")(undefined);
     const signal = await running;
