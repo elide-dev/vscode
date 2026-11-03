@@ -236,6 +236,10 @@ file or version banner alone is not proof of compatibility; no guessed version c
 load error disables native services just like a failed start or reload. Managed preview protocol/capability metadata
 is retained for preview consumers, independently of native analysis/debug compatibility.
 
+This includes Android debug actions when the selected adapter is Komodo: their tree actions, code lenses and
+palette/menu entries are withdrawn while it is unavailable. Native Compose preview commands are disabled too.
+Run/build actions, other selected debuggers and layoutlib previews remain independent.
+
 With `elide.kotlinLsp.server` set to `komodo`, `komodo` is the folder's Kotlin language server. Each sync writes a
 Komodo project manifest into the extension's storage (nothing in the project: no `workspace.json`) and starts the
 server, or makes it reload the manifest without a restart. One server serves the whole window: every Komodo
