@@ -80,6 +80,7 @@ export type Entrypoint =
 export interface ProjectModel {
   root: string;
   name: string;
+  description?: string;
   elideVersion: string;
   jdk?: Jdk;
   kotlin: { languageVersion?: string; apiVersion?: string; freeCompilerArgs: string[]; jvmTarget?: string; compose?: boolean };
@@ -719,6 +720,7 @@ function assembleProject(project: ProjectSpec, answers: ProjectAnswers, ctx: Bui
     model: {
       root,
       name,
+      ...(manifest.description !== undefined ? { description: manifest.description } : {}),
       elideVersion: ctx.elideVersion,
       jdk,
       kotlin,

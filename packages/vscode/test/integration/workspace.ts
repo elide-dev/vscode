@@ -61,6 +61,46 @@ export async function runWorkspaceScenario(): Promise<void> {
   );
   log("sync ok");
 
+  // Manifest providers navigate the editor buffer, but describe only members in the synced model.
+  const manifestUri = vscode.Uri.file(path.join(sample, "elide.pkl"));
+  const manifestDocument = await vscode.workspace.openTextDocument(manifestUri);
+  await vscode.window.showTextDocument(manifestDocument);
+  const modelOffset = manifestDocument.getText().indexOf('"model"') + 1;
+  assert.ok(modelOffset > 0);
+  const modelPosition = manifestDocument.positionAt(modelOffset);
+  const modelUri = vscode.Uri.file(path.join(member("model"), "elide.pkl")).toString();
+  const links = await vscode.commands.executeCommand<vscode.DocumentLink[]>("vscode.executeLinkProvider", manifestUri);
+  assert.ok(links?.some((link) => link.target?.toString() === modelUri && link.range.contains(modelPosition)), "member links open their manifests");
+  const definitions = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>("vscode.executeDefinitionProvider", manifestUri, modelPosition);
+  assert.ok(definitions?.some((definition) => ("targetUri" in definition ? definition.targetUri : definition.uri).toString() === modelUri), "Go to Definition opens the member manifest");
+  const memberHover = async () => {
+    const hovers = await vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", manifestUri, modelPosition);
+    return (hovers?.flatMap((hover) => hover.contents.map((content) => typeof content === "string" ? content : "value" in content ? content.value : "")).join("\n") ?? "").replaceAll("&nbsp;", " ");
+  };
+  const description = readFileSync(path.join(member("model"), "elide.pkl"), "utf8").match(/^description = "(.*)"$/m)![1]!;
+  const hover = await waitFor("synced workspace member hover", async () => {
+    const value = await memberHover();
+    return value.includes(description) ? value : undefined;
+  }, 60_000, 500);
+  assert.match(hover, /model/);
+  const originalManifest = manifestDocument.getText();
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(manifestUri, new vscode.Range(manifestDocument.positionAt(modelOffset), manifestDocument.positionAt(modelOffset + "model".length)), "./parser");
+  assert.ok(await vscode.workspace.applyEdit(edit));
+  const editedLinks = await vscode.commands.executeCommand<vscode.DocumentLink[]>("vscode.executeLinkProvider", manifestUri);
+  assert.ok(editedLinks?.some((link) => link.target?.toString() === vscode.Uri.file(path.join(member("parser"), "elide.pkl")).toString() && link.range.contains(modelPosition)), "unsaved member edits change navigation");
+  assert.ok(!editedLinks?.some((link) => link.target?.toString() === modelUri), "the old synced declaration does not supply a stale link");
+  const unloadedEdit = new vscode.WorkspaceEdit();
+  unloadedEdit.replace(manifestUri, new vscode.Range(manifestDocument.positionAt(modelOffset), manifestDocument.positionAt(modelOffset + "./parser".length)), "not-loaded");
+  assert.ok(await vscode.workspace.applyEdit(unloadedEdit));
+  assert.equal(await memberHover(), "", "unloaded members have no project metadata hover");
+  const missingLinks = await vscode.commands.executeCommand<vscode.DocumentLink[]>("vscode.executeLinkProvider", manifestUri);
+  assert.ok(!missingLinks?.some((link) => link.range.contains(modelPosition)), "missing member manifests have no navigation target");
+  await vscode.commands.executeCommand("workbench.action.files.revert");
+  assert.equal(manifestDocument.getText(), originalManifest);
+  log("workspace member links, definitions, synced hover and unsaved navigation ok");
+  if (process.env.ELIDE_TEST_WORKSPACE_NAVIGATION_ONLY === "1") return;
+
   // 2. The Kotlin LSP resolves sibling code from `cli` through the module dependencies, without anything built:
   //    `parser` directly, and `model` (the type `parseFile` returns) through it.
   const commandKt = vscode.Uri.file(path.join(member("cli"), "src", "main", "kotlin", "logstat", "cli", "Command.kt"));
