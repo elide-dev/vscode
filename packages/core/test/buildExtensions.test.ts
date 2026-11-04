@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseManifestBuildExtensions } from "../src/index.js";
+import { parseManifestBuildExtensions, parseManifestWorkspaceMembers } from "../src/index.js";
 
 function paths(text: string): string[] {
   return parseManifestBuildExtensions(text).map((entry) => entry.path);
@@ -96,5 +96,33 @@ other { "outside.ts" }`;
     expect(paths('extensions { "unfinished.ts"')).toEqual([]);
     expect(paths('extensions { new { from = "unfinished.ts } }')).toEqual([]);
     expect(paths('extensions { "ok.ts" /* unfinished }')).toEqual([]);
+  });
+});
+
+describe("parseManifestWorkspaceMembers", () => {
+  test("finds only literal entries in the root workspace members, retaining editor ranges", () => {
+    const text = String.raw`other { workspace { members { "nested" } } }
+workspace {
+  // members { "comment" }
+  members = new Listing {
+    "model";
+    /* "ignored" */ "sub/\u{63}li"
+    "prefix/" + "computed"
+    read("argument")
+    new { name = "object" }
+    "interpolated/\(value)"
+  }
+}
+extensions { "tools.ts" }`;
+    const entries = parseManifestWorkspaceMembers(text);
+    expect(entries.map((entry) => entry.path)).toEqual(["model", "sub/cli"]);
+    expect(entries.map((entry) => text.slice(entry.start, entry.end))).toEqual(["model", String.raw`sub/\u{63}li`]);
+    expect(parseManifestWorkspaceMembers('workspace { members { "model" "cli" } }').map((entry) => entry.path)).toEqual(["model", "cli"]);
+  });
+
+  test("declines incomplete and unsupported string syntax", () => {
+    expect(parseManifestWorkspaceMembers('workspace { members { "unfinished } }')).toEqual([]);
+    expect(parseManifestWorkspaceMembers('workspace { members { #"raw"# } }')).toEqual([]);
+    expect(parseManifestWorkspaceMembers('workspace { members { """multiline""" } }')).toEqual([]);
   });
 });

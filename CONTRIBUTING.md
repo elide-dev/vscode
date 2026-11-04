@@ -99,6 +99,10 @@ scenario instead, against `samples/workspace` or the directory `ELIDE_WORKSPACE_
 ELIDE_TEST_SCENARIO=workspace bazel run //packages/vscode:integration_test
 ```
 
+Set `ELIDE_TEST_WORKSPACE_NAVIGATION_ONLY=1` with the `workspace` scenario to stop after sync and
+manifest member-navigation checks (links, definitions, synced metadata hover, unsaved edits and
+unloaded members), without waiting for Kotlin source analysis.
+
 `ELIDE_TEST_SCENARIO=build-extension` opens `samples/build-extension` with third-party extensions
 disabled. It exercises the built-in TypeScript service before sync (inferred and configured TS
 projects, JSDoc JS, task/tool completion, invalid-option diagnostics, snippets and non-Elide

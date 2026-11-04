@@ -9,6 +9,7 @@ import { ManifestParseError } from "./errors.js";
  */
 export interface Manifest {
   name?: string;
+  description?: string;
   version?: string;
   entrypoint: string[];
   scripts: Record<string, string>;
@@ -411,6 +412,7 @@ export function decodeManifest(text: string): Manifest {
 
   return {
     name: typeof raw.name === "string" ? raw.name : undefined,
+    description: typeof raw.description === "string" ? raw.description : undefined,
     version: typeof raw.version === "string" ? raw.version : undefined,
     entrypoint: strings(raw.entrypoint),
     scripts: stringMap(raw.scripts),
