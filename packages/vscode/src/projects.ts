@@ -41,6 +41,7 @@ import { probeSourceRoot } from "./kotlinAnalysis.js";
 import { kotlinLspPlugin, withoutKotlinLspPlugin } from "./kotlinLspPlugin.js";
 import { moduleReaders, projectModules } from "./manifestModules.js";
 import type { ElideUi } from "./output.js";
+import { ElideTaskProgress } from "./taskProgress.js";
 
 export interface ElideProject {
   /** Absolute project root (directory containing `elide.pkl`). */
@@ -142,6 +143,7 @@ export class ElideWorkspace implements vscode.Disposable {
   private readonly komodoServer: KomodoLanguageServer;
   /** Manifests {@link writeManifest} writes, by path: the text it left there, or `null` while it is still writing. */
   private readonly manifestWrites = new Map<string, string | null>();
+  private taskProgressInstance: ElideTaskProgress | undefined;
 
   constructor(
     private readonly ui: ElideUi,
@@ -152,6 +154,11 @@ export class ElideWorkspace implements vscode.Disposable {
     private readonly cacheRoot: string,
   ) {
     this.komodoServer = new KomodoLanguageServer(cacheRoot, (message) => this.ui.log(message));
+  }
+
+  /** Shared native task progress and its Terminal-container view; sync-only consumers do not initialize it. */
+  get taskProgress(): ElideTaskProgress {
+    return this.taskProgressInstance ??= new ElideTaskProgress(this.ui.activity, this.state, path.join(__dirname, "taskRunner.js"));
   }
 
   get projects(): ElideProject[] {
@@ -1159,6 +1166,7 @@ export class ElideWorkspace implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.taskProgressInstance?.dispose();
     this.kotlinLspEnvironment.dispose();
     this.komodoServer.dispose();
     this.manifestDiagnostics.dispose();

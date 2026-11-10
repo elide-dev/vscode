@@ -64,6 +64,9 @@ ts_project(
         "src/output.ts",
         "src/projects.ts",
         "src/targetShortcuts.ts",
+        "src/taskProgress.ts",
+        "src/taskProgressView.ts",
+        "src/taskRunner.ts",
         "src/tasks.ts",
         "src/testing.ts",
         "src/workspaceMembers.ts",
@@ -124,6 +127,22 @@ esbuild(
     ],
 )
 
+# A native process task keeps stdin/stdout attached to VS Code; this wrapper streams structured stderr to the host.
+esbuild(
+    name = "task_runner",
+    srcs = glob(["src/**/*.ts"]) + [
+        "tsconfig.json",
+        "//:tsconfig_base",
+    ],
+    entry_point = "src/taskRunner.ts",
+    format = "cjs",
+    output = "dist/taskRunner.js",
+    platform = "node",
+    target = "node22",
+    tsconfig = "tsconfig.json",
+    deps = [":node_modules/@elide/ide-core"],
+)
+
 copy_to_bin(
     name = "assets",
     srcs = [
@@ -159,6 +178,7 @@ filegroup(
     srcs = [
         ":assets",
         ":bundle",
+        ":task_runner",
         ":typescript_plugin",
         ":vscode_typecheck",
     ],

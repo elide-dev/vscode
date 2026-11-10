@@ -24,7 +24,7 @@ export interface ElideActivityApi {
 }
 
 /**
- * What Elide is doing and has done in this window: syncs and preview builds, each a tree of the steps it went
+ * What Elide is doing and has done in this window: syncs, tasks and preview builds, each a tree of the steps it went
  * through, every step with its duration and share of the whole, and the output it produced, readable as a log.
  *
  * The status bar and notifications only ever show the step in progress; this view is where a slow or failed

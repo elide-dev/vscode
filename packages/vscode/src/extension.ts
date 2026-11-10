@@ -58,6 +58,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<ElideE
   const ui = new ElideUi();
   const workspace = new ElideWorkspace(ui, context.globalState, context.asAbsolutePath("media/kotlin-lsp"), context.globalStorageUri.fsPath);
   context.subscriptions.push(ui, workspace);
+  // Register the view without moving or opening the terminal until a task actually starts.
+  void workspace.taskProgress;
   const composePreview = registerComposePreview(workspace, ui, context);
   const agentPreviews = new ComposeAgentPreviews(workspace, ui, composePreview.agentHost);
   const composePreviewMcp = registerComposePreviewMcp(context, agentPreviews, ui, String(context.extension.packageJSON.version));
@@ -438,7 +440,8 @@ const MENU_ACTIONS: { label: string; description: string; command: string; andro
   { label: "$(beaker) Run All Tests", description: "Run every test in the Testing view", command: "testing.runAll" },
   { label: "$(file-code) Open elide.pkl", description: "Project manifest", command: "elide.openManifest" },
   { label: "$(json) Open Generated Kotlin LSP Workspace", description: WORKSPACE_JSON, command: "elide.openWorkspaceJson" },
-  { label: "$(pulse) Show Activity", description: "What syncs and preview builds did, step by step, and where their time went", command: "elide.showActivity" },
+  { label: "$(pulse) Show Activity", description: "What syncs, tasks and preview builds did, step by step, and where their time went", command: "elide.showActivity" },
+  { label: "$(tasklist) Show Task Progress", description: "Structured task progress beside the task terminal", command: "elide.showTaskProgress" },
   { label: "$(output) Show Output", description: "Elide output channel", command: "elide.showOutput" },
   { label: "$(new-folder) New Project…", description: "Create a project from an Elide template", command: "elide.newProject" },
   { label: "$(add) Add Workspace Member…", description: "Create a project inside this one and declare it a member", command: "elide.addMember" },
