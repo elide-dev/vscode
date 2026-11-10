@@ -90,6 +90,12 @@ exit 7`, { env: { NO_COLOR: undefined, FORCE_COLOR: "1" } });
   ]);
 });
 
+test("a CLI killed by a crash signal fails the task instead of reporting a cancellation", async () => {
+  const result = await run("kill -ABRT $$");
+  expect(result.code).toBe(134);
+  expect(result.messages.at(-1)).toMatchObject({ type: "end", exitCode: null, aborted: false });
+});
+
 test("rendered terminal progress respects NO_COLOR", async () => {
   const result = await run(`printf '{"type":"build-finished","outcome":"success","durationMs":20,"time":0}\\n' >&2`, { env: { NO_COLOR: "1", FORCE_COLOR: "1" } });
   expect(result.code).toBe(0);

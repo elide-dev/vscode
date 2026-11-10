@@ -378,15 +378,12 @@ async function run(): Promise<void> {
         report(`Could not start ${bin}: ${error.message}`);
       });
       child.once("close", (code, signal) => {
-        if (signal && !aborted) cancel(signal);
+        // Terminal interrupts can reach the CLI before the runner; crash signals are failures, not cancellations.
+        if (signal && !aborted && signals.includes(signal)) cancel(signal);
         settleChild?.(code, signal);
       });
       const result = await completion.promise;
       exitCode = result.signal ? null : result.code;
-      if (result.signal) {
-        aborted = true;
-        cancellationSignal ??= result.signal;
-      }
       taskExitCode = result.code ?? 128 + (constants.signals[cancellationSignal ?? result.signal ?? "SIGTERM"] ?? 15);
     }
   } catch (error: unknown) {
