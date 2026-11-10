@@ -32,6 +32,12 @@ test, and debug commands are available from the editor.
 - **Mixed-editor checkouts.** A repository can carry both an IntelliJ `.idea` directory and the generated
   `workspace.json`; each editor uses its own.
 - **Tasks.** `elide build`, `elide test`, `elide install`, and one run task per manifest entrypoint.
+  Task terminals keep colorized process output, stdin and native terminal behavior, including Android build failures.
+  **Task Progress** sits beside the terminal inside the existing **Terminal** tab: live build steps, progress,
+  durations, skipped-task reasons and cancellation, using the same timeline as syncs. The extension places it there
+  once, on first use; later moves and resizing are yours. **Elide: Show Task Progress** reopens it in its current location.
+  Step logs record build progress and stderr; program stdout remains in the terminal. Older Elide releases fall back
+  to their text progress. Explicit CLI color options and color opt-outs (`NO_COLOR`, `FORCE_COLOR=0`) are preserved.
 - **Test Explorer.** JUnit tests of the project's test source roots in the **Testing** view, run and debugged through
   `elide test --reporter=tap` with live results, failure messages and stack-trace locations. **Run with Coverage**
   shows the run's LCOV and JaCoCo XML reports in the editor's coverage gutter and Test Coverage view.
@@ -42,7 +48,7 @@ test, and debug commands are available from the editor.
   task's, build target's or Android artifact's context menu) keeps a target in a **Pinned** section above the
   projects, and a **Frequently used** section lists the five targets run most often from the sidebar itself — runs
   from the CLI, code lenses or the palette are not counted. Both are remembered per workspace.
-- **Activity.** The sidebar's **Activity** view lists every sync and Compose preview build of the window, live
+- **Activity.** The sidebar's **Activity** view lists every sync, task and Compose preview build of the window, live
   while it runs: each step (reading the manifest, installing dependencies, resolving classpaths, generating
   resources, writing `workspace.json`), the `elide` commands it ran, and the build tasks those reported, each with
   its duration and share of the whole; a task Elide skipped is listed with the reason, such as `Up to date`, since its
@@ -111,7 +117,8 @@ accept); add it to `.gitignore` instead to cover every clone.
 | `Elide: Add Workspace Member…` | Create a project inside an existing one and declare it in `workspace.members`. |
 | `Elide: Open Generated Kotlin LSP Workspace` | Open the generated `workspace.json`. |
 | `Elide: Show Output` | Open the `Elide` output channel. |
-| `Elide: Show Activity` | Reveal the **Activity** view: syncs and preview builds, step by step, with durations. |
+| `Elide: Show Activity` | Reveal the **Activity** view: syncs, tasks and preview builds, step by step, with durations. |
+| `Elide: Show Task Progress` | Reveal structured task progress beside the terminal in the existing **Terminal** container. |
 | `Elide: Open Activity Log` | Open the latest operation's output, with timestamps, in an editor. |
 | `Elide: Select Android Deployment Target…` | Choose the remembered project, APK and device shared by Run and Debug. |
 | `Elide: Check Android Environment` | Inspect local tools and device readiness, including before sync succeeds; select a finding for fixes. |

@@ -4,13 +4,21 @@ All notable changes to the Elide extension are documented here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [Unreleased]
 
 ### Added
 
 - Workspace member strings in `elide.pkl` link to the member's manifest and support Go to Definition.
   Hover shows the project's name and description when the member is already loaded and synced.
   Navigation follows unsaved edits without triggering project loading or synchronization.
+- Structured task progress beside normal task output inside VS Code's existing Terminal container. Inspect live
+  build steps, progress, durations and skipped tasks; cancel a running task or open its step log. Task history is
+  also available in Activity. Native stdin/stdout and task reruns are preserved, as are subsequent user layout changes.
+
+### Fixed
+
+- Enable colorized process output for Elide task terminals, including tasks launched from sidebar targets
+  and Android builds. Preserve color opt-outs and keep failure messages free of ANSI escapes.
 
 ## [0.8.0](https://github.com/elide-dev/vscode/compare/v0.7.0...v0.8.0) (2026-11-03)
 

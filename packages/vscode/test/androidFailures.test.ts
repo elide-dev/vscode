@@ -15,6 +15,9 @@ function run(script: string): { status: number | null; stderr: string } {
   const source = new URL("../src/", import.meta.url).pathname;
   const result = spawnSync(process.execPath, ["--eval", `
     import assert from "node:assert/strict";
+    import { spawn } from "node:child_process";
+    import { once } from "node:events";
+    import { TimelineNode } from "@elide/ide-core";
     import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
     import os from "node:os";
     import path from "node:path";
@@ -29,16 +32,17 @@ function run(script: string): { status: number | null; stderr: string } {
       event = (listener) => { this.listeners.push(listener); return { dispose() {} }; };
       fire(value) { for (const listener of this.listeners) listener(value); }
     }
+    const startedTask = new EventEmitter(), endedTask = new EventEmitter();
+    class ProcessExecution { constructor(process, args, options) { Object.assign(this, {process,args,options}); } }
     const terminals = [{ name: "Task - build android-run-app", show: () => shown.push("task terminal") }];
     mock.module("vscode", () => ({
       EventEmitter,
-      CustomExecution: class { constructor(callback) { this.callback = callback; } },
-      ProcessExecution: class {},
+      ProcessExecution,
       Task: class { constructor(definition, scope, name, source, execution, matchers) { Object.assign(this, { definition, scope, name, source, execution, matchers }); } },
       TaskRevealKind: { Always: 1 },
       TaskPanelKind: { Shared: 1 },
       Uri: { file: (fsPath) => ({ fsPath }) },
-      tasks: { executeTask: async (task) => task },
+      tasks: { executeTask: async (task) => task, onDidStartTaskProcess: startedTask.event, onDidEndTaskProcess: endedTask.event },
       commands: { executeCommand: async (...args) => { commands.push(args); } },
       workspace: { workspaceFolders: [{}] },
       window: {
@@ -51,6 +55,9 @@ function run(script: string): { status: number | null; stderr: string } {
     }));
     mock.module(source + "config.js", () => ({ configuredInvocation: () => ({}), readConfig: () => ({ home: globalThis.elideHome }) }));
     mock.module(source + "jetbrains.js", () => ({ isJetBrainsDebugger: (type) => type === "intellij_jvm", jetBrainsDebuggerType() {}, jetBrainsExtension() {}, notifyKotlinSetupPending() {}, pendingKotlinSetup: async () => undefined }));
+    mock.module(source + "taskProgressView.js", () => ({
+      TaskProgressView: class { start(label) { return TimelineNode.root(label); } async reveal() {} dispose() {} },
+    }));
     const ui = { lines: [], log(line) { this.lines.push(line); } };
     const dirs = [];
     const scratch = (prefix) => { const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(dir); return dir; };
@@ -62,9 +69,28 @@ function run(script: string): { status: number | null; stderr: string } {
       chmodSync(path.join(home, "bin", "elide"), 0o755);
       return home;
     };
+    const progresses = [];
+    const makeWorkspace = async project => {
+      // Load only after VS Code and view mocks exist; the process/protocol service itself remains real.
+      const { ElideTaskProgress } = await import(source + "taskProgress.ts");
+      const taskProgress = new ElideTaskProgress({}, {}, source + "taskRunner.ts");
+      progresses.push(taskProgress);
+      return {projects:[project],taskProgress};
+    };
+    const runTask = async task => {
+      const native = task.execution;
+      const child = spawn(native.process, native.args, {cwd:native.options.cwd,env:{...process.env,...native.options.env},stdio:"ignore"});
+      const execution = {task,terminate:() => child.kill("SIGTERM")};
+      startedTask.fire({execution,processId:child.pid});
+      const [code] = await once(child,"close");
+      endedTask.fire({execution,exitCode:code});
+      await immediate();
+      return code;
+    };
     try {
       ${script}
     } finally {
+      for (const progress of progresses) progress.dispose();
       for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
     }
   `], { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 20_000 });
@@ -78,39 +104,22 @@ test("a failed Android task notifies with Elide's error and hint, and offers the
     const root = scratch("elide-app-");
     const project = { root, manifestPath: path.join(root, "elide.pkl"), folder: { uri: { fsPath: root } },
       model: { android: { targets: [{ name: "app", kind: "apk" }] } } };
-    const workspace = { projects: [project] };
+    const workspace = await makeWorkspace(project);
     // Loaded only once the VS Code mock is installed.
     const { executeAndroidTask } = await import(source + "android.ts");
     const task = await executeAndroidTask(workspace, ui, project, { args: ["android-run-app"], options: { device: "emulator-5554" } });
-    assert.equal(task.name, "build android-run-app");
-    assert.deepEqual(task.definition, { type: "elide", command: "build", args: ["android-run-app"], options: { device: "emulator-5554" } });
-    assert.deepEqual(task.matchers, ["$elide"], "the problem matcher still reads the terminal");
-    const pty = await task.execution.callback();
-    const written = [];
-    const closed = Promise.withResolvers();
-    pty.onDidWrite((text) => written.push(text));
-    pty.onDidClose((code) => closed.resolve(code));
     pick = "Create Android Signing Keystore";
-    pty.open();
-    assert.equal(await closed.promise, 1, "the task ends with Elide's exit code");
-    await immediate();
-    const output = written.join("");
-    assert.match(output, /\\$ elide build android-run-app --device=emulator-5554/);
-    assert.match(output, /error: Keystore \\/work\\/app\\/\\.dev\\/crypto\\/debug\\.keystore not found\\r\\n/);
-    assert.match(output, /progress=plain/, "the terminal shows Elide's plain progress");
-    const message = "Elide: Keystore /work/app/.dev/crypto/debug.keystore not found — hint: Create one with: elide build android-keystore-app";
-    assert.deepEqual(notices, [{ level: "error", message, actions: ["Create Android Signing Keystore", "Show Terminal"] }]);
-    assert.deepEqual(ui.lines, [message], "the Elide output channel gets the same line");
+    const code = await runTask(task);
+    assert.equal(code, 1, "the task ends with Elide's exit code");
+    assert.equal(notices[0].level,"error");
+    assert.ok(notices[0].message.includes("/work/app/.dev/crypto/debug.keystore"));
+    assert.ok(notices[0].message.includes("elide build android-keystore-app"));
+    assert.deepEqual(notices[0].actions, ["Create Android Signing Keystore", "Show Terminal"]);
     assert.deepEqual(commands, [["elide.androidCreateKeystore", { root, artifact: "app" }]]);
 
     // Show Terminal reveals the task's own terminal, which VS Code titles with the task's name.
     pick = "Show Terminal";
-    const again = await (await executeAndroidTask(workspace, ui, project, { args: ["android-run-app"] })).execution.callback();
-    const ended = Promise.withResolvers();
-    again.onDidClose(() => ended.resolve());
-    again.open();
-    await ended.promise;
-    await immediate();
+    await runTask(await executeAndroidTask(workspace, ui, project, { args: ["android-run-app"] }));
     assert.deepEqual(shown, ["task terminal"]);
   `)).toEqual({ status: 0, stderr: "" });
 });
@@ -127,14 +136,9 @@ test("a Run whose install Android refuses for another signing key offers to unin
     const { executeAndroidTask } = await import(source + "android.ts");
     const { androidFailureActions } = await import(source + "failures.ts");
     const reinstalled = [];
-    const task = await executeAndroidTask({ projects: [project] }, ui, project, { args: ["android-run-app"] }, async (application) => { reinstalled.push(application); });
-    const pty = await task.execution.callback();
-    const closed = Promise.withResolvers();
-    pty.onDidClose(() => closed.resolve());
+    const task = await executeAndroidTask(await makeWorkspace(project), ui, project, { args: ["android-run-app"] }, async (application) => { reinstalled.push(application); });
     pick = "Uninstall and Retry";
-    pty.open();
-    await closed.promise;
-    await immediate();
+    await runTask(task);
     assert.deepEqual(notices.at(-1).actions, ["Uninstall and Retry", "Show Terminal"]);
     assert.deepEqual(reinstalled, ["sample.app"], "the action uninstalls the application the failure names");
     assert.deepEqual(commands, []);

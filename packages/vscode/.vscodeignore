@@ -1,5 +1,6 @@
 **
 !dist/extension.js
+!dist/taskRunner.js
 !package.json
 !README.md
 !CHANGELOG.md

@@ -66,6 +66,7 @@
     "onTaskType:elide",
     "onView:elide.projects",
     "onView:elide.activity",
+    "onView:elide.taskProgress",
     "onWebviewPanel:elide.composePreview"
   ],
   "contributes": {
@@ -490,6 +491,12 @@
         "icon": "$(pulse)"
       },
       {
+        "command": "elide.showTaskProgress",
+        "category": "Elide",
+        "title": "Show Task Progress",
+        "icon": "$(tasklist)"
+      },
+      {
         "command": "elide.openActivityLog",
         "category": "Elide",
         "title": "Open Activity Log",
@@ -910,7 +917,7 @@
         },
         {
           "command": "elide.clearActivity",
-          "when": "view == elide.activity",
+          "when": "view == elide.activity || view == elide.taskProgress",
           "group": "navigation@1"
         }
       ],
@@ -1075,12 +1082,12 @@
         },
         {
           "command": "elide.cancelActivity",
-          "when": "view == elide.activity && viewItem =~ /Cancellable$/",
+          "when": "(view == elide.activity || view == elide.taskProgress) && viewItem =~ /Cancellable$/",
           "group": "inline@1"
         },
         {
           "command": "elide.openActivityLog",
-          "when": "view == elide.activity && viewItem =~ /^activity/",
+          "when": "(view == elide.activity || view == elide.taskProgress) && viewItem =~ /^activity/",
           "group": "inline@2"
         }
       ]
@@ -1107,6 +1114,13 @@
           "name": "Activity",
           "contextualTitle": "Elide",
           "icon": "media/elide.svg"
+        },
+        {
+          "id": "elide.taskProgress",
+          "name": "Task Progress",
+          "visibility": "hidden",
+          "contextualTitle": "Elide",
+          "icon": "media/elide.svg"
         }
       ]
     },
@@ -1118,7 +1132,11 @@
       },
       {
         "view": "elide.activity",
-        "contents": "Nothing has run yet. Syncs and Compose preview builds appear here while they run, step by step, with the time each step took and its output.\n[Sync Project(s)](command:elide.sync)"
+        "contents": "Nothing has run yet. Syncs, tasks and Compose preview builds appear here while they run, step by step, with the time each step took and its output.\n[Sync Project(s)](command:elide.sync)"
+      },
+      {
+        "view": "elide.taskProgress",
+        "contents": "Elide tasks appear here while they run, step by step, alongside their terminal output. Open a step to read its log.\n[Run Task…](command:elide.runTask)"
       }
     ],
     "problemMatchers": [
