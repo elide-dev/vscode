@@ -7,6 +7,31 @@ export interface ManifestBuildExtension {
   end: number;
 }
 
+/** A literal directory in `workspace.members`; offsets exclude its quotes. */
+export interface ManifestWorkspaceMember {
+  path: string;
+  start: number;
+  end: number;
+}
+
+/** Literal workspace member directories, with source offsets excluding their quotes. */
+export function parseManifestWorkspaceMembers(text: string): ManifestWorkspaceMember[] {
+  if (/#"|"""/.test(text)) return [];
+  const workspace = pklBlock(text, "workspace");
+  if (!workspace) return [];
+  const members = pklBlock(text, "members", workspace.start, workspace.end);
+  if (!members) return [];
+  const tokens = tokenize(text, members.start, members.end);
+  if (!tokens) return [];
+  const found: ManifestWorkspaceMember[] = [];
+  for (const entry of statements(tokens)) {
+    if (entry.every((token) => token.text === "string")) {
+      for (const token of entry) addLiteral(token, found);
+    }
+  }
+  return found;
+}
+
 interface Token {
   text: string;
   start: number;

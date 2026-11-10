@@ -66,6 +66,7 @@ ts_project(
         "src/targetShortcuts.ts",
         "src/tasks.ts",
         "src/testing.ts",
+        "src/workspaceMembers.ts",
         "src/workspacePaths.ts",
     ],
     declaration = False,
