@@ -19,6 +19,8 @@ All notable changes to the Elide extension are documented here. The format follo
 
 - Enable colorized process output for Elide task terminals, including tasks launched from sidebar targets
   and Android builds. Preserve color opt-outs and keep failure messages free of ANSI escapes.
+- Komodo Compose previews no longer fail with "the preview session closed" after an earlier preview
+  session was closed or replaced; the next preview starts a new session.
 
 ## [0.8.0](https://github.com/elide-dev/vscode/compare/v0.7.0...v0.8.0) (2026-11-03)
 

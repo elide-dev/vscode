@@ -755,15 +755,13 @@ export class KomodoBackend extends ComposeBackend {
       this.spare = reused;
       throw new Error(`Komodo: ${this.refusal.reason}`);
     }
+    // Concurrent restarts share one start. It is cleared once settled, from a callback: a body that takes the prepared session
+    // without awaiting would run its own `finally` before the assignment and leave the session memoized after it closes.
     const daemon = reused ?? await (this.starting ??= (async () => {
-      try {
-        const started = this.prepared?.alive ? this.prepared : await this.open(sourceFile, signal);
-        this.prepared = undefined;
-        return started;
-      } finally {
-        this.starting = undefined;
-      }
-    })());
+      const started = this.prepared?.alive ? this.prepared : await this.open(sourceFile, signal);
+      this.prepared = undefined;
+      return started;
+    })().finally(() => { this.starting = undefined; }));
     const reason = await this.configureDaemon(daemon, compiled, signal).catch((error: unknown) => {
       daemon.dispose();
       throw error;
