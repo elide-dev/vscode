@@ -1,4 +1,6 @@
 import type { ChildProcess } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   ElideCli,
@@ -8,6 +10,7 @@ import {
   isPathUnder,
   jvmTestNamePattern,
   loadCoverage,
+  loadCoverageArtifact,
   mergeElideInvocationOptions,
   normalizePath,
   parseTapLabel,
@@ -72,7 +75,7 @@ interface RunGroup {
  * Discovery is static: the test source roots of the project model are scanned for JUnit declarations, so the tree is
  * populated without compiling or running anything. A run shells out to `elide test --reporter=tap` and maps the TAP
  * stream back onto those items; the Debug profile runs the same command under a JDWP agent and attaches, and the
- * Coverage profile adds `--coverage` and publishes the reports the run leaves under `.dev`.
+ * Coverage profile adds `--coverage` and publishes run-local coverage, falling back to reports under `.dev`.
  */
 export class ElideTestController implements vscode.Disposable {
   private readonly controller = vscode.tests.createTestController("elide", "Elide");
@@ -254,13 +257,20 @@ export class ElideTestController implements vscode.Disposable {
 
   private async run(request: vscode.TestRunRequest, token: vscode.CancellationToken, summary?: TestRunSummary): Promise<void> {
     const run = this.controller.createTestRun(request);
+    let coverageDirectory: string | undefined;
     try {
+      if (request.profile?.kind === vscode.TestRunProfileKind.Coverage) {
+        coverageDirectory = await mkdtemp(path.join(tmpdir(), "elide-coverage-"));
+      }
+      let invocation = 0;
       for (const group of this.groupByProject(request)) {
         if (token.isCancellationRequested) break;
-        await this.runGroup(run, request, group, token, summary);
+        const coverageFile = coverageDirectory ? path.join(coverageDirectory, `${invocation++}.json`) : undefined;
+        await this.runGroup(run, request, group, token, summary, coverageFile);
       }
     } finally {
       run.end();
+      if (coverageDirectory) await rm(coverageDirectory, { recursive: true, force: true });
     }
   }
 
@@ -339,6 +349,7 @@ export class ElideTestController implements vscode.Disposable {
     group: RunGroup,
     token: vscode.CancellationToken,
     summary?: TestRunSummary,
+    coverageFile?: string,
   ): Promise<void> {
     const { project, projectItem, leaves } = group;
     for (const leaf of leaves) run.enqueued(leaf);
@@ -358,6 +369,7 @@ export class ElideTestController implements vscode.Disposable {
     // `elide.flags` and `elide.test.options` apply here too, except for the reporter: this run parses TAP.
     const invocation = mergeElideInvocationOptions(configuredInvocation(settings, "test"), {
       options: { ...(pattern ? { "test-name-pattern": pattern } : {}), reporter: "tap", ...(coverage ? { coverage: true } : {}) },
+      ...(coverageFile ? { env: { ELIDE_COVERAGE_REPORT: coverageFile } } : {}),
     });
     const argv = elideInvocationArgs("test", invocation);
     this.ui.log(`test: ${dist.bin} ${argv.join(" ")} (cwd ${project.root})`);
@@ -377,6 +389,7 @@ export class ElideTestController implements vscode.Disposable {
     const invocations = new Map<string, number>();
     const stderrTail: string[] = [];
     let sawResult = false;
+    let sawFailure = false;
 
     const claim = (label: string): vscode.TestItem => {
       const base = this.matchLabel(index, projectItem, project.root, label, selectedIds);
@@ -420,7 +433,10 @@ export class ElideTestController implements vscode.Disposable {
           const todo = event.directive?.type === "todo";
           if (skip || (todo && !event.ok)) this.settle(run, summary, "skipped", item);
           else if (event.ok) this.settle(run, summary, "passed", item);
-          else this.settle(run, summary, "failed", item, failureMessage(event.diagnostics, item));
+          else {
+            sawFailure = true;
+            this.settle(run, summary, "failed", item, failureMessage(event.diagnostics, item));
+          }
           return;
         }
         case "other":
@@ -495,23 +511,36 @@ export class ElideTestController implements vscode.Disposable {
     }
 
     parser.end();
-    if (coverage && !token.isCancellationRequested) await this.publishCoverage(run, group, startedAt, summary);
+    if (coverage && !token.isCancellationRequested) await this.publishCoverage(run, group, startedAt, summary, coverageFile);
     if (token.isCancellationRequested || failure === undefined) return;
-    // A failing test already exits non-zero: only a run that reported nothing at all is an error of its own.
+    // Run-level failures (including coverage minimums) must not turn an all-passing TAP stream green.
     if (sawResult) {
       run.appendOutput(terminalText(failure));
+      if (!sawFailure) this.settle(run, summary, "errored", projectItem, new vscode.TestMessage(failure));
       return;
     }
     const message = new vscode.TestMessage(failure);
     for (const leaf of leaves) this.settle(run, summary, "errored", leaf, message);
   }
 
-  /**
-   * Publish the coverage the run left in each project it covered: guest LCOV, and JVM coverage when the manifest asks
-   * for a JaCoCo XML report. JaCoCo execution data alone cannot be read without the JaCoCo analyzer, so its presence
-   * only earns a hint.
-   */
-  private async publishCoverage(run: vscode.TestRun, group: RunGroup, startedAt: number, summary?: TestRunSummary): Promise<void> {
+  /** Prefer the invocation's JSON artifact; older CLIs fall back to configured reports under `.dev`. */
+  private async publishCoverage(run: vscode.TestRun, group: RunGroup, startedAt: number, summary?: TestRunSummary, coverageFile?: string): Promise<void> {
+    const publish = (files: readonly FileCoverageData[]) => {
+      for (const file of files) {
+        const details = statementsOf(file);
+        const coverage = vscode.FileCoverage.fromDetails(vscode.Uri.file(file.path), details);
+        this.coverageDetails.set(coverage, details);
+        run.addCoverage(coverage);
+        if (summary?.coverage) summary.coverage[file.path] = { covered: coverage.statementCoverage.covered, total: coverage.statementCoverage.total };
+      }
+    };
+    const artifact = coverageFile ? await loadCoverageArtifact(coverageFile, group.project.root) : undefined;
+    if (artifact) {
+      publish(artifact.files);
+      if (!artifact.complete) run.appendOutput(terminalText("Coverage collection was incomplete; only collected, unchanged sources are shown."));
+      this.ui.log(`coverage: ${artifact.files.length} file(s) published`);
+      return;
+    }
     let published = 0;
     let reports = 0;
     for (const item of group.coveredItems) {
@@ -525,14 +554,8 @@ export class ElideTestController implements vscode.Disposable {
         continue;
       }
       reports += loaded.reports.lcov.length + loaded.reports.jacocoXml.length + loaded.reports.jacocoExec.length;
-      for (const file of loaded.files) {
-        const details = statementsOf(file);
-        const coverage = vscode.FileCoverage.fromDetails(vscode.Uri.file(file.path), details);
-        this.coverageDetails.set(coverage, details);
-        run.addCoverage(coverage);
-        if (summary?.coverage) summary.coverage[file.path] = { covered: coverage.statementCoverage.covered, total: coverage.statementCoverage.total };
-        published++;
-      }
+      publish(loaded.files);
+      published += loaded.files.length;
       if (loaded.reports.jacocoExec.length > 0 && loaded.reports.jacocoXml.length === 0) {
         run.appendOutput(
           terminalText(

@@ -212,12 +212,15 @@ The **Debug** profile runs the same command with a bare `--debugger` and attache
 agent announces itself. That flag takes no address on `elide test`: the agent always binds 5005, so one debug run at
 a time.
 
-The **Run with Coverage** profile adds `--coverage` and, once the run exits, shows the reports it wrote in the
-editor's coverage gutter and the Test Coverage view: guest (JavaScript/TypeScript) LCOV from
-`.dev/reports/coverage/js/lcov.info`, and JVM coverage from the JaCoCo XML report under
-`.dev/reports/coverage/jvm/<task>/` (`.dev/artifacts/coverage/jvm/<task>/` before Elide 1.6), with per-line branch
-counts. Elide writes JVM coverage as JaCoCo execution data (`.exec`) by default, which cannot be read without the
-compiled classes; ask for the XML report in `elide.pkl` to see it in the editor:
+The **Run with Coverage** profile adds `--coverage` and shows line and branch coverage in the editor's gutter and
+Test Coverage view. On CLIs supporting `ELIDE_COVERAGE_REPORT`, it reads a private, run-local JSON artifact; JVM
+coverage needs no XML-report configuration. Incomplete collection is reported, and sources whose recorded digest
+no longer matches the file are omitted. Temporary artifacts are removed after completion or cancellation.
+A failed coverage minimum errors the project run without changing individual passing test results.
+
+Older CLIs fall back to guest LCOV (`.dev/reports/coverage/js/lcov.info`) and JaCoCo XML
+(`.dev/reports/coverage/jvm/<task>/`, or `.dev/artifacts/coverage/jvm/<task>/` before Elide 1.6).
+For that fallback, Elide's default JVM execution data (`.exec`) is not sufficient; configure an XML report:
 
 ```pkl
 import "elide:Coverage.pkl" as Coverage
