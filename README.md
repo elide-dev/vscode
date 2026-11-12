@@ -31,8 +31,10 @@ and a pinned (`&version=`) link.
   installed separately from the Marketplace. Complete its one-time region / data-sharing setup for Kotlin/Java
   analysis and JVM debugging. Elide activates independently: sync, build, layoutlib previews and environment diagnostics do not
   wait for the language server. Opening an Elide Kotlin or Java source document starts the companion when needed.
-  It is not needed with Komodo (`elide.kotlinLsp.server` = `komodo`), which requires an Elide release with
-  on-demand Komodo resolution. Choose **Elide: Install Komodo** explicitly; default use never downloads it.
+  It is not needed with Komodo (`elide.kotlinLsp.server` = `komodo`), which requires either an explicit native bundle
+  (`elide.kotlinLsp.komodo.path`) or a CLI implementing `elide komodo resolve --json` and `elide komodo install --yes --json`.
+  Elide's version number alone does not establish managed-component support. CLIs without these commands require
+  the explicit bundle override. **Elide: Install Komodo** never runs automatically.
   Missing, incompatible or failed Komodo disables native analysis/debug actions and stops stale native resources,
   while ordinary project sync and builds remain available. Fix the component or override and sync again to recover
   without reloading the window; settings are never rewritten and no alternative engine is selected automatically.
@@ -599,10 +601,10 @@ standalone `tsc` build. They do not install Node.js types or change the project'
 | `elide.home` | `""` | Distribution root containing `bin/elide`. |
 | `elide.jdk.home` | `""` | JDK for symbol resolution; else `jvm.javaHome`, `$JAVA_HOME`, installed JDKs matching `jvm.target`. |
 | `elide.sync.onStartup` | `true` | Sync when the workspace opens. |
-| `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` changes, or when the lockfile's resolved dependencies do. Every `elide` invocation rewrites `.dev/elide.lock*.bin`, so rewrites with unchanged content are ignored. |
+| `elide.sync.onManifestChange` | `"prompt"` | `always` / `prompt` / `never` when `elide.pkl` changes, or when the lockfile's resolved dependencies do. Lockfile writes with unchanged content are ignored; current Elide preserves the file when its records have not changed. |
 | `elide.kotlinLsp.writeWorkspaceJson` | `true` | Write `<folder>/workspace.json` for the JetBrains server; never for a Komodo folder. |
-| `elide.kotlinLsp.server` | `"jetbrains"` | `komodo` (experimental): native Kotlin services resolved and installed on demand by Elide. |
-| `elide.kotlinLsp.komodo.path`, `.pluginDirectory`, `.javaHome`, `.maxHeap` | `""` | Developer overrides for executable, compiler plugins, JDK inputs and heap. Empty uses Elide's managed resolution. |
+| `elide.kotlinLsp.server` | `"jetbrains"` | `komodo` (experimental): native Kotlin services; requires an explicit bundle or a CLI with managed Komodo commands. |
+| `elide.kotlinLsp.komodo.path`, `.pluginDirectory`, `.javaHome`, `.maxHeap` | `""` | Overrides for executable, compiler plugins, JDK inputs and heap. Empty requires Elide's managed-resolution command. |
 | `elide.install.classifiers` | `["sources"]` | Classifiers installed for declared Maven packages (`sources`, `docs`); empty installs classes only. Elide's own Kotlin/JUnit jars have none. |
 | `elide.flags` | `[]` | `-f NAME[=VALUE]` build flags for every invocation, sync included; changing them marks the model stale. |
 | `elide.build.options` | `{}` | Default options for `elide build`, e.g. `{ "no-cache": true }`. |

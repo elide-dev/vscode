@@ -76,7 +76,7 @@ test, and debug commands are available from the editor.
 | | |
 | --- | --- |
 | [Elide](https://elide.dev) **1.5+** | Found via `elide.home`, `$ELIDE_HOME`, the platform install locations, or `PATH`. **1.6.1+** reports live task progress and resolves a project's classpaths in one call; older releases sync with one call per classpath and show tasks once they finish. |
-| **Kotlin by JetBrains** (`JetBrains.kotlin-server`, ≥ 0.0.11), for the default language server | Install it from the Marketplace and complete its region/data-sharing prompt. Not needed with Komodo, which requires an Elide release supporting on-demand component resolution. |
+| **Kotlin by JetBrains** (`JetBrains.kotlin-server`, ≥ 0.0.11), for the default language server | Install it from the Marketplace and complete its region/data-sharing prompt. Not needed with Komodo, which requires an explicit native bundle or an Elide CLI implementing managed Komodo commands. |
 | A JDK | `$JAVA_HOME`, SDKMAN, `/Library/Java/JavaVirtualMachines`, `/usr/lib/jvm`, or `elide.jdk.home`. Elide's bundled JDK image cannot be used for symbol resolution: it ships without a `release` file. |
 | An Android SDK, for Android projects | `android.sdk` in the manifest, `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or where the SDK installs itself on this platform. `Elide: Install Android SDK Components` installs what a build is missing. |
 
@@ -214,22 +214,25 @@ The extension also maintains two Kotlin LSP settings, and explicit values you se
 
 ### Komodo language server (experimental)
 
-Komodo is an optional native Kotlin language server, debugger and live Compose preview engine managed by Elide. It is
-opt-in; the JetBrains Kotlin LSP stays the default. To use it, set:
+Komodo is an optional native Kotlin language server, debugger and live Compose preview engine. It requires either
+an explicit native bundle or an Elide CLI with managed-component support. The JetBrains Kotlin LSP stays the default.
+To use Komodo, set:
 
 ```jsonc
 "elide.kotlinLsp.server": "komodo",               // per folder: Kotlin language server and debugger
 "elide.android.composePreview.engine": "komodo"   // optional, window-wide: live Compose previews
 ```
 
-Leave executable, plugin and JDK overrides empty for managed use. The selected Elide CLI runs
-`elide komodo resolve --json` without downloading or installing anything. If Komodo is missing, choose
-**Install Komodo** from the notification, or run **Elide: Install Komodo** from the Command Palette.
-That explicit action runs Elide's installer with progress and cancellation, resolves the installed identity,
-and resyncs Komodo folders. Declining or failing installation leaves the feature unavailable; it never changes
-engines. Ordinary Elide installs and default JetBrains/layoutlib use do not acquire Komodo.
-Older Elide versions remain usable for existing features but need an upgrade for managed Komodo.
-Elide validates supported platforms, compatible protocols, JDK inputs and trusted artifact checksums.
+Managed use requires the selected CLI to implement `elide komodo resolve --json` and
+`elide komodo install --yes --json`; Elide's version number alone does not establish support. A CLI without
+these commands cannot resolve or install Komodo. Use `elide.kotlinLsp.komodo.path` to select an intact native
+bundle explicitly, with its compiler plugins and JDK inputs configured as needed.
+
+With a compatible CLI, leave executable, plugin and JDK overrides empty. Resolution never downloads anything.
+If Komodo is missing, choose **Install Komodo** from the notification or Command Palette. That explicit action
+runs Elide's installer with progress and cancellation, resolves the installed identity, and resyncs Komodo folders.
+Declining or failing installation leaves the feature unavailable; it never changes engines. Elide validates
+supported platforms, compatible protocols, JDK inputs and trusted artifact checksums.
 
 Missing, incompatible or failed Komodo disables its native analysis and debugger at runtime: Activity reports a
 `disabled` detail, while the rest of project sync succeeds and the resolved models remain usable for builds.

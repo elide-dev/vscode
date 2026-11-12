@@ -244,7 +244,7 @@
             "Experimental: Komodo's native language server, installed on demand by Elide, analyzes Kotlin sources from the Elide project model. No workspace.json or JetBrains server is needed for the folder. One server serves every Komodo folder of the window."
           ],
           "default": "jetbrains",
-          "markdownDescription": "Kotlin language server for the folder's Elide projects. `komodo` requires an Elide release supporting on-demand Komodo resolution. If missing, choose **Install Komodo** explicitly; activation and sync never download it. With `komodo`, `#elide.debug.adapter#` defaults to Komodo's debugger."
+          "markdownDescription": "Kotlin language server for the folder's Elide projects. `komodo` requires an explicit native bundle (`#elide.kotlinLsp.komodo.path#`) or a CLI implementing `elide komodo resolve --json` and `elide komodo install --yes --json`. Activation and sync never download it; **Install Komodo** is explicit. With `komodo`, `#elide.debug.adapter#` defaults to Komodo's debugger."
         },
         "elide.kotlinLsp.komodo.path": {
           "type": "string",

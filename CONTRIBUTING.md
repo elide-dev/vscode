@@ -139,10 +139,11 @@ verification loop when upgrading vsce or changing plugin packaging.
 with every installed extension disabled (as on a machine without the JetBrains extension), and exercises each
 capability the server advertises through VS Code's provider commands, logging `PASS`/`FAIL`/`SKIP` per check and a
 count. It also exercises repeated reloads with unsaved declarations, CodeLens after declaration edits/reverts, and
-native-service disabled activity reporting/recovery without failing project sync. By default the extension asks the selected Elide CLI to resolve its
-managed Komodo component, including its compiler plugins and JDK inputs. Install it explicitly with
-`elide komodo install --yes --json` or **Elide: Install Komodo**; ordinary activation and sync never install it.
-An older CLI reports an upgrade requirement, without changing the selected language server.
+native-service disabled activity reporting/recovery without failing project sync. Managed resolution requires a CLI
+implementing `elide komodo resolve --json` and `elide komodo install --yes --json`; a version string is not a capability
+probe. If those commands are absent, use the explicit bundle overrides below. With a compatible CLI, install Komodo
+explicitly with `elide komodo install --yes --json` or **Elide: Install Komodo**; activation and sync never install it.
+An unsupported CLI reports the missing prerequisite without changing the selected language server.
 For an unpublished local candidate, explicitly authorize the producer's development catalog with
 `ELIDE_COMPONENTS_HOME=/absolute/temp/components elide komodo install --catalog /absolute/catalog.json --yes --json`.
 Set `ELIDE_TEST_COMPONENTS_HOME` to that same absolute store when launching integration scenarios.
