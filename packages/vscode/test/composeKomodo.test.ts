@@ -268,6 +268,19 @@ describe("Komodo engine sessions", () => {
     expect(daemon.commands("configure")).toHaveLength(1);
   });
 
+  test("a preflight session closed by a preemption is not configured again", async () => {
+    const daemon = await fakeDaemon();
+    const backend = await engine(daemon);
+    await backend.prepareSession(file);
+    await backend.preview(request(card));
+    backend.preempt("another preview took the session");
+    await backend.prepareSession(file);
+    const gallery = await backend.preview(request(card));
+    expect(daemon.connections).toHaveLength(2);
+    expect(daemon.connections[1]!.commands.filter((command) => command.command === "configure")).toHaveLength(1);
+    expect(gallery.images.map((image) => image.error)).toEqual([undefined, undefined]);
+  });
+
   test("preflight reports protocol incompatibility without connecting or configuring a daemon", async () => {
     const daemon = await fakeDaemon();
     const unavailable: string[] = [];
