@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { open, readFile, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { OUTPUT_DIR } from "./elide.js";
 
@@ -194,6 +195,171 @@ export function sourceResolver(sourceRoots: readonly string[], exists: (p: strin
 export interface LoadedCoverage {
   files: FileCoverageData[];
   reports: CoverageReports;
+}
+
+const MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
+const MAX_ARTIFACT_FILES = 2_000;
+const MAX_ARTIFACT_LINES = 200_000;
+// Compact branch counters must not expand into an unbounded number of editor objects.
+const MAX_ARTIFACT_BRANCHES = 1_000_000;
+
+interface CoverageArtifactFile {
+  engine: string;
+  path: string;
+  sourceDigest?: { algorithm: "sha256-utf16be"; value: string };
+  lines: { line: number; covered: boolean; branches?: { covered: number; total: number } }[];
+}
+
+function isCoverageArtifact(value: unknown): value is { version: 1; complete: boolean; files: CoverageArtifactFile[] } {
+  if (
+    typeof value !== "object" || value === null ||
+    !("version" in value) || value.version !== 1 ||
+    !("complete" in value) || typeof value.complete !== "boolean" ||
+    !("files" in value) || !Array.isArray(value.files) || value.files.length > MAX_ARTIFACT_FILES
+  ) return false;
+  let lines = 0;
+  let branches = 0;
+  const identities = new Set<string>();
+  for (const file of value.files as unknown[]) {
+    if (
+      typeof file !== "object" || file === null ||
+      !("engine" in file) || typeof file.engine !== "string" || !file.engine ||
+      !("path" in file) || typeof file.path !== "string" || !file.path ||
+      !("lines" in file) || !Array.isArray(file.lines)
+    ) return false;
+    // The producer writes normalized, relative slash paths, including on Windows.
+    if (
+      path.posix.isAbsolute(file.path) || path.win32.parse(file.path).root ||
+      file.path.includes("\\") || file.path.includes("\0") ||
+      file.path.split("/").some((part) => !part || part === "." || part === "..")
+    ) return false;
+    const identity = JSON.stringify([file.engine, file.path]);
+    if (identities.has(identity)) return false;
+    identities.add(identity);
+    if ("sourceDigest" in file && file.sourceDigest !== undefined) {
+      const digest = file.sourceDigest;
+      if (
+        typeof digest !== "object" || digest === null ||
+        !("algorithm" in digest) || digest.algorithm !== "sha256-utf16be" ||
+        !("value" in digest) || typeof digest.value !== "string" || !/^[a-fA-F0-9]{64}$/.test(digest.value)
+      ) return false;
+    }
+    lines += file.lines.length;
+    if (lines > MAX_ARTIFACT_LINES) return false;
+    const seenLines = new Set<number>();
+    for (const line of file.lines as unknown[]) {
+      if (
+        typeof line !== "object" || line === null ||
+        !("line" in line) || typeof line.line !== "number" || !Number.isSafeInteger(line.line) || line.line <= 0 ||
+        !("covered" in line) || typeof line.covered !== "boolean"
+      ) return false;
+      if (seenLines.has(line.line)) return false;
+      seenLines.add(line.line);
+      if ("branches" in line && line.branches !== undefined) {
+        const counter = line.branches;
+        if (
+          typeof counter !== "object" || counter === null ||
+          !("covered" in counter) || typeof counter.covered !== "number" || !Number.isSafeInteger(counter.covered) || counter.covered < 0 ||
+          !("total" in counter) || typeof counter.total !== "number" || !Number.isSafeInteger(counter.total) || counter.total < counter.covered
+        ) return false;
+        branches += counter.total;
+        if (branches > MAX_ARTIFACT_BRANCHES) return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Read a run-local coverage artifact, retaining incomplete subsets and excluding sources whose digest changed.
+ * Unknown or malformed documents return `undefined` to allow the legacy-report fallback.
+ */
+export async function loadCoverageArtifact(file: string, projectRoot: string): Promise<{ files: FileCoverageData[]; complete: boolean } | undefined> {
+  const text = await readArtifactText(file);
+  if (text === undefined) return undefined;
+  let artifact: unknown;
+  try {
+    artifact = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!isCoverageArtifact(artifact)) return undefined;
+  const root = path.resolve(projectRoot);
+  let realRoot: string;
+  try {
+    realRoot = await realpath(root);
+  } catch {
+    return undefined;
+  }
+  const files: FileCoverageData[] = [];
+  let complete = artifact.complete;
+  for (const entry of artifact.files) {
+    const source = path.resolve(root, entry.path);
+    if (!isWithin(root, source) || !(await artifactSourceWithinRoot(root, realRoot, source))) return undefined;
+    if (entry.sourceDigest) {
+      try {
+        const sourceText = await readFile(source, "utf8");
+        const digest = createHash("sha256").update(Buffer.from(sourceText, "utf16le").swap16()).digest("hex");
+        if (digest !== entry.sourceDigest.value.toLowerCase()) {
+          complete = false;
+          continue;
+        }
+      } catch {
+        complete = false;
+        continue;
+      }
+    }
+    files.push({
+      path: source,
+      lines: entry.lines.map((line) => ({
+        line: line.line,
+        hits: line.covered ? 1 : 0,
+        branches: Array.from({ length: line.branches?.total ?? 0 }, (_, i) => ({ hits: i < (line.branches?.covered ?? 0) ? 1 : 0 })),
+      })),
+    });
+  }
+  return { files: mergeCoverage(files), complete };
+}
+
+function isWithin(root: string, file: string): boolean {
+  const relative = path.relative(root, file);
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+async function artifactSourceWithinRoot(root: string, realRoot: string, source: string): Promise<boolean> {
+  // Check the nearest existing ancestor too, so a missing file below an escaping symlink is rejected.
+  for (let candidate = source; candidate !== root; candidate = path.dirname(candidate)) {
+    try {
+      const canonical = await realpath(candidate);
+      return isWithin(realRoot, canonical) || (candidate !== source && canonical === realRoot);
+    } catch {
+      // A source without a digest can still be reported after it has been removed.
+    }
+  }
+  return true;
+}
+
+async function readArtifactText(file: string): Promise<string | undefined> {
+  let handle;
+  try {
+    handle = await open(file, "r");
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > MAX_ARTIFACT_BYTES) return undefined;
+    // Read at most the observed size plus one byte, detecting growth without an unbounded readFile.
+    const buffer = Buffer.alloc(info.size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length > info.size) return undefined;
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, length));
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close();
+  }
 }
 
 /**

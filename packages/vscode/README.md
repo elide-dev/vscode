@@ -40,7 +40,8 @@ test, and debug commands are available from the editor.
   to their text progress. Explicit CLI color options and color opt-outs (`NO_COLOR`, `FORCE_COLOR=0`) are preserved.
 - **Test Explorer.** JUnit tests of the project's test source roots in the **Testing** view, run and debugged through
   `elide test --reporter=tap` with live results, failure messages and stack-trace locations. **Run with Coverage**
-  shows the run's LCOV and JaCoCo XML reports in the editor's coverage gutter and Test Coverage view.
+  shows run-local JSON coverage without requiring JaCoCo XML on compatible CLIs, with LCOV/JaCoCo XML fallback for
+  older CLIs. Coverage minimum failures error the project run while preserving individual passing test results.
 - **Elide sidebar.** An activity-bar view with each project's entrypoints, tasks, build targets (`elide build
   --inspect`), source sets and dependencies; run, debug, build and sync straight from the tree. A workspace's
   **Tasks → Build targets** groups targets by project in the CLI's order; standalone projects list them directly.

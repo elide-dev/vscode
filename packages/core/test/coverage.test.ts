@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { findCoverageReports, loadCoverage, mergeCoverage, parseJacocoXml, parseLcov, sourceResolver } from "../src/index.js";
+import { findCoverageReports, loadCoverage, loadCoverageArtifact, mergeCoverage, parseJacocoXml, parseLcov, sourceResolver } from "../src/index.js";
 
 const fixture = (name: string) => path.join(import.meta.dir, "fixtures", "coverage", name);
 /** `elide test --coverage` (Elide 1.6.0-rc.2) on a TypeScript project, with the project root replaced by `/project`. */
@@ -141,5 +142,191 @@ describe("loadCoverage", () => {
     symlinkSync(real, link, "dir");
     const { files } = await loadCoverage(link, sourceRoots(link));
     expect(files.map((f) => f.path).filter((p) => p.endsWith(".ts")).sort()).toEqual([path.join(link, "src", "math.test.ts"), path.join(link, "src", "math.ts")]);
+  });
+});
+
+describe("loadCoverageArtifact", () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+  const project = () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "elide-cov-artifact-")));
+    dirs.push(root);
+    return root;
+  };
+  const row = (source = "src/Main.kt") => ({
+    engine: "jvm",
+    path: source,
+    lines: [{ line: 1, covered: true }],
+  });
+  const document = (files: unknown[] = [row()], complete = true) => ({ version: 1, complete, files });
+  const write = (root: string, value: unknown) => {
+    const file = path.join(root, "coverage.json");
+    writeFileSync(file, JSON.stringify(value));
+    return file;
+  };
+
+  test("maps boolean hits and exact branch totals, sorts lines, and merges engines", async () => {
+    const root = project();
+    const artifact = document([
+      {
+        ...row(),
+        lines: [
+          { line: 5, covered: false, branches: { covered: 0, total: 2 } },
+          { line: 3, covered: true, branches: { covered: 2, total: 3 } },
+          { line: 1, covered: false },
+          { line: 6, covered: true, branches: { covered: 0, total: 0 } },
+        ],
+      },
+      { ...row(), engine: "js", lines: [{ line: 3, covered: true, branches: { covered: 1, total: 3 } }] },
+      { ...row("other.ts"), engine: "future-engine", language: "typescript", unknown: true },
+    ]);
+    expect(await loadCoverageArtifact(write(root, artifact), root)).toEqual({
+      complete: true,
+      files: [
+        {
+          path: path.join(root, "src", "Main.kt"),
+          lines: [
+            { line: 1, hits: 0, branches: [] },
+            { line: 3, hits: 2, branches: [{ hits: 2 }, { hits: 1 }, { hits: 0 }] },
+            { line: 5, hits: 0, branches: [{ hits: 0 }, { hits: 0 }] },
+            { line: 6, hits: 1, branches: [] },
+          ],
+        },
+        { path: path.join(root, "other.ts"), lines: [{ line: 1, hits: 1, branches: [] }] },
+      ],
+    });
+  });
+
+  test("retains incomplete subsets and recognizes empty complete or incomplete artifacts", async () => {
+    const root = project();
+    const partial = await loadCoverageArtifact(write(root, document([row()], false)), root);
+    expect(partial?.complete).toBe(false);
+    expect(partial?.files).toHaveLength(1);
+    for (const complete of [true, false]) {
+      expect(await loadCoverageArtifact(write(root, document([], complete)), root)).toEqual({ files: [], complete });
+    }
+  });
+
+  test("ignores absent, unreadable, invalid JSON and invalid UTF-8 artifacts", async () => {
+    const root = project();
+    const file = path.join(root, "coverage.json");
+    expect(await loadCoverageArtifact(file, root)).toBeUndefined();
+    expect(await loadCoverageArtifact(root, root)).toBeUndefined();
+    writeFileSync(file, "{");
+    expect(await loadCoverageArtifact(file, root)).toBeUndefined();
+    writeFileSync(file, Buffer.concat([Buffer.from('{"version":1,"complete":true,"files":[],"extra":"'), Buffer.from([0xff]), Buffer.from('"}')]));
+    expect(await loadCoverageArtifact(file, root)).toBeUndefined();
+  });
+
+  test("rejects unsupported versions and malformed envelopes, files, lines and counters", async () => {
+    const root = project();
+    const badLines: unknown[] = [
+      null, {}, { line: 0, covered: true }, { line: -1, covered: true },
+      { line: 1.5, covered: true }, { line: Number.MAX_SAFE_INTEGER + 1, covered: true },
+      { line: "1", covered: true }, { line: 1, covered: 1 },
+      { line: 1, covered: true, branches: null },
+      ...[
+        {}, { covered: -1, total: 1 }, { covered: 2, total: 1 },
+        { covered: 0, total: -1 }, { covered: 0.5, total: 1 },
+        { covered: 0, total: 1.5 }, { covered: 0, total: "2" },
+        { covered: 0, total: Number.MAX_SAFE_INTEGER + 1 },
+        { covered: 0, total: 1_000_000_000 },
+      ].map((branches) => ({ line: 1, covered: true, branches })),
+    ];
+    const invalid: unknown[] = [
+      null, [], {}, { ...document(), version: 2 }, { ...document(), complete: "true" },
+      { ...document(), files: {} }, document([null]), document([{}]),
+      document([{ ...row(), engine: 1 }]), document([{ ...row(), engine: "" }]),
+      document([{ ...row(), lines: {} }]), document([row(), row()]),
+      document([{ ...row(), lines: [{ line: 1, covered: true }, { line: 1, covered: false }] }]),
+      ...badLines.map((line) => document([{ ...row(), lines: [line] }])),
+      ...[
+        null, {}, { algorithm: "sha256", value: "0".repeat(64) },
+        { algorithm: "sha256-utf16be", value: "0".repeat(63) },
+        { algorithm: "sha256-utf16be", value: "g".repeat(64) },
+      ].map((sourceDigest) => document([{ ...row(), sourceDigest }])),
+    ];
+    for (const value of invalid) {
+      expect(await loadCoverageArtifact(write(root, value), root)).toBeUndefined();
+    }
+  });
+
+  test("rejects traversal and absolute paths on every platform", async () => {
+    const root = project();
+    for (const source of ["", ".", "..", "../outside.kt", "src/../../outside.kt", "/outside.kt", "C:/outside.kt", "C:outside.kt", "\\\\host\\outside.kt", "src\\Main.kt", "src/./Main.kt", "src//Main.kt", "src/\0Main.kt"]) {
+      expect(await loadCoverageArtifact(write(root, document([row(source)])), root)).toBeUndefined();
+    }
+  });
+
+  test("rejects symlinked source files or directories escaping the project", async () => {
+    const root = project();
+    const outside = project();
+    writeFileSync(path.join(outside, "Outside.kt"), "");
+    symlinkSync(path.join(outside, "Outside.kt"), path.join(root, "Outside.kt"), "file");
+    symlinkSync(outside, path.join(root, "linked"), "dir");
+    for (const source of ["Outside.kt", "linked/Outside.kt", "linked/missing/nested.kt"]) {
+      expect(await loadCoverageArtifact(write(root, document([row(source)])), root)).toBeUndefined();
+    }
+  });
+
+  test("bounds bytes, file count, total lines and expanded branches", async () => {
+    const root = project();
+    const file = path.join(root, "coverage.json");
+    writeFileSync(file, " ".repeat(8 * 1024 * 1024 + 1));
+    expect(await loadCoverageArtifact(file, root)).toBeUndefined();
+    expect(await loadCoverageArtifact(write(root, document(Array.from({ length: 2_001 }, (_, i) => row(`${i}.kt`)))), root)).toBeUndefined();
+    const lines = Array.from({ length: 100_001 }, (_, i) => ({ line: i + 1, covered: true }));
+    expect(await loadCoverageArtifact(write(root, document([{ ...row("a.kt"), lines }, { ...row("b.kt"), lines }])), root)).toBeUndefined();
+    expect(await loadCoverageArtifact(write(root, document([{
+      ...row(),
+      lines: [
+        { line: 1, covered: true, branches: { covered: 0, total: 600_000 } },
+        { line: 2, covered: true, branches: { covered: 0, total: 600_000 } },
+      ],
+    }])), root)).toBeUndefined();
+  });
+
+  test("checks UTF-16BE source digests without normalizing Unicode or line endings", async () => {
+    const root = project();
+    const source = "A😀\r\né";
+    // Explicit UTF-16BE code units include the astral character's surrogate pair, and no BOM.
+    const digest = createHash("sha256").update(Buffer.from([0x00, 0x41, 0xd8, 0x3d, 0xde, 0x00, 0x00, 0x0d, 0x00, 0x0a, 0x00, 0xe9])).digest("hex");
+    const sourcePath = path.join(root, "Main.kt");
+    writeFileSync(sourcePath, source);
+    const file = write(root, document([
+      { ...row("Main.kt"), sourceDigest: { algorithm: "sha256-utf16be", value: digest.toUpperCase() } },
+      row("unversioned.ts"),
+    ]));
+    expect((await loadCoverageArtifact(file, root))?.complete).toBe(true);
+    writeFileSync(sourcePath, source.replace("\r\n", "\n"));
+    expect(await loadCoverageArtifact(file, root)).toEqual({
+      complete: false,
+      files: [{ path: path.join(root, "unversioned.ts"), lines: [{ line: 1, hits: 1, branches: [] }] }],
+    });
+    rmSync(sourcePath);
+    expect((await loadCoverageArtifact(file, root))?.files.map((entry) => path.basename(entry.path))).toEqual(["unversioned.ts"]);
+    expect((await loadCoverageArtifact(file, root))?.complete).toBe(false);
+  });
+
+  test("drops all stale rows without treating the recognized artifact as absent", async () => {
+    const root = project();
+    const file = write(root, document([{ ...row(), sourceDigest: { algorithm: "sha256-utf16be", value: "0".repeat(64) } }]));
+    expect(await loadCoverageArtifact(file, root)).toEqual({ files: [], complete: false });
+  });
+
+  test("keeps editor paths for a symlinked project root while validating current source", async () => {
+    const real = project();
+    const parent = project();
+    const link = path.join(parent, "project");
+    symlinkSync(real, link, "dir");
+    writeFileSync(path.join(real, "Main.kt"), "a");
+    const digest = createHash("sha256").update(Buffer.from([0x00, 0x61])).digest("hex");
+    const file = write(real, document([{ ...row("Main.kt"), sourceDigest: { algorithm: "sha256-utf16be", value: digest } }]));
+    expect(await loadCoverageArtifact(file, link)).toEqual({
+      complete: true,
+      files: [{ path: path.join(link, "Main.kt"), lines: [{ line: 1, hits: 1, branches: [] }] }],
+    });
   });
 });
